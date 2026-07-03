@@ -16,6 +16,8 @@ public class TroopCombat : MonoBehaviour
     {
         Idle,
         Fight,
+        Retreat,
+        Regroup,
         Dead
     }
 
@@ -25,6 +27,15 @@ public class TroopCombat : MonoBehaviour
     [Header("Health")]
     [SerializeField] private float maxHealth = 100f;
     [SerializeField] private bool destroyOnDeath = true;
+
+    [Header("Recovery")]
+    [SerializeField, Min(0f)] private float idleRegenPerSecond = 2f;
+    [SerializeField, Min(0f)] private float campRegenPerSecond = 25f;
+
+    [Header("Retreat")]
+    [SerializeField, Min(0f)] private float retreatInvulnerabilityDuration = 1.5f;
+    [SerializeField, Min(1f)] private float retreatMoveSpeedMultiplier = 1.75f;
+    [SerializeField, Min(0.05f)] private float retreatDestinationRefreshInterval = 0.5f;
 
     [Header("Combat")]
     [SerializeField] private float attackDamage = 10f;
@@ -54,6 +65,8 @@ public class TroopCombat : MonoBehaviour
     [SerializeField] private Color enemyGizmoColor = new Color(0.9f, 0.25f, 0.2f, 1f);
     [SerializeField] private Color idleGizmoColor = new Color(1f, 1f, 1f, 1f);
     [SerializeField] private Color fightGizmoColor = new Color(1f, 0.82f, 0.2f, 1f);
+    [SerializeField] private Color retreatGizmoColor = new Color(0.95f, 0.45f, 0.1f, 1f);
+    [SerializeField] private Color regroupGizmoColor = new Color(0.35f, 0.75f, 1f, 1f);
     [SerializeField] private Color deadGizmoColor = new Color(0.4f, 0.4f, 0.4f, 1f);
 
     private RtsUnitMotor motor;
@@ -61,6 +74,9 @@ public class TroopCombat : MonoBehaviour
     private float currentHealth;
     private float nextAttackTime;
     private float nextScanTime;
+    private float nextRetreatDestinationRefreshTime;
+    private float invulnerableUntil;
+    private bool isPermanentlyEliminated;
     private Vector3 troopPrefabScale = Vector3.one;
     private readonly List<TroopVisualInstance> troopVisuals = new List<TroopVisualInstance>();
     private int activeTroopVisualCount;
@@ -74,11 +90,18 @@ public class TroopCombat : MonoBehaviour
     public int MaxUnitCount => maxUnitCount;
     public int ActiveUnitCount => activeTroopVisualCount;
     public int MinimumUnitCountAtDefeat => Mathf.RoundToInt(maxUnitCount * defeatedUnitPercentage);
+    public bool IsCommandable => motor == null || motor.CanReceiveCommands;
+    public bool IsRetreating => CurrentState == State.Retreat;
+    public bool IsRegrouping => CurrentState == State.Regroup;
 
     private void Awake()
     {
         motor = GetComponent<RtsUnitMotor>();
         currentHealth = Mathf.Max(1f, maxHealth);
+        if (motor != null)
+        {
+            motor.CanReceiveCommands = motor.IsCommandUnit;
+        }
         CacheTroopPrefabScale();
         EnsureTroopVisuals();
         ApplyTroopVisualFormation();
@@ -95,6 +118,11 @@ public class TroopCombat : MonoBehaviour
         defeatedUnitPercentage = Mathf.Clamp01(defeatedUnitPercentage);
         formationCellSpacing = Mathf.Max(0.01f, formationCellSpacing);
         formationJitterFraction = Mathf.Clamp(formationJitterFraction, 0f, 0.5f);
+        idleRegenPerSecond = Mathf.Max(0f, idleRegenPerSecond);
+        campRegenPerSecond = Mathf.Max(0f, campRegenPerSecond);
+        retreatInvulnerabilityDuration = Mathf.Max(0f, retreatInvulnerabilityDuration);
+        retreatMoveSpeedMultiplier = Mathf.Max(1f, retreatMoveSpeedMultiplier);
+        retreatDestinationRefreshInterval = Mathf.Max(0.05f, retreatDestinationRefreshInterval);
     }
 
     private void Update()
@@ -106,6 +134,34 @@ public class TroopCombat : MonoBehaviour
 
         SyncTroopVisualScale();
 
+        switch (CurrentState)
+        {
+            case State.Retreat:
+                UpdateRetreat();
+                return;
+            case State.Regroup:
+                UpdateRegroup();
+                return;
+            default:
+                UpdateIdleRegeneration();
+                UpdateCombat();
+                return;
+        }
+    }
+
+    private void UpdateIdleRegeneration()
+    {
+        if (currentHealth <= 0f || currentHealth >= maxHealth)
+        {
+            return;
+        }
+
+        currentHealth = Mathf.Min(maxHealth, currentHealth + idleRegenPerSecond * Time.deltaTime);
+        SyncTroopVisualsToHealth();
+    }
+
+    private void UpdateCombat()
+    {
         if (Time.time >= nextScanTime)
         {
             nextScanTime = Time.time + Mathf.Max(0.05f, targetScanInterval);
@@ -146,10 +202,164 @@ public class TroopCombat : MonoBehaviour
         currentTarget.TakeDamage(attackDamage, this);
     }
 
+    private void UpdateRetreat()
+    {
+        if (RtsCampManager.Instance != null && RtsCampManager.Instance.IsAtCamp(transform.position, faction))
+        {
+            EnterRegroup();
+            return;
+        }
+
+        if (Time.time >= nextRetreatDestinationRefreshTime)
+        {
+            nextRetreatDestinationRefreshTime = Time.time + retreatDestinationRefreshInterval;
+            MoveTowardCamp();
+        }
+
+        if (Time.time >= invulnerableUntil && IsInterceptedByEnemy())
+        {
+            PermanentDestroy();
+        }
+    }
+
+    private void UpdateRegroup()
+    {
+        if (motor != null)
+        {
+            motor.Stop();
+        }
+
+        if (currentHealth < maxHealth)
+        {
+            currentHealth = Mathf.Min(maxHealth, currentHealth + campRegenPerSecond * Time.deltaTime);
+            SyncTroopVisualsToHealth();
+        }
+
+        if (currentHealth >= maxHealth)
+        {
+            CompleteRegroup();
+        }
+    }
+
+    private void MoveTowardCamp()
+    {
+        if (motor == null)
+        {
+            return;
+        }
+
+        Vector3 campPosition = RtsCampManager.Instance != null
+            ? RtsCampManager.Instance.GetCampPosition(faction)
+            : transform.position;
+
+        motor.MoveTo(campPosition);
+    }
+
+    private bool IsInterceptedByEnemy()
+    {
+        float scanRadius = Mathf.Max(attackRange, 8f);
+        Collider[] hits = Physics.OverlapSphere(transform.position, scanRadius, targetLayers, QueryTriggerInteraction.Ignore);
+        if (hits == null || hits.Length == 0)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < hits.Length; i++)
+        {
+            Collider hit = hits[i];
+            if (hit == null)
+            {
+                continue;
+            }
+
+            TroopCombat enemy = hit.GetComponentInParent<TroopCombat>();
+            if (enemy == null || enemy == this || enemy.faction == faction)
+            {
+                continue;
+            }
+
+            if (!CanBeTargetedBy(enemy))
+            {
+                continue;
+            }
+
+            Vector3 offset = transform.position - enemy.transform.position;
+            offset.y = 0f;
+            float enemyRange = enemy.attackRange;
+            if (offset.sqrMagnitude <= enemyRange * enemyRange)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private void EnterRetreat()
+    {
+        CurrentState = State.Retreat;
+        currentHealth = 0f;
+        currentTarget = null;
+        invulnerableUntil = Time.time + retreatInvulnerabilityDuration;
+        nextRetreatDestinationRefreshTime = 0f;
+
+        if (motor != null)
+        {
+            motor.CanReceiveCommands = false;
+            motor.MoveSpeedMultiplier = retreatMoveSpeedMultiplier;
+            MoveTowardCamp();
+        }
+
+        SyncTroopVisualsToHealth(forceMinimum: true);
+    }
+
+    private void EnterRegroup()
+    {
+        CurrentState = State.Regroup;
+        currentTarget = null;
+        invulnerableUntil = float.PositiveInfinity;
+
+        if (motor != null)
+        {
+            motor.Stop();
+            motor.CanReceiveCommands = false;
+            motor.MoveSpeedMultiplier = 1f;
+        }
+    }
+
+    private void CompleteRegroup()
+    {
+        currentHealth = maxHealth;
+        CurrentState = State.Idle;
+        SyncTroopVisualsToHealth();
+
+        if (motor != null)
+        {
+            motor.CanReceiveCommands = motor.IsCommandUnit;
+            motor.MoveSpeedMultiplier = 1f;
+        }
+    }
+
     public void TakeDamage(float amount, TroopCombat attacker = null)
     {
         if (CurrentState == State.Dead)
         {
+            return;
+        }
+
+        if (CurrentState == State.Regroup)
+        {
+            return;
+        }
+
+        if (CurrentState == State.Retreat)
+        {
+            if (Time.time < invulnerableUntil)
+            {
+                return;
+            }
+
+            PermanentDestroy(attacker);
             return;
         }
 
@@ -162,13 +372,13 @@ public class TroopCombat : MonoBehaviour
 
         if (currentHealth <= 0f)
         {
-            Die(attacker);
+            EnterRetreat();
         }
     }
 
     public bool CanBeTargetedBy(TroopCombat other)
     {
-        if (other == null || CurrentState == State.Dead)
+        if (other == null || CurrentState == State.Dead || CurrentState == State.Regroup)
         {
             return false;
         }
@@ -215,26 +425,31 @@ public class TroopCombat : MonoBehaviour
         return bestTarget;
     }
 
-    private void Die(TroopCombat attacker)
+    private void PermanentDestroy(TroopCombat attacker = null)
     {
+        if (isPermanentlyEliminated)
+        {
+            return;
+        }
+
+        isPermanentlyEliminated = true;
         CurrentState = State.Dead;
         currentTarget = null;
 
         if (motor != null)
         {
             motor.Stop();
+            motor.CanReceiveCommands = false;
+            motor.MoveSpeedMultiplier = 1f;
         }
 
-        // SyncTroopVisualsToHealth(forceRefresh: true);
-
-        if (destroyOnDeath && troopPrefab == null)
+        if (destroyOnDeath)
         {
             Destroy(gameObject);
+            return;
         }
-        else
-        {
-            nextAttackTime = 0f;
-        }
+
+        nextAttackTime = 0f;
     }
 
     private void EnsureTroopVisuals()
@@ -364,6 +579,72 @@ public class TroopCombat : MonoBehaviour
         }
 
         activeTroopVisualCount = activeCount - lossesNeeded;
+    }
+
+    private void SyncTroopVisualsToHealth(bool forceMinimum = false)
+    {
+        if (troopVisuals.Count == 0)
+        {
+            return;
+        }
+
+        int minimumUnitCount = Mathf.Clamp(Mathf.RoundToInt(maxUnitCount * defeatedUnitPercentage), 0, maxUnitCount);
+        float healthRatio = forceMinimum ? 0f : HealthNormalized;
+        int targetActiveCount = Mathf.Clamp(Mathf.RoundToInt(Mathf.Lerp(minimumUnitCount, maxUnitCount, healthRatio)), minimumUnitCount, maxUnitCount);
+
+        int activeCount = 0;
+        for (int i = 0; i < troopVisuals.Count; i++)
+        {
+            TroopVisualInstance troopVisual = troopVisuals[i];
+            if (troopVisual.Instance != null && troopVisual.Instance.activeSelf)
+            {
+                activeCount++;
+            }
+        }
+
+        if (activeCount < targetActiveCount)
+        {
+            for (int i = 0; i < troopVisuals.Count && activeCount < targetActiveCount; i++)
+            {
+                TroopVisualInstance troopVisual = troopVisuals[i];
+                if (troopVisual.Instance != null && !troopVisual.Instance.activeSelf)
+                {
+                    troopVisual.Instance.SetActive(true);
+                    activeCount++;
+                }
+            }
+
+            ApplyTroopVisualFormation();
+        }
+        else if (activeCount > targetActiveCount)
+        {
+            List<int> candidates = new List<int>();
+            for (int i = 0; i < troopVisuals.Count; i++)
+            {
+                TroopVisualInstance troopVisual = troopVisuals[i];
+                if (troopVisual.Instance != null && troopVisual.Instance.activeSelf)
+                {
+                    candidates.Add(i);
+                }
+            }
+
+            int lossesNeeded = Mathf.Min(activeCount - targetActiveCount, candidates.Count);
+            for (int i = 0; i < lossesNeeded; i++)
+            {
+                int pickedIndex = Random.Range(i, candidates.Count);
+                int troopIndex = candidates[pickedIndex];
+                candidates[pickedIndex] = candidates[i];
+                candidates[i] = troopIndex;
+
+                TroopVisualInstance troopVisual = troopVisuals[troopIndex];
+                if (troopVisual.Instance != null)
+                {
+                    troopVisual.Instance.SetActive(false);
+                }
+            }
+        }
+
+        activeTroopVisualCount = targetActiveCount;
     }
 
     private void ApplyTroopVisualFormation()
@@ -617,6 +898,10 @@ public class TroopCombat : MonoBehaviour
         {
             case State.Fight:
                 return fightGizmoColor;
+            case State.Retreat:
+                return retreatGizmoColor;
+            case State.Regroup:
+                return regroupGizmoColor;
             case State.Dead:
                 return deadGizmoColor;
             default:

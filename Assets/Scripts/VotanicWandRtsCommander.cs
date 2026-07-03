@@ -35,6 +35,11 @@ public class VotanicWandRtsCommander : MonoBehaviour
 
     private void Update()
     {
+        if (selectedUnit != null && !selectedUnit.CanReceiveCommands)
+        {
+            SetSelectedUnit(null);
+        }
+
         Ray ray = BuildWandRay();
         UpdateHoveredUnit(ray);
 
@@ -132,7 +137,7 @@ public class VotanicWandRtsCommander : MonoBehaviour
         }
 
         RtsUnitMotor unit = hit.collider.GetComponentInParent<RtsUnitMotor>();
-        bool isCommandUnit = unit != null && unit.IsCommandUnit;
+        bool isCommandUnit = unit != null && unit.IsCommandUnit && unit.CanReceiveCommands;
         debugHoverLine = "Hover hit: " + hit.collider.name + " | dist=" + hit.distance.ToString("F2") + " | unit=" + (unit != null ? unit.name : "none") + " | commandable=" + isCommandUnit;
 
         if (verboseDebugLogs)
@@ -147,6 +152,12 @@ public class VotanicWandRtsCommander : MonoBehaviour
     {
         if (selectedUnit == null)
         {
+            return false;
+        }
+
+        if (!selectedUnit.CanReceiveCommands)
+        {
+            debugMoveLine = "Move: selected unit cannot receive commands";
             return false;
         }
 

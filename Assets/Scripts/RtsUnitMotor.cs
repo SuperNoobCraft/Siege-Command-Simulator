@@ -13,6 +13,9 @@ public class RtsUnitMotor : MonoBehaviour
     private Vector3 destination;
 
     public bool IsCommandUnit => isCommandUnit;
+    public bool CanReceiveCommands { get; set; } = true;
+    public float MoveSpeedMultiplier { get; set; } = 1f;
+    public bool HasDestination => hasDestination;
 
     public void MoveTo(Vector3 worldPoint)
     {
@@ -42,7 +45,7 @@ public class RtsUnitMotor : MonoBehaviour
         }
 
         Vector3 direction = offset.normalized;
-        float stepDistance = moveSpeed * Time.deltaTime;
+        float stepDistance = moveSpeed * Mathf.Max(0f, MoveSpeedMultiplier) * Time.deltaTime;
 
         if (stepDistance * stepDistance >= offset.sqrMagnitude)
         {
