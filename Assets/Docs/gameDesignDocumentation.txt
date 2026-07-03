@@ -1,0 +1,568 @@
+PROJECT TITLE
+Siege Commander VR (Working Title)
+
+PLATFORM
+- CAVE Automatic Virtual Environment (CAVE VR)
+- Unity 2021.3
+- VotanicXR Plugin
+
+================================================================================
+GAME OVERVIEW
+================================================================================
+
+The player takes the role of a battlefield commander overseeing a siege from a command tower balcony.
+
+The objective is to defend friendly siege cannons while they are being loaded. Once the cannons are ready, the player must command them to fire at the enemy city walls and destroy them to achieve victory.
+
+The player loses if:
+1. Enemy regiments reach the cannons and occupy them for 5 seconds.
+2. The player is hit by 3 enemy arrows.
+
+The game is designed as a short VR strategy experience lasting approximately 3-5 minutes.
+
+================================================================================
+ENVIRONMENT & SCENE DESIGN
+================================================================================
+
+Only 1 playable scene is required.
+
+Required Models:
+- Battlefield terrain
+- Enemy castle walls
+- Enemy city gate
+- Friendly infantry regiments
+- Friendly archer regiments
+- Enemy infantry regiments
+- Enemy archer regiments
+- Commander tower interior
+- Commander tower balcony
+- Cannon models
+- Cannon loading props/animations
+- Arrow projectile
+- Movement command arrow UI
+- Explosion effect
+- Friendly banners
+- Enemy banners
+- Broken/damaged banner variants
+
+Optional Models:
+- Army camps
+- Additional decorative siege props
+
+Scene Layout (Near → Far):
+
+1. Command Tower Interior
+   - Game starts here.
+   - Limited battlefield visibility.
+   - Main menu may appear here.
+
+2. Command Tower Balcony
+   - Stepping onto balcony provides full battlefield overview.
+   - Intended primary play location.
+
+3. Friendly Area
+   - Army camps.
+   - Scattered friendly soldiers.
+   - Cannons being loaded.
+
+4. Battlefield
+   - Area where regiments fight.
+
+5. Enemy City
+   - Castle walls.
+   - Main gate.
+   - Enemy reinforcements emerge from gate.
+
+Player View Progression:
+- Inside tower: restricted visibility.
+- Balcony: full strategic view of battlefield.
+
+================================================================================
+GAME FLOW
+================================================================================
+
+Start of Game:
+- Player begins inside command tower.
+- Soldier NPC approaches and reports the situation.
+
+Example Dialogue:
+
+"Our cannons are almost ready. Once we fire them, the enemy walls will fall without fail."
+
+"We only need to hold out until they are prepared. However, enemy troops continue to emerge from the gate. If they reach our cannons, we have no hope of taking the city."
+
+Gameplay Loop:
+1. Observe battlefield from balcony.
+2. Command friendly regiments.
+3. Defend cannons.
+4. Eliminate retreating enemies when possible.
+5. Survive enemy arrow attacks.
+6. Wait for cannon loading completion.
+7. Command cannons to fire.
+8. Win by destroying enemy walls.
+
+Expected Match Duration:
+- Approximately 3 minutes.
+
+================================================================================
+CANNON SYSTEM
+================================================================================
+
+Purpose:
+- Main objective of the game.
+
+Loading Phase:
+- Cannons require ~180 seconds to load.
+- Visible loading animations are preferred.
+- Soldiers may periodically report loading progress.
+
+Preferred Feedback:
+- Physical loading animation.
+- NPC verbal updates.
+
+Alternative (Less Preferred):
+- UI timer/progress bar.
+
+Once Loaded:
+Player must:
+
+Step 1:
+- Stand on balcony.
+
+Step 2:
+- Point at cannon.
+- Select cannon.
+
+Step 3:
+- Point at enemy wall.
+- Select target.
+
+Step 4:
+- 5 second countdown begins.
+
+Step 5:
+- Cannons fire.
+
+Victory Condition:
+- Successful cannon strike destroys enemy wall.
+
+Failure Condition:
+- Enemy occupies cannon for 5 continuous seconds before firing.
+
+================================================================================
+PLAYER COMMAND SYSTEM
+================================================================================
+
+Player may only command regiments currently visible from their position.
+
+Command Process:
+
+1. Point at friendly regiment.
+2. Hold command button.
+3. Point to valid battlefield destination.
+4. Release button.
+5. Regiment receives order after ~1 second delay.
+6. Regiment moves to destination.
+
+Visual Feedback:
+- Movement arrow projected onto ground.
+- Clear destination preview.
+
+================================================================================
+REGIMENT TYPES
+================================================================================
+
+Friendly Regiments:
+- 3 Infantry
+- 2 Archers
+
+Enemy Regiments:
+- Spawn in waves
+
+Infantry:
+- High HP
+- High movement speed
+- Low attack range
+
+Archers:
+- Lower HP
+- Lower movement speed
+- High attack range
+
+================================================================================
+REGIMENT AI STATES
+================================================================================
+
+All regiments use the same state machine.
+
+States:
+
+IDLE
+- Default state.
+- Slowly regenerates HP.
+
+MOVE
+- Traveling toward commanded destination.
+- Triggered by player or enemy AI orders.
+
+FIGHT
+- Activated when enemy enters attack range.
+
+RETREAT
+- Triggered at 0 HP.
+- Regiment attempts to escape.
+
+REGROUP
+- Rebuilding strength.
+- Cannot be commanded.
+- Faster HP regeneration.
+
+================================================================================
+RETREAT & REGROUP SYSTEM
+================================================================================
+
+When HP reaches 0:
+
+1. Regiment enters RETREAT.
+2. Gains short invulnerability period (i-frames).
+3. Moves quickly toward safe zone.
+
+Friendly Safe Zone:
+- Army camps.
+
+Enemy Safe Zone:
+- Inside city gate.
+
+Upon Arrival:
+- Enter REGROUP state.
+- Regenerate HP rapidly.
+
+Friendly Regiments:
+- Return immediately when fully recovered.
+
+Enemy Regiments:
+- Return during the next available wave.
+
+Permanent Destruction:
+- Retreating regiment can be intercepted.
+- If blocked and destroyed during retreat:
+  - Regiment is permanently eliminated.
+  - Cannot regroup.
+  - Cannot return.
+
+Design Goal:
+- Forgiving recovery system.
+- Rewards cutting off retreats.
+
+================================================================================
+COMBAT SYSTEM
+================================================================================
+
+Representation:
+- Regiment displayed as approximately 20 low-poly soldier spheres.
+
+Important:
+- Individual troops do not have individual combat logic.
+- Entire regiment shares:
+  - One HP pool
+  - One attack value
+  - One AI state
+
+Combat Zones:
+- Regiment occupies square footprint.
+- Regiment has attack radius.
+
+Damage Rules:
+
+If Regiment A overlaps Regiment B:
+- Regiment attacks at full power.
+
+If overlapping multiple enemies:
+- Damage distributed proportionally.
+
+Example:
+- 20% overlap with Enemy A.
+- 10% overlap with Enemy B.
+
+Damage Split:
+- Enemy A receives 66%.
+- Enemy B receives 33%.
+
+Range Examples:
+
+Infantry vs Infantry:
+- Both can attack each other.
+
+Infantry vs Archer:
+- Archer attacks infantry first.
+- Infantry cannot respond until within range.
+
+When both are within range:
+- Both exchange damage normally.
+
+================================================================================
+BANNER SYSTEM (HEALTH DISPLAY)
+================================================================================
+
+Health bars are not used.
+
+Instead:
+- Every regiment carries a banner.
+
+Team Identification:
+- Blue = Friendly
+- Red = Enemy
+
+Class Symbols:
+- Infantry = Lion/Sword icon
+- Archers = Arrow icon
+
+Banner States:
+- Healthy → Clean banner
+- Damaged → Torn banner
+- Critical → Very broken banner
+
+Additional Visual Feedback:
+- Fewer visible soldier spheres as HP decreases.
+- Retreating units display heavily damaged banners.
+
+================================================================================
+ENEMY WAVES
+================================================================================
+
+Wave 1
+Spawn Time:
+- ~10 seconds
+
+Composition:
+- 2 Infantry
+- 1 Archer
+
+Wave 2
+Spawn Time:
+- ~70 seconds
+
+Composition:
+- 2 Infantry
+- 1 Archer
+
+Wave 3
+Spawn Time:
+- ~130 seconds
+
+Composition:
+- 1 Infantry
+- 1 Archer
+
+Wave Persistence Rule:
+
+Enemy regiments that survive and regroup return with future waves.
+
+Example:
+Wave 1:
+- 3 units spawn.
+- 2 retreat successfully.
+
+Wave 2:
+- 3 new units + 2 survivors.
+- Total = 5 units.
+
+If multiple enemies survive:
+- Enemy force snowballs.
+- Player may become overwhelmed.
+
+Design Purpose:
+- Encourages pursuit of retreating enemies.
+- Rewards controlling retreat routes.
+
+================================================================================
+PLAYER ADVANTAGE DESIGN
+================================================================================
+
+Base Numbers:
+
+Friendly:
+- 5 starting regiments
+
+Enemy:
+- Distributed across waves
+
+If player performs well:
+- Friendly side gradually gains advantage.
+
+Siege Fantasy:
+- Enemy resources should feel exhausted over time.
+
+Poor play allows:
+- Enemy regrouping.
+- Larger future waves.
+- Increasing battlefield pressure.
+
+================================================================================
+ARROW DODGING SYSTEM
+================================================================================
+
+Enemy city periodically launches arrows toward command tower.
+
+Arrow Behavior:
+- Comes from city direction.
+- Targets player.
+
+Player Response:
+- Physically dodge in VR.
+
+Hit Effects:
+
+Hit 1:
+- Slight red screen tint.
+
+Hit 2:
+- More intense red tint.
+
+Hit 3:
+- Game Over.
+
+Difficulty Scaling:
+- Arrow frequency increases throughout match.
+
+Purpose:
+- Prevent passive waiting.
+- Force player engagement.
+
+================================================================================
+VOICE REPORT SYSTEM
+================================================================================
+
+Soldier NPCs periodically provide battlefield updates.
+
+Possible Voice Lines:
+
+"Sir, we are losing the left flank!"
+
+"Sir, the cannons are exposed!"
+
+"Enemy reinforcements have emerged from the city gate!"
+
+"Sir, we have lost an infantry regiment!"
+
+"Enemy regiment is retreating! Cut them off before they regroup!"
+
+"Our troops are retreating! Make sure they can reach the camps safely!"
+
+"Cannons are nearly ready, sir!"
+
+Purpose:
+- Inform player without excessive UI.
+- Increase immersion.
+
+================================================================================
+AUDIO DESIGN
+================================================================================
+
+Required Audio:
+- Battlefield ambience
+- Combat sounds
+- Marching sounds
+- Arrow launch
+- Arrow impact
+- Cannon loading
+- Cannon firing
+- Explosion effects
+- Soldier voice reports
+
+================================================================================
+ART STYLE
+================================================================================
+
+Target Style:
+- Low-poly
+- Stylized
+- Cartoony
+
+Reason:
+- Faster development.
+- Fits project scope.
+- Avoids uncanny realism.
+- Better performance for VR/CAVE systems.
+
+Color Language:
+- Blue = Friendly
+- Red = Enemy
+
+Visual Priorities:
+- Readability
+- Large-scale battlefield visibility
+- Clear unit identification
+
+================================================================================
+OPTIONAL FEATURE: BATTLEFIELD CANNONS
+================================================================================
+
+Additional Gameplay Layer:
+
+Friendly tower and enemy city may each have smaller support cannons.
+
+Rules:
+- Cannot directly hit opposing structures.
+- Can fire onto battlefield.
+
+Effects:
+- Area damage.
+- Damages both friendly and enemy regiments.
+
+Design Goals:
+- Risk/reward decision making.
+- Useful against:
+  - Retreating enemies
+  - Clustered enemies
+  - Isolated enemies
+
+Balance Requirements:
+- Slow projectile speed.
+- Visible trajectory.
+- Players have enough time to react.
+- Regiments can be moved away from impact areas.
+
+================================================================================
+WIN CONDITIONS
+================================================================================
+
+Primary Win Condition:
+- Cannons successfully fire at enemy wall.
+- Enemy wall destroyed.
+
+================================================================================
+LOSS CONDITIONS
+================================================================================
+
+Condition 1:
+- Enemy reaches cannon.
+- Occupies cannon area for 5 continuous seconds.
+
+Condition 2:
+- Player is hit by 3 arrows.
+
+================================================================================
+CORE DESIGN PILLARS
+================================================================================
+
+1. Command From Above
+   - Observe and direct battle from tower balcony.
+
+2. Protect The Siege
+   - Cannons are the true objective.
+
+3. Reward Tactical Play
+   - Cut off retreat routes.
+   - Preserve friendly regiments.
+
+4. Minimal UI
+   - Use visual world feedback whenever possible.
+
+5. Active VR Experience
+   - Commanding units.
+   - Looking across battlefield.
+   - Dodging arrows.
+
+6. Short, Replayable Siege
+   - Target playtime around 3-5 minutes.

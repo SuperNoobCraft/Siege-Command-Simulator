@@ -1,0 +1,1 @@
+Assets/Votanic/VotanicXR_Tutorial 2019/Tutorial02_InputSystem/Sample/Setting_InputSystemSample.vxrs
