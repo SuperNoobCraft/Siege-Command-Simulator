@@ -4,6 +4,7 @@ using UnityEngine;
 using UnityEditor;
 #endif
 
+[DefaultExecutionOrder(-50)]
 public class TroopCombat : MonoBehaviour
 {
     public enum Faction
@@ -45,15 +46,24 @@ public class TroopCombat : MonoBehaviour
     [SerializeField] private LayerMask targetLayers = ~0;
     [SerializeField] private bool faceTargetWhileFighting = true;
 
+    [Header("Combat Movement")]
+    [SerializeField, Range(0f, 1f)] private float combatMoveSpeedPercentage = 0.2f;
+    [SerializeField] private bool scaleCombatSpeedByEnemyOverlap = true;
+    [SerializeField, Min(0f)] private float combatOverlapSmoothingSpeed = 8f;
+    [SerializeField] private Collider footprintCollider;
+
     [Header("Regiment Visuals")]
     [SerializeField] private GameObject troopPrefab;
-    [SerializeField, Min(0)] private int maxUnitCount = 12;
+    [SerializeField] private GameObject flagHolderPrefab;
+    [SerializeField] private GameObject defeatedFlagHolderPrefab;
+    [SerializeField, Min(0)] private int maxUnitCount = 49;
     [SerializeField, Range(0f, 1f)] private float defeatedUnitPercentage = 0.4f;
     [SerializeField] private Transform troopVisualRoot;
     [SerializeField] private bool keepTroopVisualScaleIndependent = true;
     [SerializeField, Min(0.01f)] private float formationCellSpacing = 0.5f;
     [SerializeField, Range(0f, 0.5f)] private float formationJitterFraction = 0.2f;
     [SerializeField] private bool randomizeSpawnOrder = true;
+    [SerializeField, Range(-180f, 180f)] private float troopFacingYawOffsetDegrees = 0f;
 
     [Header("Debug Gizmos")]
     [SerializeField] private bool drawDebugGizmos = true;
@@ -69,6 +79,12 @@ public class TroopCombat : MonoBehaviour
     [SerializeField] private Color regroupGizmoColor = new Color(0.35f, 0.75f, 1f, 1f);
     [SerializeField] private Color deadGizmoColor = new Color(0.4f, 0.4f, 0.4f, 1f);
 
+    private enum RetreatPhase
+    {
+        ToGate,
+        ToCamp
+    }
+
     private RtsUnitMotor motor;
     private TroopCombat currentTarget;
     private float currentHealth;
@@ -77,7 +93,13 @@ public class TroopCombat : MonoBehaviour
     private float nextRetreatDestinationRefreshTime;
     private float invulnerableUntil;
     private bool isPermanentlyEliminated;
+    private RetreatPhase retreatPhase = RetreatPhase.ToGate;
     private Vector3 troopPrefabScale = Vector3.one;
+    private Vector3 flagHolderPrefabScale = Vector3.one;
+    private bool flagHolderShowingDefeated;
+    private Vector3 lastRegimentPosition;
+    private float smoothedCombatOverlap;
+    private const float MinimumFacingMovementDistance = 0.02f;
     private readonly List<TroopVisualInstance> troopVisuals = new List<TroopVisualInstance>();
     private int activeTroopVisualCount;
 
@@ -93,18 +115,38 @@ public class TroopCombat : MonoBehaviour
     public bool IsCommandable => motor == null || motor.CanReceiveCommands;
     public bool IsRetreating => CurrentState == State.Retreat;
     public bool IsRegrouping => CurrentState == State.Regroup;
+    public float CombatMoveSpeedMultiplier => GetCombatMoveSpeedMultiplier();
 
     private void Awake()
     {
         motor = GetComponent<RtsUnitMotor>();
         currentHealth = Mathf.Max(1f, maxHealth);
+
+        if (footprintCollider == null)
+        {
+            footprintCollider = GetComponent<Collider>();
+        }
+
         if (motor != null)
         {
             motor.CanReceiveCommands = motor.IsCommandUnit;
+            if (footprintCollider != null)
+            {
+                motor.SetMovementBoundsCollider(footprintCollider);
+            }
         }
+
         CacheTroopPrefabScale();
+        CacheFlagHolderPrefabScale();
         EnsureTroopVisuals();
         ApplyTroopVisualFormation();
+        lastRegimentPosition = transform.position;
+
+        if (troopVisualRoot != null)
+        {
+            transform.rotation = Quaternion.identity;
+            troopVisualRoot.localScale = Vector3.one;
+        }
     }
 
     private void OnValidate()
@@ -123,6 +165,8 @@ public class TroopCombat : MonoBehaviour
         retreatInvulnerabilityDuration = Mathf.Max(0f, retreatInvulnerabilityDuration);
         retreatMoveSpeedMultiplier = Mathf.Max(1f, retreatMoveSpeedMultiplier);
         retreatDestinationRefreshInterval = Mathf.Max(0.05f, retreatDestinationRefreshInterval);
+        combatMoveSpeedPercentage = Mathf.Clamp01(combatMoveSpeedPercentage);
+        combatOverlapSmoothingSpeed = Mathf.Max(0f, combatOverlapSmoothingSpeed);
     }
 
     private void Update()
@@ -138,26 +182,239 @@ public class TroopCombat : MonoBehaviour
         {
             case State.Retreat:
                 UpdateRetreat();
-                return;
+                break;
             case State.Regroup:
                 UpdateRegroup();
-                return;
+                break;
             default:
-                UpdateIdleRegeneration();
+                UpdateRecovery();
                 UpdateCombat();
-                return;
+                break;
         }
+
+        if (CurrentState == State.Retreat || CurrentState == State.Regroup)
+        {
+            UpdateRecovery();
+        }
+
+        UpdateMovementSpeed();
     }
 
-    private void UpdateIdleRegeneration()
+    private void LateUpdate()
     {
-        if (currentHealth <= 0f || currentHealth >= maxHealth)
+        if (CurrentState == State.Dead)
         {
             return;
         }
 
-        currentHealth = Mathf.Min(maxHealth, currentHealth + idleRegenPerSecond * Time.deltaTime);
+        UpdateTroopFacing();
+    }
+
+    private void UpdateMovementSpeed()
+    {
+        if (motor == null)
+        {
+            return;
+        }
+
+        switch (CurrentState)
+        {
+            case State.Retreat:
+                motor.MoveSpeedMultiplier = retreatMoveSpeedMultiplier;
+                break;
+            case State.Fight:
+                motor.MoveSpeedMultiplier = GetCombatMoveSpeedMultiplier();
+                break;
+            default:
+                motor.MoveSpeedMultiplier = 1f;
+                break;
+        }
+    }
+
+    private float GetCombatMoveSpeedMultiplier()
+    {
+        if (CurrentState != State.Fight)
+        {
+            return 1f;
+        }
+
+        if (!scaleCombatSpeedByEnemyOverlap)
+        {
+            return combatMoveSpeedPercentage;
+        }
+
+        float targetOverlap = GetEnemyOverlapRatio();
+        smoothedCombatOverlap = Mathf.MoveTowards(
+            smoothedCombatOverlap,
+            targetOverlap,
+            combatOverlapSmoothingSpeed * Time.deltaTime);
+
+        return Mathf.Lerp(1f, combatMoveSpeedPercentage, smoothedCombatOverlap);
+    }
+
+    private float GetEnemyOverlapRatio()
+    {
+        if (!TryGetFootprintBoundsXZ(out Vector2 selfCenter, out Vector2 selfHalfExtents))
+        {
+            return currentTarget != null ? 1f : 0f;
+        }
+
+        float selfArea = (selfHalfExtents.x * 2f) * (selfHalfExtents.y * 2f);
+        if (selfArea < 0.0001f)
+        {
+            return currentTarget != null ? 1f : 0f;
+        }
+
+        float scanRadius = Mathf.Max(attackRange, Mathf.Max(selfHalfExtents.x, selfHalfExtents.y));
+        Collider[] hits = Physics.OverlapSphere(transform.position, scanRadius, targetLayers, QueryTriggerInteraction.Ignore);
+        if (hits == null || hits.Length == 0)
+        {
+            return 0f;
+        }
+
+        float totalOverlapArea = 0f;
+        for (int i = 0; i < hits.Length; i++)
+        {
+            Collider hit = hits[i];
+            if (hit == null)
+            {
+                continue;
+            }
+
+            TroopCombat enemy = hit.GetComponentInParent<TroopCombat>();
+            if (enemy == null || enemy == this || enemy.faction == faction)
+            {
+                continue;
+            }
+
+            if (!CanBeTargetedBy(enemy))
+            {
+                continue;
+            }
+
+            if (!enemy.TryGetFootprintBoundsXZ(out Vector2 enemyCenter, out Vector2 enemyHalfExtents))
+            {
+                continue;
+            }
+
+            totalOverlapArea += CalculateRectOverlapArea(selfCenter, selfHalfExtents, enemyCenter, enemyHalfExtents);
+        }
+
+        return Mathf.Clamp01(totalOverlapArea / selfArea);
+    }
+
+    private bool TryGetFootprintBoundsXZ(out Vector2 center, out Vector2 halfExtents)
+    {
+        center = Vector2.zero;
+        halfExtents = Vector2.zero;
+
+        if (footprintCollider is BoxCollider boxCollider)
+        {
+            Vector3 worldCenter = footprintCollider.transform.TransformPoint(boxCollider.center);
+            Vector3 worldHalfExtents = Vector3.Scale(boxCollider.size * 0.5f, footprintCollider.transform.lossyScale);
+            center = new Vector2(worldCenter.x, worldCenter.z);
+            halfExtents = new Vector2(Mathf.Abs(worldHalfExtents.x), Mathf.Abs(worldHalfExtents.z));
+            return true;
+        }
+
+        if (footprintCollider != null)
+        {
+            Bounds bounds = footprintCollider.bounds;
+            center = new Vector2(bounds.center.x, bounds.center.z);
+            halfExtents = new Vector2(bounds.extents.x, bounds.extents.z);
+            return true;
+        }
+
+        return false;
+    }
+
+    private static float CalculateRectOverlapArea(
+        Vector2 centerA,
+        Vector2 halfExtentsA,
+        Vector2 centerB,
+        Vector2 halfExtentsB)
+    {
+        float overlapWidth = Mathf.Max(
+            0f,
+            Mathf.Min(centerA.x + halfExtentsA.x, centerB.x + halfExtentsB.x)
+            - Mathf.Max(centerA.x - halfExtentsA.x, centerB.x - halfExtentsB.x));
+        float overlapDepth = Mathf.Max(
+            0f,
+            Mathf.Min(centerA.y + halfExtentsA.y, centerB.y + halfExtentsB.y)
+            - Mathf.Max(centerA.y - halfExtentsA.y, centerB.y - halfExtentsB.y));
+
+        return overlapWidth * overlapDepth;
+    }
+
+    private bool TryGetFootprintBounds(out Bounds bounds)
+    {
+        if (footprintCollider != null)
+        {
+            bounds = footprintCollider.bounds;
+            return true;
+        }
+
+        bounds = default;
+        return false;
+    }
+
+    private void UpdateRecovery()
+    {
+        if (currentHealth >= maxHealth)
+        {
+            if (CurrentState == State.Regroup)
+            {
+                CompleteRegroup();
+            }
+
+            return;
+        }
+
+        RtsCampManager campManager = RtsCampManager.Instance;
+        bool inCampZone = IsOverlappingCampZone(campManager);
+        float recoveryRate = GetRecoveryRate(inCampZone);
+        if (recoveryRate <= 0f)
+        {
+            return;
+        }
+
+        currentHealth = Mathf.Min(maxHealth, currentHealth + recoveryRate * Time.deltaTime);
         SyncTroopVisualsToHealth();
+
+        if (CurrentState == State.Regroup && currentHealth >= maxHealth)
+        {
+            CompleteRegroup();
+        }
+    }
+
+    private float GetRecoveryRate(bool inCampZone)
+    {
+        if (currentHealth <= 0f)
+        {
+            if (CurrentState == State.Regroup)
+            {
+                return campRegenPerSecond;
+            }
+
+            return 0f;
+        }
+
+        return inCampZone ? campRegenPerSecond : idleRegenPerSecond;
+    }
+
+    private bool IsOverlappingCampZone(RtsCampManager campManager)
+    {
+        if (campManager == null)
+        {
+            return false;
+        }
+
+        if (TryGetFootprintBounds(out Bounds footprintBounds))
+        {
+            return campManager.IsFootprintOverlappingCampZone(footprintBounds, faction);
+        }
+
+        return campManager.IsInCampZone(transform.position, faction);
     }
 
     private void UpdateCombat()
@@ -171,6 +428,7 @@ public class TroopCombat : MonoBehaviour
         if (currentTarget == null)
         {
             CurrentState = State.Idle;
+            smoothedCombatOverlap = 0f;
             return;
         }
 
@@ -182,6 +440,7 @@ public class TroopCombat : MonoBehaviour
         {
             currentTarget = null;
             CurrentState = State.Idle;
+            smoothedCombatOverlap = 0f;
             return;
         }
 
@@ -189,8 +448,7 @@ public class TroopCombat : MonoBehaviour
 
         if (faceTargetWhileFighting && toTarget.sqrMagnitude > 0.0001f)
         {
-            Quaternion targetRotation = Quaternion.LookRotation(toTarget.normalized, Vector3.up);
-            transform.rotation = Quaternion.Slerp(transform.rotation, targetRotation, 8f * Time.deltaTime);
+            ApplyFacingToVisualRoot(GetTroopFacingRotation(toTarget.normalized));
         }
 
         if (Time.time < nextAttackTime)
@@ -204,16 +462,43 @@ public class TroopCombat : MonoBehaviour
 
     private void UpdateRetreat()
     {
-        if (RtsCampManager.Instance != null && RtsCampManager.Instance.IsAtCamp(transform.position, faction))
+        RtsCampManager campManager = RtsCampManager.Instance;
+
+        if (campManager != null && retreatPhase == RetreatPhase.ToCamp && campManager.HasReachedCampCenter(transform.position, faction))
         {
             EnterRegroup();
             return;
         }
 
-        if (Time.time >= nextRetreatDestinationRefreshTime)
+        if (campManager != null && retreatPhase == RetreatPhase.ToGate && campManager.IsAtGate(transform.position, faction))
+        {
+            retreatPhase = RetreatPhase.ToCamp;
+            if (motor != null)
+            {
+                motor.MoveTo(campManager.GetCampCenter(faction));
+            }
+        }
+        else if (motor != null && campManager != null)
+        {
+            if (retreatPhase == RetreatPhase.ToGate)
+            {
+                if (!motor.HasDestination && !motor.IsBlockedBySolidObstacle)
+                {
+                    motor.MoveTo(campManager.GetGatePosition(faction));
+                }
+            }
+            else if (!campManager.HasReachedCampCenter(transform.position, faction)
+                && !motor.HasDestination
+                && !motor.IsBlockedBySolidObstacle)
+            {
+                motor.MoveTo(campManager.GetCampCenter(faction));
+            }
+        }
+
+        if (Time.time >= nextRetreatDestinationRefreshTime && motor != null && !motor.IsBlockedBySolidObstacle)
         {
             nextRetreatDestinationRefreshTime = Time.time + retreatDestinationRefreshInterval;
-            MoveTowardCamp();
+            UpdateRetreatDestination();
         }
 
         if (Time.time >= invulnerableUntil && IsInterceptedByEnemy())
@@ -228,31 +513,95 @@ public class TroopCombat : MonoBehaviour
         {
             motor.Stop();
         }
-
-        if (currentHealth < maxHealth)
-        {
-            currentHealth = Mathf.Min(maxHealth, currentHealth + campRegenPerSecond * Time.deltaTime);
-            SyncTroopVisualsToHealth();
-        }
-
-        if (currentHealth >= maxHealth)
-        {
-            CompleteRegroup();
-        }
     }
 
-    private void MoveTowardCamp()
+    private void UpdateRetreatDestination()
     {
         if (motor == null)
         {
             return;
         }
 
-        Vector3 campPosition = RtsCampManager.Instance != null
-            ? RtsCampManager.Instance.GetCampPosition(faction)
-            : transform.position;
+        RtsCampManager campManager = RtsCampManager.Instance;
+        if (campManager == null)
+        {
+            return;
+        }
 
-        motor.MoveTo(campPosition);
+        Vector3 destination = retreatPhase == RetreatPhase.ToGate
+            ? campManager.GetGatePosition(faction)
+            : campManager.GetCampCenter(faction);
+
+        motor.MoveTo(destination);
+    }
+
+    private void UpdateTroopFacing()
+    {
+        if (troopVisuals.Count == 0)
+        {
+            return;
+        }
+
+        if (motor != null && motor.IsBlockedBySolidObstacle)
+        {
+            return;
+        }
+
+        Vector3 regimentDelta = transform.position - lastRegimentPosition;
+        lastRegimentPosition = transform.position;
+        regimentDelta.y = 0f;
+
+        Vector3 facingDirection = Vector3.zero;
+        if (regimentDelta.sqrMagnitude >= MinimumFacingMovementDistance * MinimumFacingMovementDistance)
+        {
+            facingDirection = regimentDelta.normalized;
+        }
+        else if (motor != null && motor.HasDestination)
+        {
+            facingDirection = motor.MoveDirection;
+            facingDirection.y = 0f;
+        }
+
+        if (facingDirection.sqrMagnitude < 0.0001f)
+        {
+            return;
+        }
+
+        ApplyFacingToVisualRoot(GetTroopFacingRotation(facingDirection));
+    }
+
+    private Transform GetTroopFacingRoot()
+    {
+        return troopVisualRoot != null ? troopVisualRoot : transform;
+    }
+
+    private void ApplyFacingToVisualRoot(Quaternion facing)
+    {
+        Transform facingRoot = GetTroopFacingRoot();
+        facingRoot.rotation = facing;
+
+        for (int i = 0; i < troopVisuals.Count; i++)
+        {
+            TroopVisualInstance troopVisual = troopVisuals[i];
+            if (troopVisual.Instance == null || !troopVisual.Instance.activeSelf)
+            {
+                continue;
+            }
+
+            troopVisual.Instance.transform.localRotation = Quaternion.identity;
+        }
+    }
+
+    private Quaternion GetTroopFacingRotation(Vector3 worldDirection)
+    {
+        worldDirection.y = 0f;
+        if (worldDirection.sqrMagnitude < 0.0001f)
+        {
+            return Quaternion.identity;
+        }
+
+        float yaw = Mathf.Atan2(worldDirection.x, worldDirection.z) * Mathf.Rad2Deg + troopFacingYawOffsetDegrees;
+        return Quaternion.Euler(0f, yaw, 0f);
     }
 
     private bool IsInterceptedByEnemy()
@@ -303,14 +652,20 @@ public class TroopCombat : MonoBehaviour
         invulnerableUntil = Time.time + retreatInvulnerabilityDuration;
         nextRetreatDestinationRefreshTime = 0f;
 
+        RtsCampManager campManager = RtsCampManager.Instance;
+        retreatPhase = campManager != null && campManager.HasGate(faction)
+            ? RetreatPhase.ToGate
+            : RetreatPhase.ToCamp;
+
         if (motor != null)
         {
             motor.CanReceiveCommands = false;
             motor.MoveSpeedMultiplier = retreatMoveSpeedMultiplier;
-            MoveTowardCamp();
+            UpdateRetreatDestination();
         }
 
         SyncTroopVisualsToHealth(forceMinimum: true);
+        SetFlagHolderDefeatedVisual();
     }
 
     private void EnterRegroup()
@@ -329,8 +684,14 @@ public class TroopCombat : MonoBehaviour
 
     private void CompleteRegroup()
     {
+        if (CurrentState != State.Regroup)
+        {
+            return;
+        }
+
         currentHealth = maxHealth;
         CurrentState = State.Idle;
+        RestoreFlagHolderVisual();
         SyncTroopVisualsToHealth();
 
         if (motor != null)
@@ -454,54 +815,76 @@ public class TroopCombat : MonoBehaviour
 
     private void EnsureTroopVisuals()
     {
-        if (troopPrefab == null || maxUnitCount <= 0)
+        if (maxUnitCount <= 0)
         {
             return;
         }
 
         Transform parent = troopVisualRoot != null ? troopVisualRoot : transform;
         bool layoutChanged = false;
+        bool wantsFlagHolder = flagHolderPrefab != null || defeatedFlagHolderPrefab != null;
 
-        while (troopVisuals.Count < maxUnitCount)
+        while (GetRegularTroopVisualCount() < maxUnitCount - (wantsFlagHolder ? 1 : 0))
         {
-            GameObject instance = Instantiate(troopPrefab);
-            instance.transform.SetParent(parent, true);
+            if (troopPrefab == null)
+            {
+                break;
+            }
+
+            GameObject instance = Instantiate(troopPrefab, parent);
             instance.name = troopPrefab.name + "_" + (troopVisuals.Count + 1);
-            ApplyTroopVisualScale(instance.transform);
+            ApplyTroopVisualScale(instance.transform, troopPrefabScale);
 
             troopVisuals.Add(new TroopVisualInstance
             {
                 Instance = instance,
-                SlotIndex = randomizeSpawnOrder ? troopVisuals.Count : troopVisuals.Count
+                SlotIndex = troopVisuals.Count,
+                IsFlagHolder = false
             });
 
             layoutChanged = true;
         }
 
-        while (troopVisuals.Count > maxUnitCount)
+        if (wantsFlagHolder && GetFlagHolderVisual() == null)
         {
-            int lastIndex = troopVisuals.Count - 1;
-            TroopVisualInstance troopVisual = troopVisuals[lastIndex];
-            troopVisuals.RemoveAt(lastIndex);
-
-            if (troopVisual != null && troopVisual.Instance != null)
+            GameObject flagPrefab = GetActiveFlagHolderPrefab();
+            if (flagPrefab != null)
             {
-                if (Application.isPlaying)
+                GameObject instance = Instantiate(flagPrefab, parent);
+                instance.name = flagPrefab.name + "_FlagHolder";
+                ApplyTroopVisualScale(instance.transform, flagHolderPrefabScale);
+
+                troopVisuals.Add(new TroopVisualInstance
                 {
-                    Destroy(troopVisual.Instance);
-                }
-                else
-                {
-                    DestroyImmediate(troopVisual.Instance);
-                }
+                    Instance = instance,
+                    SlotIndex = GetCenterSlotIndex(),
+                    IsFlagHolder = true
+                });
+
+                layoutChanged = true;
+            }
+        }
+
+        while (GetRegularTroopVisualCount() > maxUnitCount - (wantsFlagHolder ? 1 : 0))
+        {
+            int removeIndex = FindLastRegularTroopVisualIndex();
+            if (removeIndex < 0)
+            {
+                break;
             }
 
+            RemoveTroopVisualAt(removeIndex);
             layoutChanged = true;
         }
 
         if (randomizeSpawnOrder)
         {
             ShuffleTroopVisualSlots();
+            layoutChanged = true;
+        }
+        else
+        {
+            AssignFormationSlots();
             layoutChanged = true;
         }
 
@@ -511,25 +894,220 @@ public class TroopCombat : MonoBehaviour
         }
     }
 
-    private void ShuffleTroopVisualSlots()
+    private void AssignFormationSlots()
     {
+        int centerSlot = GetCenterSlotIndex();
+        int slotCursor = 0;
+        List<int> availableSlots = BuildNonCenterSlots();
+
         for (int i = 0; i < troopVisuals.Count; i++)
         {
-            int swapIndex = Random.Range(i, troopVisuals.Count);
-            if (swapIndex == i)
+            TroopVisualInstance troopVisual = troopVisuals[i];
+            if (troopVisual.IsFlagHolder)
             {
+                troopVisual.SlotIndex = centerSlot;
                 continue;
             }
 
-            TroopVisualInstance temp = troopVisuals[i];
-            troopVisuals[i] = troopVisuals[swapIndex];
-            troopVisuals[swapIndex] = temp;
+            if (slotCursor < availableSlots.Count)
+            {
+                troopVisual.SlotIndex = availableSlots[slotCursor++];
+            }
+        }
+    }
+
+    private List<int> BuildNonCenterSlots()
+    {
+        int centerSlot = GetCenterSlotIndex();
+        List<int> slots = new List<int>();
+        for (int slot = 0; slot < maxUnitCount; slot++)
+        {
+            if (slot != centerSlot)
+            {
+                slots.Add(slot);
+            }
         }
 
+        return slots;
+    }
+
+    private int GetFormationGridSize()
+    {
+        int gridSize = Mathf.RoundToInt(Mathf.Sqrt(maxUnitCount));
+        return Mathf.Max(1, gridSize);
+    }
+
+    private int GetCenterSlotIndex()
+    {
+        int gridSize = GetFormationGridSize();
+        int center = gridSize / 2;
+        return center * gridSize + center;
+    }
+
+    private TroopVisualInstance GetFlagHolderVisual()
+    {
         for (int i = 0; i < troopVisuals.Count; i++)
         {
-            troopVisuals[i].SlotIndex = i;
+            TroopVisualInstance troopVisual = troopVisuals[i];
+            if (troopVisual.IsFlagHolder)
+            {
+                return troopVisual;
+            }
         }
+
+        return null;
+    }
+
+    private int GetRegularTroopVisualCount()
+    {
+        int count = 0;
+        for (int i = 0; i < troopVisuals.Count; i++)
+        {
+            if (!troopVisuals[i].IsFlagHolder)
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    private int FindLastRegularTroopVisualIndex()
+    {
+        for (int i = troopVisuals.Count - 1; i >= 0; i--)
+        {
+            if (!troopVisuals[i].IsFlagHolder)
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    private void RemoveTroopVisualAt(int index)
+    {
+        TroopVisualInstance troopVisual = troopVisuals[index];
+        troopVisuals.RemoveAt(index);
+
+        if (troopVisual != null && troopVisual.Instance != null)
+        {
+            if (Application.isPlaying)
+            {
+                Destroy(troopVisual.Instance);
+            }
+            else
+            {
+                DestroyImmediate(troopVisual.Instance);
+            }
+        }
+    }
+
+    private GameObject GetActiveFlagHolderPrefab()
+    {
+        if (flagHolderShowingDefeated && defeatedFlagHolderPrefab != null)
+        {
+            return defeatedFlagHolderPrefab;
+        }
+
+        return flagHolderPrefab;
+    }
+
+    private void SetFlagHolderDefeatedVisual()
+    {
+        if (GetFlagHolderVisual() == null)
+        {
+            return;
+        }
+
+        flagHolderShowingDefeated = true;
+        RefreshFlagHolderVisual();
+    }
+
+    private void RestoreFlagHolderVisual()
+    {
+        if (GetFlagHolderVisual() == null)
+        {
+            return;
+        }
+
+        flagHolderShowingDefeated = false;
+        RefreshFlagHolderVisual();
+    }
+
+    private void RefreshFlagHolderVisual()
+    {
+        TroopVisualInstance flagHolder = GetFlagHolderVisual();
+        GameObject prefab = GetActiveFlagHolderPrefab();
+        if (flagHolder == null || prefab == null || flagHolder.Instance == null)
+        {
+            return;
+        }
+
+        Transform parent = flagHolder.Instance.transform.parent;
+        bool wasActive = flagHolder.Instance.activeSelf;
+        int slotIndex = flagHolder.SlotIndex;
+
+        if (Application.isPlaying)
+        {
+            Destroy(flagHolder.Instance);
+        }
+        else
+        {
+            DestroyImmediate(flagHolder.Instance);
+        }
+
+        GameObject instance = Instantiate(prefab, parent);
+        instance.name = prefab.name + "_FlagHolder";
+        ApplyTroopVisualScale(instance.transform, flagHolderPrefabScale);
+        instance.SetActive(wasActive);
+
+        flagHolder.Instance = instance;
+        flagHolder.IsFlagHolder = true;
+        flagHolder.SlotIndex = slotIndex;
+        ApplyTroopVisualFormation();
+    }
+
+    private void ShuffleTroopVisualSlots()
+    {
+        int centerSlot = GetCenterSlotIndex();
+        List<int> availableSlots = BuildNonCenterSlots();
+        for (int i = availableSlots.Count - 1; i > 0; i--)
+        {
+            int swapIndex = Random.Range(0, i + 1);
+            int temp = availableSlots[i];
+            availableSlots[i] = availableSlots[swapIndex];
+            availableSlots[swapIndex] = temp;
+        }
+
+        int slotCursor = 0;
+        for (int i = 0; i < troopVisuals.Count; i++)
+        {
+            TroopVisualInstance troopVisual = troopVisuals[i];
+            if (troopVisual.IsFlagHolder)
+            {
+                troopVisual.SlotIndex = centerSlot;
+                continue;
+            }
+
+            if (slotCursor < availableSlots.Count)
+            {
+                troopVisual.SlotIndex = availableSlots[slotCursor++];
+            }
+        }
+    }
+
+    private int GetTargetActiveVisualCount(float healthRatio)
+    {
+        bool hasFlagHolder = GetFlagHolderVisual() != null;
+        int maxRegularTroops = maxUnitCount - (hasFlagHolder ? 1 : 0);
+        int minimumRegularTroops = Mathf.Clamp(Mathf.RoundToInt(maxRegularTroops * defeatedUnitPercentage), 0, maxRegularTroops);
+        int targetRegularTroops = Mathf.Clamp(
+            Mathf.RoundToInt(Mathf.Lerp(minimumRegularTroops, maxRegularTroops, healthRatio)),
+            minimumRegularTroops,
+            maxRegularTroops);
+
+        return targetRegularTroops + (hasFlagHolder ? 1 : 0);
     }
 
     private void ApplyCasualtyLoss()
@@ -544,8 +1122,7 @@ public class TroopCombat : MonoBehaviour
             }
         }
 
-        int minimumUnitCount = Mathf.Clamp(Mathf.RoundToInt(maxUnitCount * defeatedUnitPercentage), 0, maxUnitCount);
-        int targetActiveCount = Mathf.Clamp(Mathf.RoundToInt(Mathf.Lerp(minimumUnitCount, maxUnitCount, HealthNormalized)), minimumUnitCount, maxUnitCount);
+        int targetActiveCount = GetTargetActiveVisualCount(HealthNormalized);
 
         if (activeCount <= targetActiveCount)
         {
@@ -557,6 +1134,11 @@ public class TroopCombat : MonoBehaviour
         for (int i = 0; i < troopVisuals.Count; i++)
         {
             TroopVisualInstance troopVisual = troopVisuals[i];
+            if (troopVisual.IsFlagHolder)
+            {
+                continue;
+            }
+
             if (troopVisual.Instance != null && troopVisual.Instance.activeSelf)
             {
                 candidates.Add(i);
@@ -579,6 +1161,7 @@ public class TroopCombat : MonoBehaviour
         }
 
         activeTroopVisualCount = activeCount - lossesNeeded;
+        EnsureFlagHolderActive();
     }
 
     private void SyncTroopVisualsToHealth(bool forceMinimum = false)
@@ -588,9 +1171,8 @@ public class TroopCombat : MonoBehaviour
             return;
         }
 
-        int minimumUnitCount = Mathf.Clamp(Mathf.RoundToInt(maxUnitCount * defeatedUnitPercentage), 0, maxUnitCount);
         float healthRatio = forceMinimum ? 0f : HealthNormalized;
-        int targetActiveCount = Mathf.Clamp(Mathf.RoundToInt(Mathf.Lerp(minimumUnitCount, maxUnitCount, healthRatio)), minimumUnitCount, maxUnitCount);
+        int targetActiveCount = GetTargetActiveVisualCount(healthRatio);
 
         int activeCount = 0;
         for (int i = 0; i < troopVisuals.Count; i++)
@@ -607,6 +1189,11 @@ public class TroopCombat : MonoBehaviour
             for (int i = 0; i < troopVisuals.Count && activeCount < targetActiveCount; i++)
             {
                 TroopVisualInstance troopVisual = troopVisuals[i];
+                if (troopVisual.IsFlagHolder)
+                {
+                    continue;
+                }
+
                 if (troopVisual.Instance != null && !troopVisual.Instance.activeSelf)
                 {
                     troopVisual.Instance.SetActive(true);
@@ -622,6 +1209,11 @@ public class TroopCombat : MonoBehaviour
             for (int i = 0; i < troopVisuals.Count; i++)
             {
                 TroopVisualInstance troopVisual = troopVisuals[i];
+                if (troopVisual.IsFlagHolder)
+                {
+                    continue;
+                }
+
                 if (troopVisual.Instance != null && troopVisual.Instance.activeSelf)
                 {
                     candidates.Add(i);
@@ -645,6 +1237,17 @@ public class TroopCombat : MonoBehaviour
         }
 
         activeTroopVisualCount = targetActiveCount;
+        EnsureFlagHolderActive();
+    }
+
+    private void EnsureFlagHolderActive()
+    {
+        TroopVisualInstance flagHolder = GetFlagHolderVisual();
+        if (flagHolder != null && flagHolder.Instance != null && !flagHolder.Instance.activeSelf)
+        {
+            flagHolder.Instance.SetActive(true);
+            ApplyTroopVisualFormation();
+        }
     }
 
     private void ApplyTroopVisualFormation()
@@ -654,8 +1257,9 @@ public class TroopCombat : MonoBehaviour
             return;
         }
 
-        int gridColumns = Mathf.Max(1, Mathf.CeilToInt(Mathf.Sqrt(maxUnitCount)));
-        int gridRows = Mathf.Max(1, Mathf.CeilToInt((float)maxUnitCount / gridColumns));
+        int gridSize = GetFormationGridSize();
+        int gridColumns = gridSize;
+        int gridRows = gridSize;
         Vector2 gridCenter = new Vector2((gridColumns - 1) * 0.5f, (gridRows - 1) * 0.5f);
         float jitterAmount = formationCellSpacing * formationJitterFraction;
 
@@ -674,8 +1278,13 @@ public class TroopCombat : MonoBehaviour
 
             Vector3 localPosition = GetFormationPosition(troopVisual.SlotIndex, gridColumns, gridRows, gridCenter, jitterAmount);
             ApplyTroopVisualLocalPosition(troopVisual.Instance.transform, localPosition);
-            troopVisual.Instance.transform.localRotation = Quaternion.identity;
-            ApplyTroopVisualScale(troopVisual.Instance.transform);
+            if (!troopVisual.IsFlagHolder)
+            {
+                troopVisual.Instance.transform.localRotation = Quaternion.identity;
+            }
+
+            Vector3 visualScale = troopVisual.IsFlagHolder ? flagHolderPrefabScale : troopPrefabScale;
+            ApplyTroopVisualScale(troopVisual.Instance.transform, visualScale);
         }
     }
 
@@ -694,11 +1303,11 @@ public class TroopCombat : MonoBehaviour
                 continue;
             }
 
-            ApplyTroopVisualScale(troopVisual.Instance.transform);
+            ApplyTroopVisualScale(troopVisual.Instance.transform, troopVisual.IsFlagHolder ? flagHolderPrefabScale : troopPrefabScale);
         }
     }
 
-    private void ApplyTroopVisualScale(Transform visualTransform)
+    private void ApplyTroopVisualScale(Transform visualTransform, Vector3 desiredScale)
     {
         if (visualTransform == null || !keepTroopVisualScaleIndependent)
         {
@@ -708,15 +1317,20 @@ public class TroopCombat : MonoBehaviour
         Transform parent = visualTransform.parent;
         if (parent == null)
         {
-            visualTransform.localScale = troopPrefabScale;
+            visualTransform.localScale = desiredScale;
             return;
         }
 
-        Vector3 parentScale = parent.lossyScale;
+        Vector3 parentScale = parent.localScale;
         visualTransform.localScale = new Vector3(
-            SafeDivide(troopPrefabScale.x, parentScale.x),
-            SafeDivide(troopPrefabScale.y, parentScale.y),
-            SafeDivide(troopPrefabScale.z, parentScale.z));
+            SafeDivide(desiredScale.x, parentScale.x),
+            SafeDivide(desiredScale.y, parentScale.y),
+            SafeDivide(desiredScale.z, parentScale.z));
+    }
+
+    private void ApplyTroopVisualScale(Transform visualTransform)
+    {
+        ApplyTroopVisualScale(visualTransform, troopPrefabScale);
     }
 
     private void ApplyTroopVisualLocalPosition(Transform visualTransform, Vector3 desiredWorldOffset)
@@ -733,7 +1347,7 @@ public class TroopCombat : MonoBehaviour
             return;
         }
 
-        Vector3 parentScale = parent.lossyScale;
+        Vector3 parentScale = parent.localScale;
         visualTransform.localPosition = new Vector3(
             SafeDivide(desiredWorldOffset.x, parentScale.x),
             SafeDivide(desiredWorldOffset.y, parentScale.y),
@@ -749,6 +1363,18 @@ public class TroopCombat : MonoBehaviour
         }
 
         troopPrefabScale = troopPrefab.transform.localScale;
+    }
+
+    private void CacheFlagHolderPrefabScale()
+    {
+        GameObject sourcePrefab = flagHolderPrefab != null ? flagHolderPrefab : defeatedFlagHolderPrefab;
+        if (sourcePrefab == null)
+        {
+            flagHolderPrefabScale = troopPrefabScale;
+            return;
+        }
+
+        flagHolderPrefabScale = sourcePrefab.transform.localScale;
     }
 
     private static float SafeDivide(float numerator, float denominator)
@@ -769,7 +1395,9 @@ public class TroopCombat : MonoBehaviour
         float x = (column - gridCenter.x) * formationCellSpacing;
         float z = (gridCenter.y - row) * formationCellSpacing;
 
-        Vector2 jitter = GetDeterministicJitter(slotIndex) * jitterAmount;
+        Vector2 jitter = slotIndex == GetCenterSlotIndex()
+            ? Vector2.zero
+            : GetDeterministicJitter(slotIndex) * jitterAmount;
         Vector3 localPosition = new Vector3(x + jitter.x, 0f, z + jitter.y);
 
         float halfWidth = (gridColumns - 1) * 0.5f * formationCellSpacing;
@@ -914,8 +1542,11 @@ public class TroopCombat : MonoBehaviour
         float clampedMaxHealth = Mathf.Max(1f, maxHealth);
         float healthPercent = Mathf.Clamp01(currentHealth / clampedMaxHealth) * 100f;
         string targetName = currentTarget != null ? currentTarget.name : "none";
+        string moveSpeedLabel = CurrentState == State.Fight
+            ? " | Move " + (CombatMoveSpeedMultiplier * 100f).ToString("F0") + "%"
+            : string.Empty;
 
-        return faction + " | " + CurrentState + " | HP " + currentHealth.ToString("F0") + "/" + clampedMaxHealth.ToString("F0") + " (" + healthPercent.ToString("F0") + "%)" + " | Units " + activeTroopVisualCount + "/" + maxUnitCount + " (min " + MinimumUnitCountAtDefeat + ")" + " | ATK " + attackDamage.ToString("F0") + " | RNG " + attackRange.ToString("F1") + " | Target " + targetName;
+        return faction + " | " + CurrentState + " | HP " + currentHealth.ToString("F0") + "/" + clampedMaxHealth.ToString("F0") + " (" + healthPercent.ToString("F0") + "%)" + " | Units " + activeTroopVisualCount + "/" + maxUnitCount + " (min " + MinimumUnitCountAtDefeat + ")" + " | ATK " + attackDamage.ToString("F0") + " | RNG " + attackRange.ToString("F1") + " | Target " + targetName + moveSpeedLabel;
     }
 
     [System.Serializable]
@@ -923,5 +1554,6 @@ public class TroopCombat : MonoBehaviour
     {
         public GameObject Instance;
         public int SlotIndex;
+        public bool IsFlagHolder;
     }
 }
