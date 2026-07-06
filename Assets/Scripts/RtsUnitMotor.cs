@@ -16,11 +16,14 @@ public class RtsUnitMotor : MonoBehaviour
     [SerializeField] private Vector3 fallbackCastHalfExtents = new Vector3(1f, 0.5f, 1f);
     [SerializeField, Min(0f)] private float obstacleSkin = 0.05f;
     [SerializeField] private bool stopImmediatelyOnWallHit = true;
+    [SerializeField, Min(0f)] private float wallEscapeGraceDuration = 1.25f;
+    [SerializeField, Range(0f, 1f)] private float wallEscapeDirectionThreshold = 0.25f;
     [SerializeField] private bool drawCollisionDebug;
 
     private Collider[] ownColliders;
     private bool hasDestination;
     private Vector3 destination;
+    private float wallEscapeGraceEndTime;
 
     public bool IsCommandUnit => isCommandUnit;
     public bool CanReceiveCommands { get; set; } = true;
@@ -51,6 +54,7 @@ public class RtsUnitMotor : MonoBehaviour
     {
         hasDestination = false;
         IsBlockedBySolidObstacle = false;
+        wallEscapeGraceEndTime = 0f;
     }
 
     private void Update()
@@ -58,12 +62,7 @@ public class RtsUnitMotor : MonoBehaviour
         if (!hasDestination)
         {
             IsBlockedBySolidObstacle = false;
-            return;
-        }
-
-        if (solidObstacleLayers != 0 && IsCurrentlyOverlappingObstacle())
-        {
-            StopOnWall();
+            wallEscapeGraceEndTime = 0f;
             return;
         }
 
@@ -74,6 +73,7 @@ public class RtsUnitMotor : MonoBehaviour
         {
             hasDestination = false;
             IsBlockedBySolidObstacle = false;
+            wallEscapeGraceEndTime = 0f;
             return;
         }
 
@@ -83,18 +83,54 @@ public class RtsUnitMotor : MonoBehaviour
             MoveDirection = direction;
         }
 
+        bool isOverlapping = solidObstacleLayers != 0 && IsCurrentlyOverlappingObstacle();
+        bool movingAwayFromWall = isOverlapping && IsMovingAwayFromObstacle(direction);
+
+        if (isOverlapping)
+        {
+            if (movingAwayFromWall)
+            {
+                wallEscapeGraceEndTime = Time.time + wallEscapeGraceDuration;
+            }
+            else if (!IsInWallEscapeGrace)
+            {
+                StopOnWall();
+                return;
+            }
+            else
+            {
+                wallEscapeGraceEndTime = 0f;
+                StopOnWall();
+                return;
+            }
+        }
+        else
+        {
+            wallEscapeGraceEndTime = 0f;
+        }
+
         float stepDistance = moveSpeed * Mathf.Max(0f, MoveSpeedMultiplier) * Time.deltaTime;
         Vector3 desiredDelta = direction * stepDistance;
+        bool useWallEscapeGrace = isOverlapping && movingAwayFromWall && IsInWallEscapeGrace;
 
-        if (!TryGetAllowedDelta(desiredDelta, out Vector3 allowedDelta))
+        if (useWallEscapeGrace)
+        {
+            transform.position += desiredDelta;
+            IsBlockedBySolidObstacle = false;
+        }
+        else if (!TryGetAllowedDelta(desiredDelta, out Vector3 allowedDelta))
         {
             StopOnWall();
             return;
         }
-
-        if (allowedDelta.sqrMagnitude > 0f)
+        else
         {
-            transform.position += allowedDelta;
+            if (allowedDelta.sqrMagnitude > 0f)
+            {
+                transform.position += allowedDelta;
+            }
+
+            IsBlockedBySolidObstacle = false;
         }
 
         Vector3 remaining = destination - transform.position;
@@ -104,8 +140,11 @@ public class RtsUnitMotor : MonoBehaviour
             transform.position = new Vector3(destination.x, transform.position.y, destination.z);
             hasDestination = false;
             IsBlockedBySolidObstacle = false;
+            wallEscapeGraceEndTime = 0f;
         }
     }
+
+    private bool IsInWallEscapeGrace => wallEscapeGraceDuration > 0f && Time.time < wallEscapeGraceEndTime;
 
     private void StopOnWall()
     {
@@ -164,6 +203,87 @@ public class RtsUnitMotor : MonoBehaviour
     {
         GetMovementCastShape(out Vector3 castCenter, out Vector3 halfExtents);
         return IsOverlappingSolidObstacle(castCenter, halfExtents);
+    }
+
+    private bool IsMovingAwayFromObstacle(Vector3 moveDirection)
+    {
+        if (!TryGetOverlappingEscapeDirection(out Vector3 escapeDirection))
+        {
+            return false;
+        }
+
+        moveDirection.y = 0f;
+        if (moveDirection.sqrMagnitude < 0.0001f)
+        {
+            return false;
+        }
+
+        return Vector3.Dot(moveDirection.normalized, escapeDirection) >= wallEscapeDirectionThreshold;
+    }
+
+    private bool TryGetOverlappingEscapeDirection(out Vector3 escapeDirection)
+    {
+        escapeDirection = Vector3.zero;
+        GetMovementCastShape(out Vector3 castCenter, out Vector3 halfExtents);
+
+        Collider[] overlaps = Physics.OverlapBox(
+            castCenter,
+            halfExtents,
+            Quaternion.identity,
+            solidObstacleLayers,
+            QueryTriggerInteraction.Ignore);
+
+        if (overlaps == null || overlaps.Length == 0)
+        {
+            return false;
+        }
+
+        Vector3 accumulatedEscape = Vector3.zero;
+
+        for (int i = 0; i < overlaps.Length; i++)
+        {
+            Collider overlap = overlaps[i];
+            if (overlap == null || IsOwnCollider(overlap))
+            {
+                continue;
+            }
+
+            if (movementBoundsCollider != null
+                && Physics.ComputePenetration(
+                    movementBoundsCollider,
+                    movementBoundsCollider.transform.position,
+                    movementBoundsCollider.transform.rotation,
+                    overlap,
+                    overlap.transform.position,
+                    overlap.transform.rotation,
+                    out Vector3 separationDirection,
+                    out float separationDistance))
+            {
+                Vector3 flatSeparation = separationDirection;
+                flatSeparation.y = 0f;
+                if (flatSeparation.sqrMagnitude > 0.0001f)
+                {
+                    accumulatedEscape += flatSeparation.normalized * separationDistance;
+                    continue;
+                }
+            }
+
+            Vector3 closestPoint = overlap.ClosestPoint(castCenter);
+            Vector3 awayFromObstacle = castCenter - closestPoint;
+            awayFromObstacle.y = 0f;
+            if (awayFromObstacle.sqrMagnitude > 0.0001f)
+            {
+                accumulatedEscape += awayFromObstacle;
+            }
+        }
+
+        if (accumulatedEscape.sqrMagnitude < 0.0001f)
+        {
+            return false;
+        }
+
+        escapeDirection = accumulatedEscape.normalized;
+        return true;
     }
 
     private float GetNearestObstacleDistance(Vector3 castCenter, Vector3 halfExtents, Vector3 direction, float maxDistance)

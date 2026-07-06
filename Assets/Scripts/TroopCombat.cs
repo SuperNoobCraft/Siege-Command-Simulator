@@ -38,10 +38,33 @@ public class TroopCombat : MonoBehaviour
     [SerializeField, Min(1f)] private float retreatMoveSpeedMultiplier = 1.75f;
     [SerializeField, Min(0.05f)] private float retreatDestinationRefreshInterval = 0.5f;
 
-    [Header("Combat")]
+    [Header("Melee Combat")]
+    [Tooltip("Close-quarters fallback for ranged units. Infantry uses this as their primary attack.")]
     [SerializeField] private float attackDamage = 10f;
+    [Tooltip("Maximum distance for melee attacks. Ranged units cannot use ranged attacks at or inside this distance.")]
     [SerializeField] private float attackRange = 2.5f;
     [SerializeField] private float attackCooldown = 1.25f;
+
+    [Header("Ranged Combat")]
+    [SerializeField] private bool hasRangedAttack = false;
+    [Tooltip("Only used while the target is outside melee range and within ranged attack range.")]
+    [SerializeField] private float rangedAttackDamage = 8f;
+    [SerializeField] private float rangedAttackRange = 12f;
+    [SerializeField] private float rangedAttackCooldown = 1.5f;
+
+    [Header("Ranged Vulnerability")]
+    [SerializeField] private bool canBeKilledByRangedAttackWhileRetreating = false;
+
+    [Header("Ranged Attack VFX")]
+    [SerializeField] private GameObject rangedProjectilePrefab;
+    [SerializeField, Min(0.1f)] private float rangedProjectileSpeed = 18f;
+    [SerializeField, Range(0.05f, 1f)] private float rangedProjectileFrequency = 0.35f;
+    [SerializeField, Min(0f)] private float rangedProjectileArcHeight = 2f;
+    [SerializeField, Range(0f, 1f)] private float rangedProjectileDispersion = 0.35f;
+    [SerializeField, Min(0f)] private float rangedProjectileMaxSpreadRadius = 2.5f;
+    [SerializeField, Min(0f)] private float rangedProjectileLaunchHeight = 1.1f;
+
+    [Header("Combat Targeting")]
     [SerializeField] private float targetScanInterval = 0.2f;
     [SerializeField] private LayerMask targetLayers = ~0;
     [SerializeField] private bool faceTargetWhileFighting = true;
@@ -81,7 +104,8 @@ public class TroopCombat : MonoBehaviour
 
     private enum RetreatPhase
     {
-        ToGate,
+        ToGateOutside,
+        ToGateInside,
         ToCamp
     }
 
@@ -93,7 +117,7 @@ public class TroopCombat : MonoBehaviour
     private float nextRetreatDestinationRefreshTime;
     private float invulnerableUntil;
     private bool isPermanentlyEliminated;
-    private RetreatPhase retreatPhase = RetreatPhase.ToGate;
+    private RetreatPhase retreatPhase = RetreatPhase.ToGateOutside;
     private Vector3 troopPrefabScale = Vector3.one;
     private Vector3 flagHolderPrefabScale = Vector3.one;
     private bool flagHolderShowingDefeated;
@@ -107,15 +131,26 @@ public class TroopCombat : MonoBehaviour
     public State CurrentState { get; private set; } = State.Idle;
     public float CurrentHealth => currentHealth;
     public float MaxHealth => maxHealth;
-    public float AttackRange => attackRange;
+    public float AttackRange => HasRangedAttack ? Mathf.Max(attackRange, rangedAttackRange) : attackRange;
+    public float MeleeAttackRange => attackRange;
+    public float RangedAttackRange => HasRangedAttack ? rangedAttackRange : 0f;
+    public bool HasRangedAttack => hasRangedAttack && rangedAttackRange > 0f;
+    public bool CanBeKilledByRangedAttackWhileRetreating => canBeKilledByRangedAttackWhileRetreating;
+    public TroopCombat CurrentTarget => currentTarget;
     public float HealthNormalized => Mathf.Clamp01(currentHealth / Mathf.Max(1f, maxHealth));
     public int MaxUnitCount => maxUnitCount;
     public int ActiveUnitCount => activeTroopVisualCount;
     public int MinimumUnitCountAtDefeat => Mathf.RoundToInt(maxUnitCount * defeatedUnitPercentage);
     public bool IsCommandable => motor == null || motor.CanReceiveCommands;
     public bool IsRetreating => CurrentState == State.Retreat;
+    public bool HoldsInCampUntilNextWave { get; private set; }
     public bool IsRegrouping => CurrentState == State.Regroup;
     public float CombatMoveSpeedMultiplier => GetCombatMoveSpeedMultiplier();
+
+    public void SetHoldInCampUntilNextWave(bool holdInCamp)
+    {
+        HoldsInCampUntilNextWave = holdInCamp;
+    }
 
     private void Awake()
     {
@@ -142,9 +177,9 @@ public class TroopCombat : MonoBehaviour
         ApplyTroopVisualFormation();
         lastRegimentPosition = transform.position;
 
+        EnsureFormationRootUpright();
         if (troopVisualRoot != null)
         {
-            transform.rotation = Quaternion.identity;
             troopVisualRoot.localScale = Vector3.one;
         }
     }
@@ -155,6 +190,20 @@ public class TroopCombat : MonoBehaviour
         attackDamage = Mathf.Max(0f, attackDamage);
         attackRange = Mathf.Max(0f, attackRange);
         attackCooldown = Mathf.Max(0.05f, attackCooldown);
+        rangedAttackDamage = Mathf.Max(0f, rangedAttackDamage);
+        rangedAttackRange = Mathf.Max(0f, rangedAttackRange);
+        rangedAttackCooldown = Mathf.Max(0.05f, rangedAttackCooldown);
+        if (hasRangedAttack)
+        {
+            rangedAttackRange = Mathf.Max(rangedAttackRange, attackRange + 0.01f);
+        }
+
+        rangedProjectileSpeed = Mathf.Max(0.1f, rangedProjectileSpeed);
+        rangedProjectileFrequency = Mathf.Clamp(rangedProjectileFrequency, 0.05f, 1f);
+        rangedProjectileArcHeight = Mathf.Max(0f, rangedProjectileArcHeight);
+        rangedProjectileDispersion = Mathf.Clamp01(rangedProjectileDispersion);
+        rangedProjectileMaxSpreadRadius = Mathf.Max(0f, rangedProjectileMaxSpreadRadius);
+        rangedProjectileLaunchHeight = Mathf.Max(0f, rangedProjectileLaunchHeight);
         targetScanInterval = Mathf.Max(0.05f, targetScanInterval);
         maxUnitCount = Mathf.Max(0, maxUnitCount);
         defeatedUnitPercentage = Mathf.Clamp01(defeatedUnitPercentage);
@@ -265,7 +314,7 @@ public class TroopCombat : MonoBehaviour
             return currentTarget != null ? 1f : 0f;
         }
 
-        float scanRadius = Mathf.Max(attackRange, Mathf.Max(selfHalfExtents.x, selfHalfExtents.y));
+        float scanRadius = Mathf.Max(GetTargetAcquisitionRange(), Mathf.Max(selfHalfExtents.x, selfHalfExtents.y));
         Collider[] hits = Physics.OverlapSphere(transform.position, scanRadius, targetLayers, QueryTriggerInteraction.Ignore);
         if (hits == null || hits.Length == 0)
         {
@@ -432,11 +481,7 @@ public class TroopCombat : MonoBehaviour
             return;
         }
 
-        float rangeSqr = attackRange * attackRange;
-        Vector3 toTarget = currentTarget.transform.position - transform.position;
-        toTarget.y = 0f;
-
-        if (toTarget.sqrMagnitude > rangeSqr)
+        if (!TryGetAttackProfileForTarget(currentTarget, out AttackProfile attackProfile))
         {
             currentTarget = null;
             CurrentState = State.Idle;
@@ -444,11 +489,14 @@ public class TroopCombat : MonoBehaviour
             return;
         }
 
+        Vector3 toTarget = currentTarget.transform.position - transform.position;
+        toTarget.y = 0f;
+
         CurrentState = State.Fight;
 
         if (faceTargetWhileFighting && toTarget.sqrMagnitude > 0.0001f)
         {
-            ApplyFacingToVisualRoot(GetTroopFacingRotation(toTarget.normalized));
+            ApplyFacingToTroopVisuals(GetTroopFacingRotation(toTarget.normalized));
         }
 
         if (Time.time < nextAttackTime)
@@ -456,8 +504,86 @@ public class TroopCombat : MonoBehaviour
             return;
         }
 
-        nextAttackTime = Time.time + Mathf.Max(0.05f, attackCooldown);
-        currentTarget.TakeDamage(attackDamage, this);
+        nextAttackTime = Time.time + Mathf.Max(0.05f, attackProfile.Cooldown);
+        if (attackProfile.IsRanged)
+        {
+            SpawnRangedAttackVolley(currentTarget);
+        }
+
+        currentTarget.TakeDamage(attackProfile.Damage, this, attackProfile.IsRanged);
+    }
+
+    private void SpawnRangedAttackVolley(TroopCombat target)
+    {
+        if (rangedProjectilePrefab == null || target == null)
+        {
+            return;
+        }
+
+        int arrowCount = Mathf.Max(1, Mathf.RoundToInt(activeTroopVisualCount * rangedProjectileFrequency));
+        List<Vector3> launchPoints = GetRangedLaunchPoints(arrowCount);
+        Vector3 targetCenter = target.transform.position;
+        float spreadRadius = rangedProjectileDispersion * rangedProjectileMaxSpreadRadius;
+
+        for (int i = 0; i < launchPoints.Count; i++)
+        {
+            Vector2 impactOffset = Random.insideUnitCircle * spreadRadius;
+            Vector3 impactPoint = new Vector3(
+                targetCenter.x + impactOffset.x,
+                targetCenter.y,
+                targetCenter.z + impactOffset.y);
+
+            Vector3 launchPoint = launchPoints[i];
+            launchPoint.y += rangedProjectileLaunchHeight;
+
+            TroopRangedProjectile.Launch(
+                rangedProjectilePrefab,
+                launchPoint,
+                impactPoint,
+                rangedProjectileSpeed,
+                rangedProjectileArcHeight);
+        }
+    }
+
+    private List<Vector3> GetRangedLaunchPoints(int desiredCount)
+    {
+        List<Vector3> availablePoints = new List<Vector3>();
+        for (int i = 0; i < troopVisuals.Count; i++)
+        {
+            TroopVisualInstance troopVisual = troopVisuals[i];
+            if (troopVisual.IsFlagHolder || troopVisual.Instance == null || !troopVisual.Instance.activeSelf)
+            {
+                continue;
+            }
+
+            availablePoints.Add(troopVisual.Instance.transform.position);
+        }
+
+        if (availablePoints.Count == 0)
+        {
+            availablePoints.Add(transform.position);
+        }
+
+        ShuffleLaunchPoints(availablePoints);
+
+        List<Vector3> selectedPoints = new List<Vector3>(desiredCount);
+        for (int i = 0; i < desiredCount; i++)
+        {
+            selectedPoints.Add(availablePoints[i % availablePoints.Count]);
+        }
+
+        return selectedPoints;
+    }
+
+    private static void ShuffleLaunchPoints(List<Vector3> points)
+    {
+        for (int i = points.Count - 1; i > 0; i--)
+        {
+            int swapIndex = Random.Range(0, i + 1);
+            Vector3 temp = points[i];
+            points[i] = points[swapIndex];
+            points[swapIndex] = temp;
+        }
     }
 
     private void UpdateRetreat()
@@ -470,7 +596,17 @@ public class TroopCombat : MonoBehaviour
             return;
         }
 
-        if (campManager != null && retreatPhase == RetreatPhase.ToGate && campManager.IsAtGate(transform.position, faction))
+        if (campManager != null && retreatPhase == RetreatPhase.ToGateOutside && campManager.IsAtGateOutside(transform.position, faction))
+        {
+            retreatPhase = ShouldUseGateInsideWaypoint(campManager)
+                ? RetreatPhase.ToGateInside
+                : RetreatPhase.ToCamp;
+            if (motor != null)
+            {
+                motor.MoveTo(GetRetreatDestination(campManager));
+            }
+        }
+        else if (campManager != null && retreatPhase == RetreatPhase.ToGateInside && campManager.IsAtGateInside(transform.position, faction))
         {
             retreatPhase = RetreatPhase.ToCamp;
             if (motor != null)
@@ -480,11 +616,11 @@ public class TroopCombat : MonoBehaviour
         }
         else if (motor != null && campManager != null)
         {
-            if (retreatPhase == RetreatPhase.ToGate)
+            if (retreatPhase == RetreatPhase.ToGateOutside || retreatPhase == RetreatPhase.ToGateInside)
             {
                 if (!motor.HasDestination && !motor.IsBlockedBySolidObstacle)
                 {
-                    motor.MoveTo(campManager.GetGatePosition(faction));
+                    motor.MoveTo(GetRetreatDestination(campManager));
                 }
             }
             else if (!campManager.HasReachedCampCenter(transform.position, faction)
@@ -528,11 +664,32 @@ public class TroopCombat : MonoBehaviour
             return;
         }
 
-        Vector3 destination = retreatPhase == RetreatPhase.ToGate
-            ? campManager.GetGatePosition(faction)
-            : campManager.GetCampCenter(faction);
+        motor.MoveTo(GetRetreatDestination(campManager));
+    }
 
-        motor.MoveTo(destination);
+    private Vector3 GetRetreatDestination(RtsCampManager campManager)
+    {
+        switch (retreatPhase)
+        {
+            case RetreatPhase.ToGateOutside:
+                return campManager.GetGateOutsidePosition(faction);
+            case RetreatPhase.ToGateInside:
+                return campManager.GetGateInsidePosition(faction);
+            default:
+                return campManager.GetCampCenter(faction);
+        }
+    }
+
+    private bool ShouldUseGateInsideWaypoint(RtsCampManager campManager)
+    {
+        if (campManager == null)
+        {
+            return false;
+        }
+
+        return faction == Faction.Friendly
+            ? campManager.FriendlyGateInside != null
+            : campManager.EnemyGateInside != null;
     }
 
     private void UpdateTroopFacing()
@@ -567,18 +724,21 @@ public class TroopCombat : MonoBehaviour
             return;
         }
 
-        ApplyFacingToVisualRoot(GetTroopFacingRotation(facingDirection));
+        ApplyFacingToTroopVisuals(GetTroopFacingRotation(facingDirection));
     }
 
-    private Transform GetTroopFacingRoot()
+    private void EnsureFormationRootUpright()
     {
-        return troopVisualRoot != null ? troopVisualRoot : transform;
+        transform.rotation = Quaternion.identity;
+        if (troopVisualRoot != null)
+        {
+            troopVisualRoot.localRotation = Quaternion.identity;
+        }
     }
 
-    private void ApplyFacingToVisualRoot(Quaternion facing)
+    private void ApplyFacingToTroopVisuals(Quaternion facing)
     {
-        Transform facingRoot = GetTroopFacingRoot();
-        facingRoot.rotation = facing;
+        EnsureFormationRootUpright();
 
         for (int i = 0; i < troopVisuals.Count; i++)
         {
@@ -588,7 +748,7 @@ public class TroopCombat : MonoBehaviour
                 continue;
             }
 
-            troopVisual.Instance.transform.localRotation = Quaternion.identity;
+            troopVisual.Instance.transform.localRotation = facing;
         }
     }
 
@@ -606,7 +766,7 @@ public class TroopCombat : MonoBehaviour
 
     private bool IsInterceptedByEnemy()
     {
-        float scanRadius = Mathf.Max(attackRange, 8f);
+        float scanRadius = Mathf.Max(GetTargetAcquisitionRange(), 8f);
         Collider[] hits = Physics.OverlapSphere(transform.position, scanRadius, targetLayers, QueryTriggerInteraction.Ignore);
         if (hits == null || hits.Length == 0)
         {
@@ -632,16 +792,29 @@ public class TroopCombat : MonoBehaviour
                 continue;
             }
 
-            Vector3 offset = transform.position - enemy.transform.position;
-            offset.y = 0f;
-            float enemyRange = enemy.attackRange;
-            if (offset.sqrMagnitude <= enemyRange * enemyRange)
+            float interceptRange = GetRetreatInterceptRangeFrom(enemy);
+            if (GetHorizontalDistance(transform.position, enemy.transform.position) <= interceptRange)
             {
                 return true;
             }
         }
 
         return false;
+    }
+
+    private float GetRetreatInterceptRangeFrom(TroopCombat enemy)
+    {
+        if (enemy == null)
+        {
+            return 0f;
+        }
+
+        if (!canBeKilledByRangedAttackWhileRetreating)
+        {
+            return enemy.MeleeAttackRange;
+        }
+
+        return enemy.AttackRange;
     }
 
     private void EnterRetreat()
@@ -654,7 +827,7 @@ public class TroopCombat : MonoBehaviour
 
         RtsCampManager campManager = RtsCampManager.Instance;
         retreatPhase = campManager != null && campManager.HasGate(faction)
-            ? RetreatPhase.ToGate
+            ? RetreatPhase.ToGateOutside
             : RetreatPhase.ToCamp;
 
         if (motor != null)
@@ -696,12 +869,17 @@ public class TroopCombat : MonoBehaviour
 
         if (motor != null)
         {
-            motor.CanReceiveCommands = motor.IsCommandUnit;
+            motor.CanReceiveCommands = faction == Faction.Friendly && motor.IsCommandUnit;
             motor.MoveSpeedMultiplier = 1f;
+        }
+
+        if (faction == Faction.Enemy)
+        {
+            SetHoldInCampUntilNextWave(true);
         }
     }
 
-    public void TakeDamage(float amount, TroopCombat attacker = null)
+    public void TakeDamage(float amount, TroopCombat attacker = null, bool isRangedAttack = false)
     {
         if (CurrentState == State.Dead)
         {
@@ -716,6 +894,16 @@ public class TroopCombat : MonoBehaviour
         if (CurrentState == State.Retreat)
         {
             if (Time.time < invulnerableUntil)
+            {
+                return;
+            }
+
+            if (attacker != null && attacker.CurrentState == State.Retreat)
+            {
+                return;
+            }
+
+            if (attacker != null && !CanBeFinishedByAttackerWhileRetreating(attacker, isRangedAttack))
             {
                 return;
             }
@@ -737,9 +925,36 @@ public class TroopCombat : MonoBehaviour
         }
     }
 
+    private bool CanBeFinishedByAttackerWhileRetreating(TroopCombat attacker, bool isRangedAttack)
+    {
+        if (attacker == null)
+        {
+            return true;
+        }
+
+        float distance = GetHorizontalDistance(transform.position, attacker.transform.position);
+
+        if (isRangedAttack)
+        {
+            if (!canBeKilledByRangedAttackWhileRetreating)
+            {
+                return false;
+            }
+
+            return distance <= attacker.RangedAttackRange + 0.01f;
+        }
+
+        return distance <= attacker.MeleeAttackRange + 0.01f;
+    }
+
     public bool CanBeTargetedBy(TroopCombat other)
     {
         if (other == null || CurrentState == State.Dead || CurrentState == State.Regroup)
+        {
+            return false;
+        }
+
+        if (CurrentState == State.Retreat && other.CurrentState == State.Retreat)
         {
             return false;
         }
@@ -749,7 +964,7 @@ public class TroopCombat : MonoBehaviour
 
     private TroopCombat FindTargetInRange()
     {
-        Collider[] hits = Physics.OverlapSphere(transform.position, attackRange, targetLayers, QueryTriggerInteraction.Ignore);
+        Collider[] hits = Physics.OverlapSphere(transform.position, GetTargetAcquisitionRange(), targetLayers, QueryTriggerInteraction.Ignore);
         if (hits == null || hits.Length == 0)
         {
             return null;
@@ -772,6 +987,11 @@ public class TroopCombat : MonoBehaviour
                 continue;
             }
 
+            if (!TryGetAttackProfileForTarget(candidate, out _))
+            {
+                continue;
+            }
+
             Vector3 offset = candidate.transform.position - transform.position;
             offset.y = 0f;
             float distanceSqr = offset.sqrMagnitude;
@@ -784,6 +1004,68 @@ public class TroopCombat : MonoBehaviour
         }
 
         return bestTarget;
+    }
+
+    private float GetTargetAcquisitionRange()
+    {
+        return HasRangedAttack ? Mathf.Max(attackRange, rangedAttackRange) : attackRange;
+    }
+
+    private bool TryGetAttackProfileForTarget(TroopCombat target, out AttackProfile attackProfile)
+    {
+        attackProfile = default;
+        if (target == null)
+        {
+            return false;
+        }
+
+        float distance = GetHorizontalDistance(transform.position, target.transform.position);
+
+        if (IsWithinMeleeAttackRange(distance))
+        {
+            attackProfile = new AttackProfile(attackDamage, attackRange, attackCooldown, false);
+            return attackProfile.IsValid;
+        }
+
+        if (!IsWithinRangedAttackBand(distance))
+        {
+            return false;
+        }
+
+        if (target.IsRetreating && !target.canBeKilledByRangedAttackWhileRetreating)
+        {
+            return false;
+        }
+
+        attackProfile = new AttackProfile(rangedAttackDamage, rangedAttackRange, rangedAttackCooldown, true);
+        return attackProfile.IsValid;
+    }
+
+    private bool IsWithinMeleeAttackRange(float distance)
+    {
+        return distance <= attackRange + 0.001f;
+    }
+
+    private bool IsWithinRangedAttackBand(float distance)
+    {
+        if (!HasRangedAttack)
+        {
+            return false;
+        }
+
+        return distance > attackRange + 0.001f && distance <= rangedAttackRange + 0.001f;
+    }
+
+    private static float GetHorizontalDistance(Vector3 a, Vector3 b)
+    {
+        return Mathf.Sqrt(GetHorizontalDistanceSqr(a, b));
+    }
+
+    private static float GetHorizontalDistanceSqr(Vector3 a, Vector3 b)
+    {
+        Vector3 offset = a - b;
+        offset.y = 0f;
+        return offset.sqrMagnitude;
     }
 
     private void PermanentDestroy(TroopCombat attacker = null)
@@ -1278,10 +1560,6 @@ public class TroopCombat : MonoBehaviour
 
             Vector3 localPosition = GetFormationPosition(troopVisual.SlotIndex, gridColumns, gridRows, gridCenter, jitterAmount);
             ApplyTroopVisualLocalPosition(troopVisual.Instance.transform, localPosition);
-            if (!troopVisual.IsFlagHolder)
-            {
-                troopVisual.Instance.transform.localRotation = Quaternion.identity;
-            }
 
             Vector3 visualScale = troopVisual.IsFlagHolder ? flagHolderPrefabScale : troopPrefabScale;
             ApplyTroopVisualScale(troopVisual.Instance.transform, visualScale);
@@ -1437,6 +1715,12 @@ public class TroopCombat : MonoBehaviour
         Gizmos.color = combinedColor;
         Gizmos.DrawWireSphere(transform.position, attackRange);
 
+        if (HasRangedAttack)
+        {
+            Gizmos.color = new Color(combinedColor.r, combinedColor.g, combinedColor.b, combinedColor.a * 0.65f);
+            Gizmos.DrawWireSphere(transform.position, rangedAttackRange);
+        }
+
         DrawHealthGizmo(anchor, combinedColor);
 
 #if UNITY_EDITOR
@@ -1546,7 +1830,30 @@ public class TroopCombat : MonoBehaviour
             ? " | Move " + (CombatMoveSpeedMultiplier * 100f).ToString("F0") + "%"
             : string.Empty;
 
-        return faction + " | " + CurrentState + " | HP " + currentHealth.ToString("F0") + "/" + clampedMaxHealth.ToString("F0") + " (" + healthPercent.ToString("F0") + "%)" + " | Units " + activeTroopVisualCount + "/" + maxUnitCount + " (min " + MinimumUnitCountAtDefeat + ")" + " | ATK " + attackDamage.ToString("F0") + " | RNG " + attackRange.ToString("F1") + " | Target " + targetName + moveSpeedLabel;
+        string attackLabel = HasRangedAttack
+            ? " | Melee " + attackDamage.ToString("F0") + "@" + attackRange.ToString("F1")
+              + " | Ranged " + rangedAttackDamage.ToString("F0") + "@" + rangedAttackRange.ToString("F1")
+            : " | ATK " + attackDamage.ToString("F0") + " | RNG " + attackRange.ToString("F1");
+
+        return faction + " | " + CurrentState + " | HP " + currentHealth.ToString("F0") + "/" + clampedMaxHealth.ToString("F0") + " (" + healthPercent.ToString("F0") + "%)" + " | Units " + activeTroopVisualCount + "/" + maxUnitCount + " (min " + MinimumUnitCountAtDefeat + ")" + attackLabel + " | Target " + targetName + moveSpeedLabel;
+    }
+
+    private struct AttackProfile
+    {
+        public readonly float Damage;
+        public readonly float Range;
+        public readonly float Cooldown;
+        public readonly bool IsRanged;
+
+        public AttackProfile(float damage, float range, float cooldown, bool isRanged)
+        {
+            Damage = damage;
+            Range = range;
+            Cooldown = cooldown;
+            IsRanged = isRanged;
+        }
+
+        public bool IsValid => Range > 0f && Damage > 0f;
     }
 
     [System.Serializable]

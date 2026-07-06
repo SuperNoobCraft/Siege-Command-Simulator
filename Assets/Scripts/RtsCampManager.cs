@@ -17,6 +17,16 @@ public class RtsCampManager : MonoBehaviour
     [SerializeField] private Transform friendlyGate;
     [SerializeField] private Transform enemyGate;
 
+    [Header("Gate Waypoints")]
+    [Tooltip("City-side waypoint just inside the gate. Troops retreat here before entering camp.")]
+    [SerializeField] private Transform friendlyGateInside;
+    [Tooltip("Battlefield-side waypoint just outside the gate. Troops approach here before entering.")]
+    [SerializeField] private Transform friendlyGateOutside;
+    [Tooltip("City-side waypoint just inside the gate. Troops retreat here before entering camp.")]
+    [SerializeField] private Transform enemyGateInside;
+    [Tooltip("Battlefield-side waypoint just outside the gate. Troops approach here before entering.")]
+    [SerializeField] private Transform enemyGateOutside;
+
     [Header("Arrival Zones")]
     [SerializeField, Min(0.1f)] private float gateArrivalRadius = 2f;
     [FormerlySerializedAs("campArrivalRadius")]
@@ -37,6 +47,10 @@ public class RtsCampManager : MonoBehaviour
     public Transform EnemyCamp => enemyCamp;
     public Transform FriendlyGate => friendlyGate;
     public Transform EnemyGate => enemyGate;
+    public Transform FriendlyGateInside => friendlyGateInside;
+    public Transform FriendlyGateOutside => friendlyGateOutside;
+    public Transform EnemyGateInside => enemyGateInside;
+    public Transform EnemyGateOutside => enemyGateOutside;
 
     private void Awake()
     {
@@ -75,13 +89,52 @@ public class RtsCampManager : MonoBehaviour
 
     public Vector3 GetGatePosition(TroopCombat.Faction faction)
     {
-        Transform gate = GetGateTransform(faction);
-        if (gate == null)
+        return GetGateOutsidePosition(faction);
+    }
+
+    public Vector3 GetGateInsidePosition(TroopCombat.Faction faction)
+    {
+        Transform gateInside = GetGateInsideTransform(faction);
+        if (gateInside != null)
         {
-            return GetCampCenter(faction);
+            return gateInside.position;
         }
 
-        return gate.position;
+        Transform camp = GetCampTransform(faction);
+        if (camp != null)
+        {
+            Vector3 outside = GetGateOutsidePosition(faction);
+            Vector3 towardCamp = camp.position - outside;
+            towardCamp.y = 0f;
+            if (towardCamp.sqrMagnitude > 0.0001f)
+            {
+                return outside + towardCamp.normalized * Mathf.Max(gateArrivalRadius, 1f);
+            }
+        }
+
+        return GetGateOutsidePosition(faction);
+    }
+
+    public Vector3 GetGateOutsidePosition(TroopCombat.Faction faction)
+    {
+        Transform gateOutside = GetGateOutsideTransform(faction);
+        if (gateOutside != null)
+        {
+            return gateOutside.position;
+        }
+
+        Transform gate = GetGateTransform(faction);
+        if (gate != null)
+        {
+            return gate.position;
+        }
+
+        return GetCampCenter(faction);
+    }
+
+    public bool HasGateWaypoints(TroopCombat.Faction faction)
+    {
+        return GetGateInsideTransform(faction) != null || GetGateOutsideTransform(faction) != null || GetGateTransform(faction) != null;
     }
 
     public bool IsInCampZone(Vector3 worldPosition, TroopCombat.Faction faction)
@@ -126,13 +179,19 @@ public class RtsCampManager : MonoBehaviour
 
     public bool IsAtGate(Vector3 worldPosition, TroopCombat.Faction faction)
     {
-        Transform gate = GetGateTransform(faction);
-        if (gate == null)
-        {
-            return true;
-        }
+        return IsAtGateOutside(worldPosition, faction);
+    }
 
-        return IsWithinHorizontalRadius(worldPosition, gate.position, gateArrivalRadius);
+    public bool IsAtGateInside(Vector3 worldPosition, TroopCombat.Faction faction)
+    {
+        Vector3 gateInside = GetGateInsidePosition(faction);
+        return IsWithinHorizontalRadius(worldPosition, gateInside, gateArrivalRadius);
+    }
+
+    public bool IsAtGateOutside(Vector3 worldPosition, TroopCombat.Faction faction)
+    {
+        Vector3 gateOutside = GetGateOutsidePosition(faction);
+        return IsWithinHorizontalRadius(worldPosition, gateOutside, gateArrivalRadius);
     }
 
     private Transform GetCampTransform(TroopCombat.Faction faction)
@@ -143,6 +202,16 @@ public class RtsCampManager : MonoBehaviour
     private Transform GetGateTransform(TroopCombat.Faction faction)
     {
         return faction == TroopCombat.Faction.Friendly ? friendlyGate : enemyGate;
+    }
+
+    private Transform GetGateInsideTransform(TroopCombat.Faction faction)
+    {
+        return faction == TroopCombat.Faction.Friendly ? friendlyGateInside : enemyGateInside;
+    }
+
+    private Transform GetGateOutsideTransform(TroopCombat.Faction faction)
+    {
+        return faction == TroopCombat.Faction.Friendly ? friendlyGateOutside : enemyGateOutside;
     }
 
     private static bool IsWithinHorizontalRadius(Vector3 worldPosition, Vector3 targetPosition, float radius)
@@ -188,20 +257,21 @@ public class RtsCampManager : MonoBehaviour
         DrawCampZoneGizmo(enemyCamp, enemyCampColor);
         DrawCampCenterGizmo(friendlyCamp, friendlyCampColor);
         DrawCampCenterGizmo(enemyCamp, enemyCampColor);
-        DrawGateGizmo(friendlyGate, friendlyGateColor);
-        DrawGateGizmo(enemyGate, enemyGateColor);
+        DrawGateGizmo(friendlyGateOutside != null ? friendlyGateOutside : friendlyGate, friendlyGateColor);
+        DrawGateGizmo(enemyGateOutside != null ? enemyGateOutside : enemyGate, enemyGateColor);
+        DrawGateInsideGizmo(friendlyGateInside, friendlyGateColor);
+        DrawGateInsideGizmo(enemyGateInside, enemyGateColor);
 
-        if (friendlyGate != null && friendlyCamp != null)
-        {
-            Gizmos.color = friendlyGateColor;
-            Gizmos.DrawLine(friendlyGate.position, friendlyCamp.position);
-        }
-
-        if (enemyGate != null && enemyCamp != null)
-        {
-            Gizmos.color = enemyGateColor;
-            Gizmos.DrawLine(enemyGate.position, enemyCamp.position);
-        }
+        DrawGateRouteGizmo(
+            friendlyCamp,
+            friendlyGateInside,
+            friendlyGateOutside != null ? friendlyGateOutside : friendlyGate,
+            friendlyGateColor);
+        DrawGateRouteGizmo(
+            enemyCamp,
+            enemyGateInside,
+            enemyGateOutside != null ? enemyGateOutside : enemyGate,
+            enemyGateColor);
     }
 
     private void DrawCampZoneGizmo(Transform camp, Color fillColor)
@@ -238,5 +308,39 @@ public class RtsCampManager : MonoBehaviour
         Gizmos.color = color;
         Gizmos.DrawWireSphere(gate.position, gateArrivalRadius);
         Gizmos.DrawLine(gate.position, gate.position + gate.forward * 1.5f);
+    }
+
+    private void DrawGateInsideGizmo(Transform gateInside, Color color)
+    {
+        if (gateInside == null)
+        {
+            return;
+        }
+
+        Gizmos.color = new Color(color.r, color.g, color.b, 0.65f);
+        Gizmos.DrawWireSphere(gateInside.position, gateArrivalRadius * 0.75f);
+        Gizmos.DrawLine(gateInside.position, gateInside.position + gateInside.forward * 1f);
+    }
+
+    private static void DrawGateRouteGizmo(Transform camp, Transform gateInside, Transform gateOutside, Color color)
+    {
+        if (camp == null)
+        {
+            return;
+        }
+
+        Gizmos.color = color;
+        Vector3 previous = camp.position;
+
+        if (gateInside != null)
+        {
+            Gizmos.DrawLine(previous, gateInside.position);
+            previous = gateInside.position;
+        }
+
+        if (gateOutside != null)
+        {
+            Gizmos.DrawLine(previous, gateOutside.position);
+        }
     }
 }
