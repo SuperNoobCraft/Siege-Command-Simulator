@@ -1,0 +1,254 @@
+using System.Collections.Generic;
+using UnityEngine;
+
+public static class RtsPathUtility
+{
+    public static List<Vector3> BuildCommandPath(
+        IReadOnlyList<Vector3> rawPoints,
+        float groundY,
+        float minSampleDistance,
+        float simplifyEpsilon,
+        int smoothIterations,
+        float maxWaypointSpacing)
+    {
+        if (rawPoints == null || rawPoints.Count == 0)
+        {
+            return new List<Vector3>();
+        }
+
+        List<Vector3> flattened = new List<Vector3>(rawPoints.Count);
+        for (int i = 0; i < rawPoints.Count; i++)
+        {
+            flattened.Add(FlattenToGround(rawPoints[i], groundY));
+        }
+
+        List<Vector3> filtered = FilterByMinDistance(flattened, minSampleDistance);
+        if (filtered.Count == 0)
+        {
+            return new List<Vector3>();
+        }
+
+        if (filtered.Count == 1)
+        {
+            return filtered;
+        }
+
+        List<Vector3> simplified = SimplifyPolyline(filtered, simplifyEpsilon);
+        List<Vector3> smoothed = SmoothPolyline(simplified, smoothIterations);
+        return ResamplePolyline(smoothed, maxWaypointSpacing);
+    }
+
+    public static float GetPathLength(IReadOnlyList<Vector3> points)
+    {
+        if (points == null || points.Count < 2)
+        {
+            return 0f;
+        }
+
+        float length = 0f;
+        for (int i = 1; i < points.Count; i++)
+        {
+            length += HorizontalDistance(points[i - 1], points[i]);
+        }
+
+        return length;
+    }
+
+    public static Vector3 FlattenToGround(Vector3 point, float groundY)
+    {
+        return new Vector3(point.x, groundY, point.z);
+    }
+
+    private static List<Vector3> FilterByMinDistance(IReadOnlyList<Vector3> points, float minDistance)
+    {
+        List<Vector3> filtered = new List<Vector3>(points.Count);
+        float minDistanceSqr = minDistance * minDistance;
+
+        for (int i = 0; i < points.Count; i++)
+        {
+            Vector3 point = points[i];
+            if (filtered.Count == 0)
+            {
+                filtered.Add(point);
+                continue;
+            }
+
+            if (HorizontalDistanceSqr(filtered[filtered.Count - 1], point) >= minDistanceSqr)
+            {
+                filtered.Add(point);
+            }
+        }
+
+        return filtered;
+    }
+
+    private static List<Vector3> SimplifyPolyline(IReadOnlyList<Vector3> points, float epsilon)
+    {
+        if (points.Count <= 2 || epsilon <= 0f)
+        {
+            return new List<Vector3>(points);
+        }
+
+        bool[] keep = new bool[points.Count];
+        keep[0] = true;
+        keep[points.Count - 1] = true;
+        DouglasPeucker(points, 0, points.Count - 1, epsilon, keep);
+
+        List<Vector3> simplified = new List<Vector3>(points.Count);
+        for (int i = 0; i < points.Count; i++)
+        {
+            if (keep[i])
+            {
+                simplified.Add(points[i]);
+            }
+        }
+
+        return simplified;
+    }
+
+    private static void DouglasPeucker(IReadOnlyList<Vector3> points, int startIndex, int endIndex, float epsilon, bool[] keep)
+    {
+        if (endIndex <= startIndex + 1)
+        {
+            return;
+        }
+
+        float maxDistance = 0f;
+        int farthestIndex = startIndex;
+        Vector3 start = points[startIndex];
+        Vector3 end = points[endIndex];
+
+        for (int i = startIndex + 1; i < endIndex; i++)
+        {
+            float distance = PerpendicularDistance(points[i], start, end);
+            if (distance > maxDistance)
+            {
+                maxDistance = distance;
+                farthestIndex = i;
+            }
+        }
+
+        if (maxDistance > epsilon)
+        {
+            keep[farthestIndex] = true;
+            DouglasPeucker(points, startIndex, farthestIndex, epsilon, keep);
+            DouglasPeucker(points, farthestIndex, endIndex, epsilon, keep);
+        }
+    }
+
+    private static float PerpendicularDistance(Vector3 point, Vector3 lineStart, Vector3 lineEnd)
+    {
+        Vector3 axis = lineEnd - lineStart;
+        axis.y = 0f;
+        float axisLengthSqr = axis.sqrMagnitude;
+        if (axisLengthSqr < 0.0001f)
+        {
+            return Mathf.Sqrt(HorizontalDistanceSqr(point, lineStart));
+        }
+
+        float t = Mathf.Clamp01(Vector3.Dot(point - lineStart, axis) / axisLengthSqr);
+        Vector3 projection = lineStart + axis * t;
+        return Mathf.Sqrt(HorizontalDistanceSqr(point, projection));
+    }
+
+    private static List<Vector3> SmoothPolyline(IReadOnlyList<Vector3> points, int iterations)
+    {
+        if (points.Count < 3 || iterations <= 0)
+        {
+            return new List<Vector3>(points);
+        }
+
+        List<Vector3> current = new List<Vector3>(points);
+        List<Vector3> next = new List<Vector3>(points.Count * 2);
+
+        for (int iteration = 0; iteration < iterations; iteration++)
+        {
+            next.Clear();
+            next.Add(current[0]);
+
+            for (int i = 0; i < current.Count - 1; i++)
+            {
+                Vector3 a = current[i];
+                Vector3 b = current[i + 1];
+                next.Add(Vector3.Lerp(a, b, 0.25f));
+                next.Add(Vector3.Lerp(a, b, 0.75f));
+            }
+
+            next.Add(current[current.Count - 1]);
+            List<Vector3> swap = current;
+            current = next;
+            next = swap;
+        }
+
+        return current;
+    }
+
+    private static List<Vector3> ResamplePolyline(IReadOnlyList<Vector3> points, float maxSpacing)
+    {
+        if (points.Count <= 1 || maxSpacing <= 0f)
+        {
+            return new List<Vector3>(points);
+        }
+
+        float totalLength = GetPathLength(points);
+        if (totalLength <= maxSpacing)
+        {
+            return new List<Vector3>(points);
+        }
+
+        int sampleCount = Mathf.Max(2, Mathf.CeilToInt(totalLength / maxSpacing) + 1);
+        List<Vector3> resampled = new List<Vector3>(sampleCount);
+        for (int i = 0; i < sampleCount; i++)
+        {
+            float distanceAlongPath = (totalLength * i) / (sampleCount - 1);
+            resampled.Add(GetPointAlongPath(points, distanceAlongPath));
+        }
+
+        return resampled;
+    }
+
+    private static Vector3 GetPointAlongPath(IReadOnlyList<Vector3> points, float targetDistance)
+    {
+        if (points.Count == 0)
+        {
+            return Vector3.zero;
+        }
+
+        if (targetDistance <= 0f)
+        {
+            return points[0];
+        }
+
+        float traveled = 0f;
+        for (int i = 1; i < points.Count; i++)
+        {
+            float segmentLength = HorizontalDistance(points[i - 1], points[i]);
+            if (segmentLength < 0.0001f)
+            {
+                continue;
+            }
+
+            if (traveled + segmentLength >= targetDistance)
+            {
+                float t = (targetDistance - traveled) / segmentLength;
+                return Vector3.Lerp(points[i - 1], points[i], t);
+            }
+
+            traveled += segmentLength;
+        }
+
+        return points[points.Count - 1];
+    }
+
+    private static float HorizontalDistance(Vector3 a, Vector3 b)
+    {
+        return Mathf.Sqrt(HorizontalDistanceSqr(a, b));
+    }
+
+    private static float HorizontalDistanceSqr(Vector3 a, Vector3 b)
+    {
+        Vector3 offset = a - b;
+        offset.y = 0f;
+        return offset.sqrMagnitude;
+    }
+}

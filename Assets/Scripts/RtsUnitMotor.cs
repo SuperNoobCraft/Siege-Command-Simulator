@@ -1,8 +1,16 @@
+using System.Collections.Generic;
 using UnityEngine;
 
 [DefaultExecutionOrder(50)]
 public class RtsUnitMotor : MonoBehaviour
 {
+    private enum MovementMode
+    {
+        None,
+        Direct,
+        Path
+    }
+
     [Header("Identity")]
     [SerializeField] private bool isCommandUnit = true;
 
@@ -18,19 +26,39 @@ public class RtsUnitMotor : MonoBehaviour
     [SerializeField] private bool stopImmediatelyOnWallHit = true;
     [SerializeField, Min(0f)] private float wallEscapeGraceDuration = 1.25f;
     [SerializeField, Range(0f, 1f)] private float wallEscapeDirectionThreshold = 0.25f;
+    [SerializeField] private bool enableObstacleAvoidance = true;
+    [SerializeField, Min(0.1f)] private float stuckDetectionTime = 0.6f;
+    [SerializeField, Min(0.05f)] private float stuckProgressDistance = 0.12f;
+    [SerializeField, Min(0.5f)] private float detourProbeDistance = 4f;
+    [SerializeField, Min(0.25f)] private float detourWaypointSpacing = 1.5f;
     [SerializeField] private bool drawCollisionDebug;
 
+    private static readonly float[] AvoidanceAngleOffsets =
+    {
+        0f, 20f, -20f, 40f, -40f, 60f, -60f, 80f, -80f, 100f, -100f, 120f, -120f
+    };
+
     private Collider[] ownColliders;
+    private MovementMode movementMode = MovementMode.None;
     private bool hasDestination;
     private Vector3 destination;
+    private Vector3 finalDestination;
+    private bool usingDetour;
+    private readonly List<Vector3> pathWaypoints = new List<Vector3>();
+    private int pathWaypointIndex;
     private float wallEscapeGraceEndTime;
+    private Vector3 stuckSamplePosition;
+    private float stuckSampleTime;
+    private float nextDetourAttemptTime;
 
     public bool IsCommandUnit => isCommandUnit;
     public bool CanReceiveCommands { get; set; } = true;
     public float MoveSpeedMultiplier { get; set; } = 1f;
     public bool HasDestination => hasDestination;
+    public bool HasActivePath => movementMode == MovementMode.Path && pathWaypoints.Count > 0;
     public Vector3 MoveDirection { get; private set; } = Vector3.forward;
     public bool IsBlockedBySolidObstacle { get; private set; }
+    public bool IsStuck { get; private set; }
 
     private void Awake()
     {
@@ -45,16 +73,71 @@ public class RtsUnitMotor : MonoBehaviour
 
     public void MoveTo(Vector3 worldPoint)
     {
-        destination = new Vector3(worldPoint.x, transform.position.y, worldPoint.z);
+        ClearPath();
+        movementMode = MovementMode.Direct;
+        destination = FlattenToGround(worldPoint);
+        finalDestination = destination;
+        usingDetour = false;
         hasDestination = true;
         IsBlockedBySolidObstacle = false;
+        IsStuck = false;
+        ResetStuckTracking();
+    }
+
+    public void FollowPath(IReadOnlyList<Vector3> waypoints)
+    {
+        ClearPath();
+        if (waypoints == null || waypoints.Count == 0)
+        {
+            return;
+        }
+
+        for (int i = 0; i < waypoints.Count; i++)
+        {
+            pathWaypoints.Add(FlattenToGround(waypoints[i]));
+        }
+
+        while (pathWaypoints.Count > 0
+            && HorizontalDistanceSqr(transform.position, pathWaypoints[0]) <= stoppingDistance * stoppingDistance)
+        {
+            pathWaypoints.RemoveAt(0);
+        }
+
+        if (pathWaypoints.Count == 0)
+        {
+            ClearMovement();
+            return;
+        }
+
+        movementMode = MovementMode.Path;
+        pathWaypointIndex = 0;
+        destination = pathWaypoints[0];
+        finalDestination = destination;
+        usingDetour = false;
+        hasDestination = true;
+        IsBlockedBySolidObstacle = false;
+        IsStuck = false;
+        ResetStuckTracking();
     }
 
     public void Stop()
     {
-        hasDestination = false;
-        IsBlockedBySolidObstacle = false;
-        wallEscapeGraceEndTime = 0f;
+        ClearMovement();
+    }
+
+    public void GetActivePathPoints(List<Vector3> results)
+    {
+        results.Clear();
+        if (!HasActivePath)
+        {
+            return;
+        }
+
+        results.Add(transform.position);
+        for (int i = pathWaypointIndex; i < pathWaypoints.Count; i++)
+        {
+            results.Add(pathWaypoints[i]);
+        }
     }
 
     private void Update()
@@ -62,18 +145,33 @@ public class RtsUnitMotor : MonoBehaviour
         if (!hasDestination)
         {
             IsBlockedBySolidObstacle = false;
+            IsStuck = false;
             wallEscapeGraceEndTime = 0f;
             return;
         }
+
+        UpdateStuckDetection();
 
         Vector3 offset = destination - transform.position;
         offset.y = 0f;
 
         if (offset.sqrMagnitude <= stoppingDistance * stoppingDistance)
         {
-            hasDestination = false;
-            IsBlockedBySolidObstacle = false;
-            wallEscapeGraceEndTime = 0f;
+            if (usingDetour)
+            {
+                ResumeAfterDetour();
+                return;
+            }
+
+            if (TryAdvanceToNextPathWaypoint())
+            {
+                finalDestination = destination;
+                usingDetour = false;
+                ResetStuckTracking();
+                return;
+            }
+
+            ClearMovement();
             return;
         }
 
@@ -85,6 +183,7 @@ public class RtsUnitMotor : MonoBehaviour
 
         bool isOverlapping = solidObstacleLayers != 0 && IsCurrentlyOverlappingObstacle();
         bool movingAwayFromWall = isOverlapping && IsMovingAwayFromObstacle(direction);
+        bool useAvoidance = enableObstacleAvoidance && solidObstacleLayers != 0;
 
         if (isOverlapping)
         {
@@ -94,13 +193,21 @@ public class RtsUnitMotor : MonoBehaviour
             }
             else if (!IsInWallEscapeGrace)
             {
-                StopOnWall();
+                if (!useAvoidance || !TryMoveWithObstacleAvoidance(direction, isOverlapping))
+                {
+                    StopOnWall();
+                }
+
                 return;
             }
             else
             {
                 wallEscapeGraceEndTime = 0f;
-                StopOnWall();
+                if (!useAvoidance || !TryMoveWithObstacleAvoidance(direction, isOverlapping))
+                {
+                    StopOnWall();
+                }
+
                 return;
             }
         }
@@ -117,10 +224,16 @@ public class RtsUnitMotor : MonoBehaviour
         {
             transform.position += desiredDelta;
             IsBlockedBySolidObstacle = false;
+            IsStuck = false;
+            ResetStuckTracking();
         }
         else if (!TryGetAllowedDelta(desiredDelta, out Vector3 allowedDelta))
         {
-            StopOnWall();
+            if (!useAvoidance || !TryMoveWithObstacleAvoidance(direction, isOverlapping))
+            {
+                StopOnWall();
+            }
+
             return;
         }
         else
@@ -131,6 +244,8 @@ public class RtsUnitMotor : MonoBehaviour
             }
 
             IsBlockedBySolidObstacle = false;
+            IsStuck = false;
+            ResetStuckTracking();
         }
 
         Vector3 remaining = destination - transform.position;
@@ -138,22 +253,262 @@ public class RtsUnitMotor : MonoBehaviour
         if (remaining.sqrMagnitude <= stoppingDistance * stoppingDistance)
         {
             transform.position = new Vector3(destination.x, transform.position.y, destination.z);
-            hasDestination = false;
-            IsBlockedBySolidObstacle = false;
-            wallEscapeGraceEndTime = 0f;
+            if (usingDetour)
+            {
+                ResumeAfterDetour();
+                return;
+            }
+
+            if (!TryAdvanceToNextPathWaypoint())
+            {
+                ClearMovement();
+            }
+            else
+            {
+                finalDestination = destination;
+                usingDetour = false;
+                ResetStuckTracking();
+            }
         }
+    }
+
+    private bool TryMoveWithObstacleAvoidance(Vector3 desiredDirection, bool isOverlapping)
+    {
+        float stepDistance = moveSpeed * Mathf.Max(0f, MoveSpeedMultiplier) * Time.deltaTime;
+        Vector3 goalDirection = GetGoalDirection();
+
+        if (isOverlapping && TryGetOverlappingEscapeDirection(out Vector3 escapeDirection))
+        {
+            Vector3 escapeDelta = escapeDirection * stepDistance;
+            if (TryGetAllowedDelta(escapeDelta, out Vector3 allowedEscape) && allowedEscape.sqrMagnitude > 0.0001f)
+            {
+                transform.position += allowedEscape;
+                MoveDirection = allowedEscape.normalized;
+                IsBlockedBySolidObstacle = false;
+                return true;
+            }
+        }
+
+        if (TryGetBestAvoidanceDelta(desiredDirection, goalDirection, stepDistance, out Vector3 avoidanceDelta))
+        {
+            transform.position += avoidanceDelta;
+            MoveDirection = avoidanceDelta.normalized;
+            IsBlockedBySolidObstacle = false;
+            return true;
+        }
+
+        if (IsStuck && Time.time >= nextDetourAttemptTime && TryInsertDetourWaypoint(goalDirection))
+        {
+            nextDetourAttemptTime = Time.time + stuckDetectionTime;
+            IsBlockedBySolidObstacle = false;
+            return true;
+        }
+
+        IsBlockedBySolidObstacle = true;
+        return false;
+    }
+
+    private bool TryGetBestAvoidanceDelta(
+        Vector3 desiredDirection,
+        Vector3 goalDirection,
+        float stepDistance,
+        out Vector3 bestDelta)
+    {
+        bestDelta = Vector3.zero;
+        float bestScore = float.MinValue;
+
+        for (int i = 0; i < AvoidanceAngleOffsets.Length; i++)
+        {
+            Vector3 candidateDirection = Quaternion.Euler(0f, AvoidanceAngleOffsets[i], 0f) * desiredDirection;
+            candidateDirection.y = 0f;
+            if (candidateDirection.sqrMagnitude < 0.0001f)
+            {
+                continue;
+            }
+
+            candidateDirection.Normalize();
+            Vector3 candidateDelta = candidateDirection * stepDistance;
+            if (!TryGetAllowedDelta(candidateDelta, out Vector3 allowedDelta) || allowedDelta.sqrMagnitude < 0.0001f)
+            {
+                continue;
+            }
+
+            Vector3 allowedDirection = allowedDelta.normalized;
+            float progressScore = Mathf.Max(0f, Vector3.Dot(allowedDirection, goalDirection));
+            float distanceScore = allowedDelta.magnitude / Mathf.Max(stepDistance, 0.0001f);
+            float score = progressScore * 2f + distanceScore;
+            if (score > bestScore)
+            {
+                bestScore = score;
+                bestDelta = allowedDelta;
+            }
+        }
+
+        return bestScore > float.MinValue;
+    }
+
+    private bool TryInsertDetourWaypoint(Vector3 goalDirection)
+    {
+        if (goalDirection.sqrMagnitude < 0.0001f)
+        {
+            return false;
+        }
+
+        goalDirection.Normalize();
+        Vector3 tangent = new Vector3(-goalDirection.z, 0f, goalDirection.x);
+        float[] sideMultipliers = { 1f, -1f, 1.75f, -1.75f, 2.5f, -2.5f };
+
+        for (int i = 0; i < sideMultipliers.Length; i++)
+        {
+            Vector3 detourPoint = transform.position
+                + tangent * (detourProbeDistance * sideMultipliers[i])
+                + goalDirection * detourWaypointSpacing;
+            detourPoint = FlattenToGround(detourPoint);
+
+            if (!IsPositionClear(detourPoint))
+            {
+                continue;
+            }
+
+            if (!HasLineOfMovement(transform.position, detourPoint))
+            {
+                continue;
+            }
+
+            finalDestination = usingDetour ? finalDestination : destination;
+            destination = detourPoint;
+            usingDetour = true;
+            IsStuck = false;
+            ResetStuckTracking();
+            return true;
+        }
+
+        return false;
+    }
+
+    private void ResumeAfterDetour()
+    {
+        destination = finalDestination;
+        usingDetour = false;
+        IsStuck = false;
+        ResetStuckTracking();
+    }
+
+    private Vector3 GetGoalDirection()
+    {
+        Vector3 offset = finalDestination - transform.position;
+        offset.y = 0f;
+        if (offset.sqrMagnitude < 0.0001f)
+        {
+            return MoveDirection;
+        }
+
+        return offset.normalized;
+    }
+
+    private void UpdateStuckDetection()
+    {
+        if (Time.time < stuckSampleTime + stuckDetectionTime)
+        {
+            return;
+        }
+
+        float movedDistanceSqr = HorizontalDistanceSqr(transform.position, stuckSamplePosition);
+        IsStuck = movedDistanceSqr < stuckProgressDistance * stuckProgressDistance;
+        stuckSamplePosition = transform.position;
+        stuckSampleTime = Time.time;
+    }
+
+    private void ResetStuckTracking()
+    {
+        stuckSamplePosition = transform.position;
+        stuckSampleTime = Time.time;
+        IsStuck = false;
+    }
+
+    private bool IsPositionClear(Vector3 worldPosition)
+    {
+        GetMovementCastShape(out Vector3 castCenter, out Vector3 halfExtents);
+        Vector3 offset = worldPosition - transform.position;
+        castCenter += new Vector3(offset.x, 0f, offset.z);
+        return !IsOverlappingSolidObstacle(castCenter, halfExtents);
+    }
+
+    private bool HasLineOfMovement(Vector3 from, Vector3 to)
+    {
+        Vector3 offset = to - from;
+        offset.y = 0f;
+        float distance = offset.magnitude;
+        if (distance < 0.05f)
+        {
+            return true;
+        }
+
+        GetMovementCastShape(out Vector3 castCenter, out Vector3 halfExtents);
+        castCenter = from + Vector3.up * (castCenter.y - transform.position.y);
+        float blockedDistance = GetNearestObstacleDistance(castCenter, halfExtents, offset / distance, distance);
+        return blockedDistance >= distance - 0.05f;
+    }
+
+    private bool TryAdvanceToNextPathWaypoint()
+    {
+        if (movementMode != MovementMode.Path)
+        {
+            return false;
+        }
+
+        pathWaypointIndex++;
+        if (pathWaypointIndex >= pathWaypoints.Count)
+        {
+            return false;
+        }
+
+        destination = pathWaypoints[pathWaypointIndex];
+        finalDestination = destination;
+        return true;
     }
 
     private bool IsInWallEscapeGrace => wallEscapeGraceDuration > 0f && Time.time < wallEscapeGraceEndTime;
 
     private void StopOnWall()
     {
-        if (stopImmediatelyOnWallHit)
+        bool shouldClearMovement = stopImmediatelyOnWallHit && !enableObstacleAvoidance;
+        if (shouldClearMovement)
         {
-            hasDestination = false;
+            ClearMovement();
         }
 
         IsBlockedBySolidObstacle = true;
+    }
+
+    private void ClearPath()
+    {
+        pathWaypoints.Clear();
+        pathWaypointIndex = 0;
+    }
+
+    private void ClearMovement()
+    {
+        movementMode = MovementMode.None;
+        hasDestination = false;
+        usingDetour = false;
+        ClearPath();
+        IsBlockedBySolidObstacle = false;
+        IsStuck = false;
+        wallEscapeGraceEndTime = 0f;
+        ResetStuckTracking();
+    }
+
+    private Vector3 FlattenToGround(Vector3 worldPoint)
+    {
+        return new Vector3(worldPoint.x, transform.position.y, worldPoint.z);
+    }
+
+    private static float HorizontalDistanceSqr(Vector3 a, Vector3 b)
+    {
+        Vector3 offset = a - b;
+        offset.y = 0f;
+        return offset.sqrMagnitude;
     }
 
     private bool TryGetAllowedDelta(Vector3 desiredDelta, out Vector3 allowedDelta)

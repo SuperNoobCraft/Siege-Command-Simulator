@@ -54,6 +54,10 @@ public class EnemyRegimentAI : MonoBehaviour
     [SerializeField, Min(1)] private int encirclementMinEnemyCount = 2;
     [SerializeField, Min(2f)] private float encirclementFlankDistance = 8f;
 
+    [Header("Obstacle Recovery")]
+    [SerializeField, Min(0.1f)] private float unstuckRetryInterval = 0.5f;
+    [SerializeField, Min(0.5f)] private float unstuckOffsetDistance = 3f;
+
     [Header("Debug")]
     [SerializeField] private bool drawDebugGizmos = true;
     [SerializeField] private Color visionGizmoColor = new Color(1f, 0.35f, 0.2f, 0.25f);
@@ -63,6 +67,8 @@ public class EnemyRegimentAI : MonoBehaviour
     private AiPhase phase = AiPhase.WaitingInCamp;
     private float nextDecisionTime;
     private float nextDestinationRefreshTime;
+    private float nextUnstuckAttemptTime;
+    private int unstuckAttemptIndex;
     private bool hasEnteredBattlefield;
     private Vector3 tacticalDestination;
     private readonly List<TroopCombat> visibleFriendlies = new List<TroopCombat>();
@@ -72,6 +78,7 @@ public class EnemyRegimentAI : MonoBehaviour
     public int AssignedWaveNumber => (int)assignedWave;
     public bool HasEnteredBattlefield => hasEnteredBattlefield;
     public bool IsWaitingInCamp => phase == AiPhase.WaitingInCamp;
+    public bool IsExitingGate => phase == AiPhase.ExitingGate;
     public bool IsDeployedOnField => hasEnteredBattlefield && phase != AiPhase.WaitingInCamp && phase != AiPhase.ExitingGate;
 
     private void Awake()
@@ -166,6 +173,7 @@ public class EnemyRegimentAI : MonoBehaviour
         }
 
         UpdateGateExit();
+        UpdateObstacleRecovery();
     }
 
     public bool CanDeployForWave(int currentWaveNumber)
@@ -272,14 +280,74 @@ public class EnemyRegimentAI : MonoBehaviour
             return;
         }
 
-        if (!motor.HasDestination && !motor.IsBlockedBySolidObstacle)
+        if (!motor.HasDestination && !motor.IsBlockedBySolidObstacle && !motor.IsStuck)
         {
             BeginGateExit();
         }
-        else if (motor.IsBlockedBySolidObstacle)
+        else if (motor.IsBlockedBySolidObstacle || motor.IsStuck)
+        {
+            TryRecoverFromObstacle(campManager);
+        }
+    }
+
+    private void UpdateObstacleRecovery()
+    {
+        if (phase == AiPhase.WaitingInCamp)
+        {
+            return;
+        }
+
+        if (!motor.IsBlockedBySolidObstacle && !motor.IsStuck)
+        {
+            unstuckAttemptIndex = 0;
+            return;
+        }
+
+        if (Time.time < nextUnstuckAttemptTime)
+        {
+            return;
+        }
+
+        nextUnstuckAttemptTime = Time.time + unstuckRetryInterval;
+        TryRecoverFromObstacle(RtsCampManager.Instance);
+    }
+
+    private void TryRecoverFromObstacle(RtsCampManager campManager)
+    {
+        if (phase == AiPhase.ExitingGate && campManager != null)
         {
             TryUnstuckGateExit(campManager);
+            return;
         }
+
+        Vector3 recoveryDestination = GetObstacleRecoveryDestination();
+        IssueMoveOrder(recoveryDestination);
+    }
+
+    private Vector3 GetObstacleRecoveryDestination()
+    {
+        Vector3 goal = tacticalDestination;
+        if (goal == Vector3.zero)
+        {
+            goal = GetPrimaryObjectivePosition();
+        }
+
+        Vector3 toGoal = goal - transform.position;
+        toGoal.y = 0f;
+        if (toGoal.sqrMagnitude < 0.0001f)
+        {
+            toGoal = transform.forward;
+        }
+
+        Vector3 forward = toGoal.normalized;
+        Vector3 tangent = new Vector3(-forward.z, 0f, forward.x);
+        float[] sideMultipliers = { 1f, -1f, 1.5f, -1.5f, 2f, -2f };
+        int sideIndex = unstuckAttemptIndex % sideMultipliers.Length;
+        unstuckAttemptIndex++;
+
+        Vector3 offset = tangent * (unstuckOffsetDistance * sideMultipliers[sideIndex]);
+        offset += forward * (unstuckOffsetDistance * 0.35f);
+        return goal + offset;
     }
 
     private void TryUnstuckGateExit(RtsCampManager campManager)
@@ -569,7 +637,10 @@ public class EnemyRegimentAI : MonoBehaviour
         destination.y = transform.position.y;
         tacticalDestination = destination;
 
-        if (!motor.HasDestination || GetHorizontalDistanceSqr(transform.position, destination) > 1f)
+        if (!motor.HasDestination
+            || motor.IsBlockedBySolidObstacle
+            || motor.IsStuck
+            || GetHorizontalDistanceSqr(transform.position, destination) > 1f)
         {
             motor.MoveTo(destination);
         }

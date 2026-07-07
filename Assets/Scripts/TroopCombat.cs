@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 #if UNITY_EDITOR
@@ -37,6 +38,8 @@ public class TroopCombat : MonoBehaviour
     [SerializeField, Min(0f)] private float retreatInvulnerabilityDuration = 1.5f;
     [SerializeField, Min(1f)] private float retreatMoveSpeedMultiplier = 1.75f;
     [SerializeField, Min(0.05f)] private float retreatDestinationRefreshInterval = 0.5f;
+    [Tooltip("When a retreating regiment is finished off, active troop visuals are hidden one-by-one in random order across this duration.")]
+    [SerializeField, Min(0f)] private float retreatDeathDisappearSpan = 0.2f;
 
     [Header("Melee Combat")]
     [Tooltip("Close-quarters fallback for ranged units. Infantry uses this as their primary attack.")]
@@ -117,6 +120,7 @@ public class TroopCombat : MonoBehaviour
     private float nextRetreatDestinationRefreshTime;
     private float invulnerableUntil;
     private bool isPermanentlyEliminated;
+    private Coroutine retreatDeathDisappearCoroutine;
     private RetreatPhase retreatPhase = RetreatPhase.ToGateOutside;
     private Vector3 troopPrefabScale = Vector3.one;
     private Vector3 flagHolderPrefabScale = Vector3.one;
@@ -143,6 +147,11 @@ public class TroopCombat : MonoBehaviour
     public int MinimumUnitCountAtDefeat => Mathf.RoundToInt(maxUnitCount * defeatedUnitPercentage);
     public bool IsCommandable => motor == null || motor.CanReceiveCommands;
     public bool IsRetreating => CurrentState == State.Retreat;
+    public bool IsTraversingGate =>
+        CurrentState == State.Retreat
+        && retreatPhase != RetreatPhase.ToCamp
+        && RtsCampManager.Instance != null
+        && RtsCampManager.Instance.HasGate(faction);
     public bool HoldsInCampUntilNextWave { get; private set; }
     public bool IsRegrouping => CurrentState == State.Regroup;
     public float CombatMoveSpeedMultiplier => GetCombatMoveSpeedMultiplier();
@@ -214,6 +223,7 @@ public class TroopCombat : MonoBehaviour
         retreatInvulnerabilityDuration = Mathf.Max(0f, retreatInvulnerabilityDuration);
         retreatMoveSpeedMultiplier = Mathf.Max(1f, retreatMoveSpeedMultiplier);
         retreatDestinationRefreshInterval = Mathf.Max(0.05f, retreatDestinationRefreshInterval);
+        retreatDeathDisappearSpan = Mathf.Max(0f, retreatDeathDisappearSpan);
         combatMoveSpeedPercentage = Mathf.Clamp01(combatMoveSpeedPercentage);
         combatOverlapSmoothingSpeed = Mathf.Max(0f, combatOverlapSmoothingSpeed);
     }
@@ -1086,6 +1096,125 @@ public class TroopCombat : MonoBehaviour
             motor.MoveSpeedMultiplier = 1f;
         }
 
+        if (retreatDeathDisappearCoroutine != null)
+        {
+            StopCoroutine(retreatDeathDisappearCoroutine);
+            retreatDeathDisappearCoroutine = null;
+        }
+
+        if (HasActiveTroopVisuals())
+        {
+            retreatDeathDisappearCoroutine = StartCoroutine(PlayRetreatDeathDisappearSequence());
+            return;
+        }
+
+        CompletePermanentDestroy();
+    }
+
+    private bool HasActiveTroopVisuals()
+    {
+        for (int i = 0; i < troopVisuals.Count; i++)
+        {
+            TroopVisualInstance troopVisual = troopVisuals[i];
+            if (troopVisual.Instance != null && troopVisual.Instance.activeSelf)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private IEnumerator PlayRetreatDeathDisappearSequence()
+    {
+        List<int> disappearOrder = BuildRandomRetreatDeathDisappearOrder();
+        int disappearCount = disappearOrder.Count;
+        if (disappearCount == 0)
+        {
+            CompletePermanentDestroy();
+            yield break;
+        }
+
+        float span = Mathf.Max(0f, retreatDeathDisappearSpan);
+        if (span <= 0f || disappearCount == 1)
+        {
+            for (int i = 0; i < disappearCount; i++)
+            {
+                HideTroopVisualAt(disappearOrder[i]);
+            }
+        }
+        else
+        {
+            float interval = span / disappearCount;
+            for (int i = 0; i < disappearCount; i++)
+            {
+                HideTroopVisualAt(disappearOrder[i]);
+                if (i < disappearCount - 1)
+                {
+                    yield return new WaitForSeconds(interval);
+                }
+            }
+        }
+
+        retreatDeathDisappearCoroutine = null;
+        CompletePermanentDestroy();
+    }
+
+    private List<int> BuildRandomRetreatDeathDisappearOrder()
+    {
+        List<int> regularTroops = new List<int>();
+        int flagHolderIndex = -1;
+
+        for (int i = 0; i < troopVisuals.Count; i++)
+        {
+            TroopVisualInstance troopVisual = troopVisuals[i];
+            if (troopVisual.Instance == null || !troopVisual.Instance.activeSelf)
+            {
+                continue;
+            }
+
+            if (troopVisual.IsFlagHolder)
+            {
+                flagHolderIndex = i;
+                continue;
+            }
+
+            regularTroops.Add(i);
+        }
+
+        for (int i = regularTroops.Count - 1; i > 0; i--)
+        {
+            int swapIndex = Random.Range(0, i + 1);
+            int temp = regularTroops[i];
+            regularTroops[i] = regularTroops[swapIndex];
+            regularTroops[swapIndex] = temp;
+        }
+
+        if (flagHolderIndex >= 0)
+        {
+            regularTroops.Add(flagHolderIndex);
+        }
+
+        return regularTroops;
+    }
+
+    private void HideTroopVisualAt(int index)
+    {
+        if (index < 0 || index >= troopVisuals.Count)
+        {
+            return;
+        }
+
+        TroopVisualInstance troopVisual = troopVisuals[index];
+        if (troopVisual.Instance != null && troopVisual.Instance.activeSelf)
+        {
+            troopVisual.Instance.SetActive(false);
+            activeTroopVisualCount = Mathf.Max(0, activeTroopVisualCount - 1);
+        }
+    }
+
+    private void CompletePermanentDestroy()
+    {
         if (destroyOnDeath)
         {
             Destroy(gameObject);
