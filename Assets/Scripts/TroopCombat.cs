@@ -141,6 +141,17 @@ public class TroopCombat : MonoBehaviour
     public bool HasRangedAttack => hasRangedAttack && rangedAttackRange > 0f;
     public bool CanBeKilledByRangedAttackWhileRetreating => canBeKilledByRangedAttackWhileRetreating;
     public TroopCombat CurrentTarget => currentTarget;
+
+    public void ClearCurrentTarget()
+    {
+        currentTarget = null;
+        if (CurrentState == State.Fight)
+        {
+            CurrentState = State.Idle;
+            smoothedCombatOverlap = 0f;
+        }
+    }
+
     public float HealthNormalized => Mathf.Clamp01(currentHealth / Mathf.Max(1f, maxHealth));
     public int MaxUnitCount => maxUnitCount;
     public int ActiveUnitCount => activeTroopVisualCount;
@@ -478,6 +489,22 @@ public class TroopCombat : MonoBehaviour
 
     private void UpdateCombat()
     {
+        if (currentTarget != null && !currentTarget.CanBeTargetedBy(this))
+        {
+            currentTarget = null;
+            CurrentState = State.Idle;
+            smoothedCombatOverlap = 0f;
+            return;
+        }
+
+        if (currentTarget != null && !ShouldMaintainCombatTarget(currentTarget))
+        {
+            currentTarget = null;
+            CurrentState = State.Idle;
+            smoothedCombatOverlap = 0f;
+            return;
+        }
+
         if (Time.time >= nextScanTime)
         {
             nextScanTime = Time.time + Mathf.Max(0.05f, targetScanInterval);
@@ -969,7 +996,57 @@ public class TroopCombat : MonoBehaviour
             return false;
         }
 
+        if (faction == Faction.Friendly && other.faction == Faction.Enemy)
+        {
+            if (IsProtectedByFriendlyCamp())
+            {
+                return false;
+            }
+        }
+
         return faction != other.faction;
+    }
+
+    public bool IsProtectedByFriendlyCamp()
+    {
+        if (faction != Faction.Friendly)
+        {
+            return false;
+        }
+
+        RtsCampManager campManager = RtsCampManager.Instance;
+        if (campManager == null)
+        {
+            return false;
+        }
+
+        if (TryGetFootprintBounds(out Bounds footprintBounds))
+        {
+            return campManager.IsFriendlyRegimentProtected(transform.position, footprintBounds);
+        }
+
+        return campManager.IsInFriendlyProtectedZone(transform.position);
+    }
+
+    private bool ShouldMaintainCombatTarget(TroopCombat target)
+    {
+        return ShouldEngageCandidateForCombat(target);
+    }
+
+    private bool ShouldEngageCandidateForCombat(TroopCombat candidate)
+    {
+        if (candidate == null || faction != Faction.Enemy || candidate.faction != Faction.Friendly)
+        {
+            return true;
+        }
+
+        EnemyRegimentAI enemyAi = GetComponent<EnemyRegimentAI>();
+        if (enemyAi == null)
+        {
+            return true;
+        }
+
+        return enemyAi.ShouldEngageFriendlyForCombat(candidate);
     }
 
     private TroopCombat FindTargetInRange()
@@ -998,6 +1075,11 @@ public class TroopCombat : MonoBehaviour
             }
 
             if (!TryGetAttackProfileForTarget(candidate, out _))
+            {
+                continue;
+            }
+
+            if (!ShouldEngageCandidateForCombat(candidate))
             {
                 continue;
             }

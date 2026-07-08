@@ -49,7 +49,9 @@ public class SiegeMatchUi : MonoBehaviour
     [SerializeField] private EditorPreviewMode editorPreview = EditorPreviewMode.Playing;
 
     private bool awaitingRestart;
+    private bool isBoundToManager;
     private Coroutine openingStatusCoroutine;
+    private SiegeGameManager boundManager;
 
     public static SiegeMatchUi Instance { get; private set; }
 
@@ -68,9 +70,9 @@ public class SiegeMatchUi : MonoBehaviour
     }
     private void OnEnable()
     {
-        if (Application.isPlaying && SiegeGameManager.Instance != null)
+        if (Application.isPlaying)
         {
-            Bind(SiegeGameManager.Instance);
+            TryBindManager();
         }
 
         if (!Application.isPlaying)
@@ -81,10 +83,7 @@ public class SiegeMatchUi : MonoBehaviour
 
     private void Start()
     {
-        if (SiegeGameManager.Instance != null)
-        {
-            Bind(SiegeGameManager.Instance);
-        }
+        TryBindManager();
 
         ApplyPlayingLayout();
         awaitingRestart = false;
@@ -114,12 +113,19 @@ public class SiegeMatchUi : MonoBehaviour
 
     private void Update()
     {
+        TryBindManager();
+
+        SiegeGameManager manager = boundManager;
+        if (manager != null && manager.IsPlaying)
+        {
+            RefreshCannonCountdown();
+        }
+
         if (!awaitingRestart || !enableClickToRestart)
         {
             return;
         }
 
-        SiegeGameManager manager = SiegeGameManager.Instance;
         if (manager == null || manager.IsPlaying)
         {
             return;
@@ -139,9 +145,9 @@ public class SiegeMatchUi : MonoBehaviour
             openingStatusCoroutine = null;
         }
 
-        if (Application.isPlaying && SiegeGameManager.Instance != null)
+        if (Application.isPlaying && boundManager != null)
         {
-            Unbind(SiegeGameManager.Instance);
+            Unbind(boundManager);
         }
     }
 
@@ -153,8 +159,34 @@ public class SiegeMatchUi : MonoBehaviour
         }
     }
 
+    private void TryBindManager()
+    {
+        SiegeGameManager manager = SiegeGameManager.Instance;
+        if (manager == boundManager)
+        {
+            return;
+        }
+
+        if (boundManager != null)
+        {
+            Unbind(boundManager);
+        }
+
+        if (manager != null)
+        {
+            Bind(manager);
+        }
+    }
+
     private void Bind(SiegeGameManager manager)
     {
+        if (isBoundToManager && boundManager == manager)
+        {
+            return;
+        }
+
+        boundManager = manager;
+        isBoundToManager = true;
         manager.MatchStateChanged += HandleMatchStateChanged;
         manager.CannonFireCountdownUpdated += HandleCannonCountdownUpdated;
         HandleMatchStateChanged(manager.CurrentState);
@@ -163,8 +195,17 @@ public class SiegeMatchUi : MonoBehaviour
 
     private void Unbind(SiegeGameManager manager)
     {
+        if (!isBoundToManager || manager == null)
+        {
+            boundManager = null;
+            isBoundToManager = false;
+            return;
+        }
+
         manager.MatchStateChanged -= HandleMatchStateChanged;
         manager.CannonFireCountdownUpdated -= HandleCannonCountdownUpdated;
+        boundManager = null;
+        isBoundToManager = false;
     }
 
     public void UpdateCommanderHp(int hitsRemaining, int maxHits)
@@ -263,7 +304,12 @@ public class SiegeMatchUi : MonoBehaviour
 
     private void RefreshCannonCountdown()
     {
-        SiegeGameManager manager = SiegeGameManager.Instance;
+        SiegeGameManager manager = boundManager;
+        if (manager != null && manager.CurrentState != SiegeGameManager.MatchState.Playing)
+        {
+            return;
+        }
+
         float secondsRemaining = manager != null ? manager.SecondsUntilCannonsFire : 0f;
         SetLabelText(countdownLabel, string.Format(wave3CountdownFormat, secondsRemaining), true);
     }

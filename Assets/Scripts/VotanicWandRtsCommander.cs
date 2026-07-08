@@ -19,8 +19,11 @@ public class VotanicWandRtsCommander : MonoBehaviour
 
     [Header("Path Drawing")]
     [SerializeField, Min(0.05f)] private float pathSampleMinDistance = 0.4f;
+    [SerializeField, Min(0.05f)] private float pathInitialSampleMinDistance = 0.75f;
+    [SerializeField, Min(0f)] private float pathRecordingGraceDuration = 0.12f;
+    [SerializeField, Min(0f)] private float pathStartJitterRadius = 1.25f;
     [SerializeField, Min(0f)] private float pathSimplifyEpsilon = 0.75f;
-    [SerializeField, Range(0, 4)] private int pathSmoothIterations = 2;
+    [SerializeField, Range(0, 4)] private int pathSmoothIterations = 1;
     [SerializeField, Min(0.25f)] private float pathMaxWaypointSpacing = 2f;
     [SerializeField, Min(0.1f)] private float pathMinIssueLength = 0.75f;
 
@@ -48,6 +51,7 @@ public class VotanicWandRtsCommander : MonoBehaviour
     private bool isRecordingPath;
     private bool wasCommandHeld;
     private bool vrCommandLatched;
+    private float pathRecordingStartTime;
     private string debugStatusLine = "Ready";
     private string debugHoverLine = "Hover: none";
     private string debugPathLine = "Path: none";
@@ -112,13 +116,14 @@ public class VotanicWandRtsCommander : MonoBehaviour
             return;
         }
 
-        if (unit.HasActivePath)
+        if (unit.HasActivePath || unit.IsBlockedBySolidObstacle || unit.IsStuck)
         {
             unit.Stop();
         }
 
         commandingUnit = unit;
         isRecordingPath = true;
+        pathRecordingStartTime = Time.time;
         recordedPathPoints.Clear();
         recordedPathPoints.Add(GetGroundedUnitPosition(unit));
 
@@ -176,11 +181,26 @@ public class VotanicWandRtsCommander : MonoBehaviour
             pathSmoothIterations,
             pathMaxWaypointSpacing));
 
+        if (pathStartJitterRadius > 0f && smoothedPathScratch.Count >= 2)
+        {
+            List<Vector3> trimmed = RtsPathUtility.TrimLeadingStartJitter(
+                smoothedPathScratch,
+                recordedPathPoints[0],
+                pathStartJitterRadius);
+            smoothedPathScratch.Clear();
+            smoothedPathScratch.AddRange(trimmed);
+        }
+
         return smoothedPathScratch;
     }
 
     private void TryRecordPathPoint(Ray ray)
     {
+        if (Time.time - pathRecordingStartTime < pathRecordingGraceDuration)
+        {
+            return;
+        }
+
         if (!TryGetBattlefieldPoint(ray, out Vector3 battlefieldPoint))
         {
             return;
@@ -195,7 +215,11 @@ public class VotanicWandRtsCommander : MonoBehaviour
         Vector3 lastPoint = recordedPathPoints[recordedPathPoints.Count - 1];
         Vector3 offset = battlefieldPoint - lastPoint;
         offset.y = 0f;
-        if (offset.sqrMagnitude < pathSampleMinDistance * pathSampleMinDistance)
+
+        float minDistance = recordedPathPoints.Count == 1
+            ? pathInitialSampleMinDistance
+            : pathSampleMinDistance;
+        if (offset.sqrMagnitude < minDistance * minDistance)
         {
             return;
         }

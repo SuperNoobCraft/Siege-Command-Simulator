@@ -8,15 +8,17 @@ public class RtsUnitHighlight : MonoBehaviour
 
     [Header("Outline")]
     [SerializeField] private bool outlineOnly = true;
-    [SerializeField] private float hoverOutlineWidth = 3f;
-    [SerializeField] private float selectedOutlineWidth = 5f;
+    [SerializeField, Min(0f)] private float hoverOutlineWidth = 3f;
+    [SerializeField, Min(0f)] private float selectedOutlineWidth = 5f;
     [SerializeField] private float glowIntensity = 2.5f;
+    [SerializeField] private bool scaleOutlineWithCameraDistance = true;
+    [SerializeField, Min(0f)] private float outlineDistanceScale = 0.002f;
+    [SerializeField, Min(0f)] private float outlineMinWorldWidth = 0.05f;
 
     [Header("Targets")]
     [SerializeField] private bool preferColliderWireframe = true;
     [SerializeField] private bool includeChildRenderers;
     [SerializeField] private Renderer[] targetRenderers;
-    [SerializeField] private float wireframeLineWidth = 0.08f;
     [SerializeField] private Collider highlightBoundsCollider;
 
     private static readonly int EmissionColorId = Shader.PropertyToID("_EmissionColor");
@@ -28,6 +30,8 @@ public class RtsUnitHighlight : MonoBehaviour
     private Vector3[] cachedWireframePositions;
     private bool isHovered;
     private bool isSelected;
+    private float activeOutlineWidth;
+    private bool hasActiveOutline;
 
     private void Awake()
     {
@@ -49,6 +53,27 @@ public class RtsUnitHighlight : MonoBehaviour
         }
 
         ApplyVisuals();
+    }
+
+    private void LateUpdate()
+    {
+        if (wireframeOutline != null && wireframeOutline.enabled && hasActiveOutline)
+        {
+            wireframeOutline.widthMultiplier = GetEffectiveOutlineWidth(activeOutlineWidth);
+        }
+    }
+
+    private void OnValidate()
+    {
+        hoverOutlineWidth = Mathf.Max(0f, hoverOutlineWidth);
+        selectedOutlineWidth = Mathf.Max(0f, selectedOutlineWidth);
+        outlineDistanceScale = Mathf.Max(0f, outlineDistanceScale);
+        outlineMinWorldWidth = Mathf.Max(0f, outlineMinWorldWidth);
+
+        if (isActiveAndEnabled)
+        {
+            ApplyVisuals();
+        }
     }
 
     private void OnDisable()
@@ -193,7 +218,6 @@ public class RtsUnitHighlight : MonoBehaviour
         wireframeOutline.alignment = LineAlignment.View;
         wireframeOutline.numCornerVertices = 4;
         wireframeOutline.numCapVertices = 4;
-        wireframeOutline.widthMultiplier = wireframeLineWidth;
         wireframeOutline.positionCount = cachedWireframePositions.Length;
         wireframeOutline.sharedMaterial = new Material(Shader.Find("Sprites/Default"));
         wireframeOutline.SetPositions(cachedWireframePositions);
@@ -242,12 +266,38 @@ public class RtsUnitHighlight : MonoBehaviour
 
         if (wireframeOutline != null)
         {
-            ApplyWireframeOutline(stateColor, isActive);
+            ApplyWireframeOutline(stateColor, outlineWidth, isActive);
         }
         else
         {
             ApplyRendererOutline(stateColor, outlineWidth, isActive);
         }
+
+        activeOutlineWidth = outlineWidth;
+        hasActiveOutline = isActive;
+    }
+
+    private float GetEffectiveOutlineWidth(float outlineWidth)
+    {
+        if (outlineWidth <= 0f)
+        {
+            return 0f;
+        }
+
+        if (!scaleOutlineWithCameraDistance)
+        {
+            return Mathf.Max(outlineMinWorldWidth, outlineWidth);
+        }
+
+        Camera camera = Camera.main;
+        if (camera == null)
+        {
+            return Mathf.Max(outlineMinWorldWidth, outlineWidth);
+        }
+
+        float distance = Vector3.Distance(camera.transform.position, transform.position);
+        float scaledWidth = outlineWidth * distance * outlineDistanceScale;
+        return Mathf.Max(outlineMinWorldWidth, scaledWidth);
     }
 
     private void ApplyRendererOutline(Color stateColor, float outlineWidth, bool isActive)
@@ -283,7 +333,7 @@ public class RtsUnitHighlight : MonoBehaviour
         }
     }
 
-    private void ApplyWireframeOutline(Color stateColor, bool isActive)
+    private void ApplyWireframeOutline(Color stateColor, float outlineWidth, bool isActive)
     {
         if (wireframeOutline == null)
         {
@@ -298,6 +348,6 @@ public class RtsUnitHighlight : MonoBehaviour
 
         wireframeOutline.startColor = stateColor;
         wireframeOutline.endColor = stateColor;
-        wireframeOutline.widthMultiplier = wireframeLineWidth;
+        wireframeOutline.widthMultiplier = GetEffectiveOutlineWidth(outlineWidth);
     }
 }

@@ -148,6 +148,158 @@ public class RtsCampManager : MonoBehaviour
         return IsWithinHorizontalRadius(worldPosition, camp.position, campZoneRadius);
     }
 
+    public Vector3 ClampOutsideCampZone(Vector3 worldPosition, TroopCombat.Faction faction)
+    {
+        if (faction == TroopCombat.Faction.Friendly)
+        {
+            return ClampOutsideFriendlyProtectedZone(worldPosition);
+        }
+
+        Transform camp = GetCampTransform(faction);
+        if (camp == null || !IsInCampZone(worldPosition, faction))
+        {
+            return worldPosition;
+        }
+
+        Vector3 campPosition = camp.position;
+        Vector3 away = worldPosition - campPosition;
+        away.y = 0f;
+        if (away.sqrMagnitude < 0.0001f)
+        {
+            Vector3 gateOutside = GetGateOutsidePosition(faction);
+            away = gateOutside - campPosition;
+            away.y = 0f;
+        }
+
+        if (away.sqrMagnitude < 0.0001f)
+        {
+            away = Vector3.forward;
+        }
+
+        away.Normalize();
+        float outsideRadius = campZoneRadius + Mathf.Max(gateArrivalRadius * 0.5f, 0.5f);
+        Vector3 clamped = campPosition + away * outsideRadius;
+        clamped.y = worldPosition.y;
+        return clamped;
+    }
+
+    public bool IsInFriendlyProtectedZone(Vector3 worldPosition)
+    {
+        if (IsInCampZone(worldPosition, TroopCombat.Faction.Friendly))
+        {
+            return true;
+        }
+
+        if (IsAtGateInside(worldPosition, TroopCombat.Faction.Friendly))
+        {
+            return true;
+        }
+
+        Transform camp = friendlyCamp;
+        if (camp != null)
+        {
+            float protectedRadius = GetFriendlyProtectedRadius();
+            if (IsWithinHorizontalRadius(worldPosition, camp.position, protectedRadius))
+            {
+                return true;
+            }
+        }
+
+        Vector3 gateInside = GetGateInsidePosition(TroopCombat.Faction.Friendly);
+        if (IsWithinHorizontalRadius(worldPosition, gateInside, gateArrivalRadius))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    public bool IsFriendlyRegimentProtected(Vector3 regimentPosition, Bounds footprint)
+    {
+        if (footprint.size.sqrMagnitude > 0.0001f)
+        {
+            if (IsFootprintOverlappingFriendlyProtectedZone(footprint))
+            {
+                return true;
+            }
+        }
+
+        return IsInFriendlyProtectedZone(regimentPosition);
+    }
+
+    public bool IsFootprintOverlappingFriendlyProtectedZone(Bounds footprint)
+    {
+        if (IsFootprintOverlappingCampZone(footprint, TroopCombat.Faction.Friendly))
+        {
+            return true;
+        }
+
+        Transform camp = friendlyCamp;
+        if (camp == null)
+        {
+            return false;
+        }
+
+        float protectedRadius = GetFriendlyProtectedRadius();
+        Vector3 campPosition = camp.position;
+        if (IsWithinHorizontalRadius(footprint.center, campPosition, protectedRadius + footprint.extents.magnitude))
+        {
+            float horizontalDistance = GetHorizontalDistanceToBounds(campPosition, footprint);
+            if (horizontalDistance <= protectedRadius)
+            {
+                return true;
+            }
+        }
+
+        Vector3 gateInside = GetGateInsidePosition(TroopCombat.Faction.Friendly);
+        if (IsWithinHorizontalRadius(footprint.center, gateInside, gateArrivalRadius + footprint.extents.magnitude))
+        {
+            float horizontalDistance = GetHorizontalDistanceToBounds(gateInside, footprint);
+            if (horizontalDistance <= gateArrivalRadius)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public Vector3 ClampOutsideFriendlyProtectedZone(Vector3 worldPosition)
+    {
+        if (!IsInFriendlyProtectedZone(worldPosition))
+        {
+            return worldPosition;
+        }
+
+        Vector3 gateOutside = GetGateOutsidePosition(TroopCombat.Faction.Friendly);
+        Vector3 away = worldPosition - gateOutside;
+        away.y = 0f;
+        if (away.sqrMagnitude < 0.0001f)
+        {
+            Transform camp = friendlyCamp;
+            if (camp != null)
+            {
+                away = gateOutside - camp.position;
+                away.y = 0f;
+            }
+        }
+
+        if (away.sqrMagnitude < 0.0001f)
+        {
+            away = Vector3.forward;
+        }
+
+        away.Normalize();
+        Vector3 clamped = gateOutside + away * Mathf.Max(gateArrivalRadius * 0.5f, 0.75f);
+        clamped.y = worldPosition.y;
+        return clamped;
+    }
+
+    public float GetFriendlyProtectedRadius()
+    {
+        return campZoneRadius + gateArrivalRadius;
+    }
+
     public bool IsFootprintOverlappingCampZone(Bounds footprint, TroopCombat.Faction faction)
     {
         Transform camp = GetCampTransform(faction);

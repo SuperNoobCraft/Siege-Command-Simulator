@@ -1,8 +1,13 @@
 using UnityEngine;
+using UnityEngine.Rendering;
 
 public class TroopRangedProjectile : MonoBehaviour
 {
     private const float HazardRadius = 0.2f;
+    private static readonly int ColorId = Shader.PropertyToID("_Color");
+
+    private static Material outlineMaterial;
+    private static MaterialPropertyBlock outlinePropertyBlock;
 
     private Vector3 startPosition;
     private Vector3 targetPosition;
@@ -14,6 +19,7 @@ public class TroopRangedProjectile : MonoBehaviour
     private bool isPlayerHazard;
     private LayerMask playerHitLayers;
     private bool hasRegisteredHit;
+    private bool isInitialized;
 
     public static TroopRangedProjectile Launch(
         GameObject prefab,
@@ -44,12 +50,15 @@ public class TroopRangedProjectile : MonoBehaviour
         Vector3 target,
         float speed,
         float arcHeight,
-        LayerMask hitLayers)
+        LayerMask hitLayers,
+        bool enableOutline = false,
+        Color outlineColor = default,
+        float outlineScale = 1.14f)
     {
         TroopRangedProjectile projectile = Launch(prefab, start, target, speed, arcHeight);
         if (projectile != null)
         {
-            projectile.ConfigurePlayerHazard(hitLayers);
+            projectile.ConfigurePlayerHazard(hitLayers, enableOutline, outlineColor, outlineScale);
         }
 
         return projectile;
@@ -57,6 +66,13 @@ public class TroopRangedProjectile : MonoBehaviour
 
     public void Initialize(Vector3 start, Vector3 target, float speed, float arcHeight)
     {
+        if (!IsValidPosition(start) || !IsValidPosition(target))
+        {
+            Debug.LogWarning("TroopRangedProjectile received an invalid start or target position.", this);
+            Destroy(gameObject);
+            return;
+        }
+
         startPosition = start;
         targetPosition = target;
         travelSpeed = Mathf.Max(0.01f, speed);
@@ -66,21 +82,47 @@ public class TroopRangedProjectile : MonoBehaviour
         totalDistance = Mathf.Max(0.01f, totalDistance);
         previousPosition = startPosition;
         transform.position = startPosition;
-        UpdateFacing(startPosition, GetPositionAtProgress(0.001f));
+        UpdateFacing(startPosition, GetPositionAtProgress(Mathf.Min(0.001f, 1f)));
+        isInitialized = true;
     }
 
-    public void ConfigurePlayerHazard(LayerMask hitLayers)
+    public void ConfigurePlayerHazard(
+        LayerMask hitLayers,
+        bool enableOutline = false,
+        Color outlineColor = default,
+        float outlineScale = 1.14f)
     {
         isPlayerHazard = true;
         playerHitLayers = hitLayers;
         EnsureHazardPhysics();
+
+        if (enableOutline)
+        {
+            ApplyPlayerHazardOutline(outlineColor, outlineScale);
+        }
     }
 
     private void Update()
     {
+        if (!isInitialized)
+        {
+            return;
+        }
+
+        if (!IsValidPosition(startPosition) || !IsValidPosition(targetPosition))
+        {
+            Destroy(gameObject);
+            return;
+        }
+
         traveledDistance += travelSpeed * Time.deltaTime;
         float progress = Mathf.Clamp01(traveledDistance / totalDistance);
         Vector3 currentPosition = GetPositionAtProgress(progress);
+        if (!IsValidPosition(currentPosition))
+        {
+            Destroy(gameObject);
+            return;
+        }
 
         if (isPlayerHazard)
         {
@@ -199,6 +241,78 @@ public class TroopRangedProjectile : MonoBehaviour
         return true;
     }
 
+    private void ApplyPlayerHazardOutline(Color outlineColor, float outlineScale)
+    {
+        if (outlineColor.a <= 0f)
+        {
+            outlineColor = new Color(1f, 0.12f, 0.12f, 1f);
+        }
+
+        outlineScale = Mathf.Max(1f, outlineScale);
+        int ignoreRaycastLayer = LayerMask.NameToLayer("Ignore Raycast");
+
+        MeshRenderer[] renderers = GetComponentsInChildren<MeshRenderer>(includeInactive: true);
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            MeshRenderer sourceRenderer = renderers[i];
+            if (sourceRenderer == null || sourceRenderer.name == "PlayerHazardOutline")
+            {
+                continue;
+            }
+
+            MeshFilter sourceFilter = sourceRenderer.GetComponent<MeshFilter>();
+            if (sourceFilter == null || sourceFilter.sharedMesh == null)
+            {
+                continue;
+            }
+
+            GameObject outlineObject = new GameObject("PlayerHazardOutline");
+            outlineObject.transform.SetParent(sourceRenderer.transform, false);
+            outlineObject.transform.localPosition = Vector3.zero;
+            outlineObject.transform.localRotation = Quaternion.identity;
+            outlineObject.transform.localScale = Vector3.one * outlineScale;
+            outlineObject.layer = ignoreRaycastLayer >= 0 ? ignoreRaycastLayer : sourceRenderer.gameObject.layer;
+
+            MeshFilter outlineFilter = outlineObject.AddComponent<MeshFilter>();
+            outlineFilter.sharedMesh = sourceFilter.sharedMesh;
+
+            MeshRenderer outlineRenderer = outlineObject.AddComponent<MeshRenderer>();
+            outlineRenderer.sharedMaterial = GetOutlineMaterial();
+            outlineRenderer.shadowCastingMode = ShadowCastingMode.Off;
+            outlineRenderer.receiveShadows = false;
+            outlineRenderer.allowOcclusionWhenDynamic = false;
+            outlineRenderer.lightProbeUsage = LightProbeUsage.Off;
+            outlineRenderer.reflectionProbeUsage = ReflectionProbeUsage.Off;
+
+            if (outlinePropertyBlock == null)
+            {
+                outlinePropertyBlock = new MaterialPropertyBlock();
+            }
+
+            outlinePropertyBlock.Clear();
+            outlinePropertyBlock.SetColor(ColorId, outlineColor);
+            outlineRenderer.SetPropertyBlock(outlinePropertyBlock);
+        }
+    }
+
+    private static Material GetOutlineMaterial()
+    {
+        if (outlineMaterial != null)
+        {
+            return outlineMaterial;
+        }
+
+        Shader shader = Shader.Find("Unlit/Color");
+        if (shader == null)
+        {
+            shader = Shader.Find("Sprites/Default");
+        }
+
+        outlineMaterial = new Material(shader);
+        outlineMaterial.SetInt("_Cull", (int)CullMode.Front);
+        return outlineMaterial;
+    }
+
     private void EnsureHazardPhysics()
     {
         Rigidbody body = GetComponent<Rigidbody>();
@@ -231,12 +345,28 @@ public class TroopRangedProjectile : MonoBehaviour
     private void UpdateFacing(Vector3 from, Vector3 to)
     {
         Vector3 direction = to - from;
-        if (direction.sqrMagnitude < 0.0001f)
+        direction.y = 0f;
+        if (!IsValidDirection(direction))
         {
             return;
         }
 
         transform.rotation = Quaternion.LookRotation(direction.normalized, Vector3.up);
+    }
+
+    private static bool IsValidPosition(Vector3 position)
+    {
+        return float.IsFinite(position.x)
+            && float.IsFinite(position.y)
+            && float.IsFinite(position.z);
+    }
+
+    private static bool IsValidDirection(Vector3 direction)
+    {
+        return float.IsFinite(direction.x)
+            && float.IsFinite(direction.y)
+            && float.IsFinite(direction.z)
+            && direction.sqrMagnitude >= 0.0001f;
     }
 
     private static float GetHorizontalDistance(Vector3 a, Vector3 b)

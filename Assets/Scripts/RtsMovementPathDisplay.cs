@@ -34,7 +34,7 @@ public class RtsMovementPathDisplay : MonoBehaviour
             return;
         }
 
-        if (!motor.HasActivePath || !isActiveAndEnabled || !showOnHover)
+        if (!motor.HasActivePathForDisplay || !isActiveAndEnabled || !showOnHover)
         {
             SetLineVisible(false);
             return;

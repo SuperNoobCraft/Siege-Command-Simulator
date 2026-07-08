@@ -4,7 +4,7 @@ using UnityEngine;
 /// <summary>
 /// Drives enemy wave timing and deployment. Place enemy regiments inside the gate and assign each regiment's wave.
 /// </summary>
-[DefaultExecutionOrder(60)]
+[DefaultExecutionOrder(110)]
 public class EnemyWaveController : MonoBehaviour
 {
     [System.Serializable]
@@ -16,7 +16,19 @@ public class EnemyWaveController : MonoBehaviour
 
     public static EnemyWaveController Instance { get; private set; }
     public static event System.Action<int> WaveDeployed;
-    public float MatchElapsedSeconds => Time.time - matchStartTime;
+    public float MatchElapsedSeconds
+    {
+        get
+        {
+            SiegeGameManager manager = SiegeGameManager.Instance;
+            if (manager != null)
+            {
+                return manager.MatchElapsedSeconds;
+            }
+
+            return localMatchElapsedSeconds;
+        }
+    }
     public bool HasWave3Started => triggeredWaves.Contains(wave3.waveNumber);
     public float Wave3StartTime => wave3StartTime;
     public float Wave3SpawnTimeSeconds => wave3.spawnTimeSeconds;
@@ -39,10 +51,24 @@ public class EnemyWaveController : MonoBehaviour
     private static readonly List<EnemyRegimentAI> RegisteredRegiments = new List<EnemyRegimentAI>();
     private readonly HashSet<int> triggeredWaves = new HashSet<int>();
     private float nextEncirclementEvaluationTime;
-    private float matchStartTime;
+    private float localMatchElapsedSeconds;
+    private int preparedPlaySessionId = -1;
     private float wave3StartTime = -1f;
 
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+    private static void ResetStatics()
+    {
+        Instance = null;
+        RegisteredRegiments.Clear();
+    }
+
     private void Awake()
+    {
+        RegisterInstance();
+        EnsurePreparedForSession();
+    }
+
+    private void RegisterInstance()
     {
         if (Instance != null && Instance != this)
         {
@@ -50,21 +76,66 @@ public class EnemyWaveController : MonoBehaviour
         }
 
         Instance = this;
-        matchStartTime = Time.time;
-        RefreshRegisteredRegiments();
+    }
+
+    private void OnValidate()
+    {
+        wave1.spawnTimeSeconds = Mathf.Max(0f, wave1.spawnTimeSeconds);
+        wave2.spawnTimeSeconds = Mathf.Max(wave1.spawnTimeSeconds, wave2.spawnTimeSeconds);
+        wave3.spawnTimeSeconds = Mathf.Max(wave2.spawnTimeSeconds, wave3.spawnTimeSeconds);
+        wave1.waveNumber = 1;
+        wave2.waveNumber = 2;
+        wave3.waveNumber = 3;
+    }
+
+    public void PrepareForMatchStart()
+    {
+        EnsurePreparedForSession();
     }
 
     private void Start()
     {
-        RefreshRegisteredRegiments();
+        EnsurePreparedForSession();
 
         if (logWaveEvents)
         {
             Debug.Log(
                 "EnemyWaveController ready with " + RegisteredRegiments.Count + " regiment(s). Wave 1 at "
-                + wave1.spawnTimeSeconds + "s.",
+                + wave1.spawnTimeSeconds + "s. Match elapsed "
+                + MatchElapsedSeconds.ToString("F1") + "s.",
                 this);
         }
+    }
+
+    private void EnsurePreparedForSession()
+    {
+        if (!Application.isPlaying || preparedPlaySessionId == SiegeGameManager.PlaySessionId)
+        {
+            return;
+        }
+
+        ResetForNewMatch();
+    }
+
+    private void ResetForNewMatch()
+    {
+        EnforceWaveSchedule();
+        triggeredWaves.Clear();
+        wave3StartTime = -1f;
+        localMatchElapsedSeconds = 0f;
+        RegisteredRegiments.Clear();
+        RefreshRegisteredRegiments();
+        preparedPlaySessionId = SiegeGameManager.PlaySessionId;
+    }
+
+    private void EnforceWaveSchedule()
+    {
+        wave1.spawnTimeSeconds = Mathf.Max(0f, wave1.spawnTimeSeconds);
+        wave2.spawnTimeSeconds = Mathf.Max(wave1.spawnTimeSeconds, wave2.spawnTimeSeconds);
+        wave3.spawnTimeSeconds = Mathf.Max(wave2.spawnTimeSeconds, wave3.spawnTimeSeconds);
+        wave1.waveNumber = 1;
+        wave2.waveNumber = 2;
+        wave3.waveNumber = 3;
     }
 
     private static void RefreshRegisteredRegiments()
@@ -84,8 +155,36 @@ public class EnemyWaveController : MonoBehaviour
         }
     }
 
+    private void OnEnable()
+    {
+        if (Application.isPlaying)
+        {
+            RegisterInstance();
+            EnsurePreparedForSession();
+        }
+    }
+
     private void Update()
     {
+        RegisterInstance();
+        EnsurePreparedForSession();
+
+        SiegeGameManager manager = SiegeGameManager.Instance;
+        if (manager != null && !manager.IsPlaying)
+        {
+            return;
+        }
+
+        if (manager == null)
+        {
+            if (Time.timeScale <= 0f)
+            {
+                Time.timeScale = 1f;
+            }
+
+            localMatchElapsedSeconds += Time.unscaledDeltaTime;
+        }
+
         EvaluateWave(wave1);
         EvaluateWave(wave2);
         EvaluateWave(wave3);
@@ -124,7 +223,7 @@ public class EnemyWaveController : MonoBehaviour
             return;
         }
 
-        if (Time.time < schedule.spawnTimeSeconds)
+        if (MatchElapsedSeconds < schedule.spawnTimeSeconds)
         {
             return;
         }
@@ -166,7 +265,7 @@ public class EnemyWaveController : MonoBehaviour
         {
             Debug.Log(
                 "Enemy wave " + waveNumber + " deployed " + deployedCount + " regiment(s) at t="
-                + (Time.time - matchStartTime).ToString("F1") + "s.",
+                + MatchElapsedSeconds.ToString("F1") + "s.",
                 this);
         }
     }

@@ -1,0 +1,11 @@
+Model Information:
+* title:	Explosion
+* source:	https://sketchfab.com/3d-models/explosion-46fb54741fbc4cc0854c03b5ef5d0624
+* author:	andersdt (https://sketchfab.com/andersdt)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Explosion" (https://sketchfab.com/3d-models/explosion-46fb54741fbc4cc0854c03b5ef5d0624) by andersdt (https://sketchfab.com/andersdt) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

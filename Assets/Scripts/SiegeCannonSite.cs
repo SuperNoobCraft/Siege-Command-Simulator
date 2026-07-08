@@ -31,6 +31,12 @@ public class SiegeCannonSite : MonoBehaviour
 
     public bool IsUnderAttack => occupationTime > 0f;
 
+    public void ResetForMatchStart()
+    {
+        occupationTime = 0f;
+        hasTriggeredDefeat = false;
+    }
+
     private void Awake()
     {
         if (occupationZone == null)

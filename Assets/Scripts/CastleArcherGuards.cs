@@ -44,6 +44,9 @@ public class CastleArcherGuards : MonoBehaviour
     [SerializeField, Range(0f, 2f)] private float chanceScaleStrength = 1f;
     [SerializeField, Min(0f)] private float playerShotSpreadRadius = 1.75f;
     [SerializeField] private LayerMask playerHitLayers = ~0;
+    [SerializeField] private bool enablePlayerShotOutline = true;
+    [SerializeField] private Color playerShotOutlineColor = new Color(1f, 0.12f, 0.12f, 1f);
+    [SerializeField, Min(1f)] private float playerShotOutlineScale = 1.14f;
 
     [Header("Projectile")]
     [SerializeField] private GameObject arrowPrefab;
@@ -112,6 +115,7 @@ public class CastleArcherGuards : MonoBehaviour
         gapScaleStrength = Mathf.Clamp(gapScaleStrength, 0f, 2f);
         chanceScaleStrength = Mathf.Clamp(chanceScaleStrength, 0f, 2f);
         playerShotSpreadRadius = Mathf.Max(0f, playerShotSpreadRadius);
+        playerShotOutlineScale = Mathf.Max(1f, playerShotOutlineScale);
         projectileSpeed = Mathf.Max(0.1f, projectileSpeed);
         projectileArcHeight = Mathf.Max(0f, projectileArcHeight);
         projectileLaunchHeight = Mathf.Max(0f, projectileLaunchHeight);
@@ -214,6 +218,13 @@ public class CastleArcherGuards : MonoBehaviour
         spread.y *= 0.65f;
         Vector3 aimPoint = player.position + spread;
 
+        Vector3 launchPoint = archer.Transform.position;
+        launchPoint.y += projectileLaunchHeight;
+        if (!IsValidPosition(launchPoint) || !IsValidPosition(aimPoint))
+        {
+            return;
+        }
+
         if (faceTargetWhileAiming)
         {
             FaceArcherToward(archer.Transform, aimPoint);
@@ -224,16 +235,16 @@ public class CastleArcherGuards : MonoBehaviour
             return;
         }
 
-        Vector3 launchPoint = archer.Transform.position;
-        launchPoint.y += projectileLaunchHeight;
-
         TroopRangedProjectile.LaunchPlayerHazard(
             arrowPrefab,
             launchPoint,
             aimPoint,
             projectileSpeed,
             projectileArcHeight,
-            playerHitLayers);
+            playerHitLayers,
+            enablePlayerShotOutline,
+            playerShotOutlineColor,
+            playerShotOutlineScale);
     }
 
     private void CacheArcherSlots()
@@ -464,6 +475,13 @@ public class CastleArcherGuards : MonoBehaviour
         Vector3 offset = a - b;
         offset.y = 0f;
         return offset.sqrMagnitude;
+    }
+
+    private static bool IsValidPosition(Vector3 position)
+    {
+        return float.IsFinite(position.x)
+            && float.IsFinite(position.y)
+            && float.IsFinite(position.z);
     }
 
     private void OnDrawGizmosSelected()

@@ -34,8 +34,53 @@ public static class RtsPathUtility
         }
 
         List<Vector3> simplified = SimplifyPolyline(filtered, simplifyEpsilon);
-        List<Vector3> smoothed = SmoothPolyline(simplified, smoothIterations);
+        int effectiveSmoothIterations = simplified.Count <= 3
+            ? Mathf.Min(smoothIterations, 1)
+            : smoothIterations;
+        List<Vector3> smoothed = SmoothPolyline(simplified, effectiveSmoothIterations);
         return ResamplePolyline(smoothed, maxWaypointSpacing);
+    }
+
+    public static List<Vector3> TrimLeadingStartJitter(
+        IReadOnlyList<Vector3> points,
+        Vector3 anchor,
+        float jitterRadius)
+    {
+        if (points == null || points.Count < 3 || jitterRadius <= 0f)
+        {
+            return points == null ? new List<Vector3>() : new List<Vector3>(points);
+        }
+
+        Vector3 intent = points[points.Count - 1] - anchor;
+        intent.y = 0f;
+        if (intent.sqrMagnitude < 0.01f)
+        {
+            return new List<Vector3>(points);
+        }
+
+        intent.Normalize();
+        float jitterRadiusSqr = jitterRadius * jitterRadius;
+        List<Vector3> trimmed = new List<Vector3>(points);
+
+        while (trimmed.Count > 2)
+        {
+            Vector3 candidate = trimmed[1];
+            Vector3 fromAnchor = candidate - anchor;
+            fromAnchor.y = 0f;
+            if (fromAnchor.sqrMagnitude > jitterRadiusSqr)
+            {
+                break;
+            }
+
+            if (Vector3.Dot(fromAnchor, intent) >= 0f)
+            {
+                break;
+            }
+
+            trimmed.RemoveAt(1);
+        }
+
+        return trimmed;
     }
 
     public static float GetPathLength(IReadOnlyList<Vector3> points)

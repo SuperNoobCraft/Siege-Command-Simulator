@@ -55,9 +55,11 @@ public class EnemyRegimentAI : MonoBehaviour
     [SerializeField, Min(2f)] private float encirclementFlankDistance = 8f;
 
     [Header("Cannon Focus")]
-    [Tooltip("When a friendly unit is within this distance of a cannon, AI is less likely to divert toward it.")]
+    [Tooltip("Keep marching on cannons when friendlies are merely spotted. Only fight blockers or cannon defenders.")]
+    [SerializeField] private bool prioritizeCannonsOverTroops = true;
+    [Tooltip("When a friendly unit is within this distance of a cannon, AI may treat them as a cannon defender.")]
     [SerializeField, Min(0f)] private float friendlyCannonProximityRadius = 12f;
-    [Tooltip("Chance to chase a nearby friendly unit that is not blocking the route to the cannon.")]
+    [Tooltip("Ignored while Prioritize Cannons Over Troops is enabled.")]
     [SerializeField, Range(0f, 1f)] private float unitInterceptChanceNearCannon = 0.08f;
     [Tooltip("Width of the corridor treated as a direct blocking path to the cannon.")]
     [SerializeField, Min(0.5f)] private float directPathBlockWidth = 3.5f;
@@ -182,6 +184,104 @@ public class EnemyRegimentAI : MonoBehaviour
 
         UpdateGateExit();
         UpdateObstacleRecovery();
+        EnforceFriendlyCampBoundary();
+        EnforceCannonObjectivePriority();
+    }
+
+    public bool ShouldEngageFriendlyForCombat(TroopCombat friendly)
+    {
+        if (friendly == null || friendly.TroopFaction != TroopCombat.Faction.Friendly)
+        {
+            return false;
+        }
+
+        if (friendly.IsProtectedByFriendlyCamp())
+        {
+            return false;
+        }
+
+        RtsCampManager campManager = RtsCampManager.Instance;
+        if (campManager != null && campManager.IsInFriendlyProtectedZone(friendly.transform.position))
+        {
+            return false;
+        }
+
+        RtsSiegeObjectives objectives = RtsSiegeObjectives.Instance;
+        if (objectives == null || !objectives.HasCannons())
+        {
+            return false;
+        }
+
+        Vector3 friendlyPosition = friendly.transform.position;
+        Vector3 cannonPosition = objectives.GetNearestCannonPosition(transform.position);
+        float friendlyDistanceToCannon = GetHorizontalDistance(friendlyPosition, cannonPosition);
+
+        if (campManager != null)
+        {
+            float friendlyDistanceToCamp = GetHorizontalDistance(
+                friendlyPosition,
+                campManager.GetCampCenter(TroopCombat.Faction.Friendly));
+            if (friendlyDistanceToCamp + 2f < friendlyDistanceToCannon)
+            {
+                return false;
+            }
+        }
+
+        return ShouldPrioritizeFriendlyUnit(friendlyPosition);
+    }
+
+    private void EnforceCannonObjectivePriority()
+    {
+        if (phase == AiPhase.WaitingInCamp || phase == AiPhase.ExitingGate)
+        {
+            return;
+        }
+
+        TroopCombat target = combat.CurrentTarget;
+        if (target == null || target.TroopFaction != TroopCombat.Faction.Friendly)
+        {
+            return;
+        }
+
+        if (ShouldEngageFriendlyForCombat(target))
+        {
+            return;
+        }
+
+        combat.ClearCurrentTarget();
+
+        if (phase == AiPhase.Kiting || phase == AiPhase.CampingRetreatRoute)
+        {
+            phase = AiPhase.Advancing;
+        }
+
+        IssueMoveOrder(GetPrimaryObjectivePosition());
+    }
+
+    private void EnforceFriendlyCampBoundary()
+    {
+        if (phase == AiPhase.WaitingInCamp || phase == AiPhase.ExitingGate)
+        {
+            return;
+        }
+
+        RtsCampManager campManager = RtsCampManager.Instance;
+        if (campManager == null || !campManager.IsInFriendlyProtectedZone(transform.position))
+        {
+            return;
+        }
+
+        if (combat.CurrentState == TroopCombat.State.Fight)
+        {
+            combat.ClearCurrentTarget();
+        }
+
+        if (phase == AiPhase.Kiting || phase == AiPhase.CampingRetreatRoute)
+        {
+            phase = AiPhase.Advancing;
+        }
+
+        IssueMoveOrder(campManager.GetGateOutsidePosition(TroopCombat.Faction.Friendly));
     }
 
     public bool CanDeployForWave(int currentWaveNumber)
@@ -394,6 +494,11 @@ public class EnemyRegimentAI : MonoBehaviour
                 continue;
             }
 
+            if (troop.TroopFaction == TroopCombat.Faction.Friendly && troop.IsProtectedByFriendlyCamp())
+            {
+                continue;
+            }
+
             if (troop.TroopFaction == TroopCombat.Faction.Friendly)
             {
                 if (!visibleFriendlies.Contains(troop))
@@ -415,17 +520,20 @@ public class EnemyRegimentAI : MonoBehaviour
             return;
         }
 
-        if (useRangeAdvantageKiting && TryUpdateRangeAdvantageKite())
+        if (!prioritizeCannonsOverTroops)
         {
-            return;
+            if (useRangeAdvantageKiting && TryUpdateRangeAdvantageKite())
+            {
+                return;
+            }
+
+            if (aiMode == AiMode.Advanced && TryChooseRetreatCamp())
+            {
+                return;
+            }
         }
 
-        if (aiMode == AiMode.Advanced && TryChooseRetreatCamp())
-        {
-            return;
-        }
-
-        if (phase == AiPhase.Kiting)
+        if (phase == AiPhase.Kiting || (prioritizeCannonsOverTroops && phase == AiPhase.CampingRetreatRoute))
         {
             phase = AiPhase.Advancing;
         }
@@ -454,6 +562,11 @@ public class EnemyRegimentAI : MonoBehaviour
             return false;
         }
 
+        if (!ShouldEngageFriendlyForCombat(retreatingFriendly))
+        {
+            return false;
+        }
+
         if (!ShouldPrioritizeFriendlyUnit(retreatingFriendly.transform.position))
         {
             return false;
@@ -464,6 +577,12 @@ public class EnemyRegimentAI : MonoBehaviour
             ? objectives.GetBestRetreatInterceptPosition(transform.position, retreatingFriendly.transform.position)
             : retreatingFriendly.transform.position;
 
+        RtsCampManager campManager = RtsCampManager.Instance;
+        if (campManager != null)
+        {
+            tacticalDestination = campManager.ClampOutsideFriendlyProtectedZone(tacticalDestination);
+        }
+
         phase = AiPhase.CampingRetreatRoute;
         IssueMoveOrder(tacticalDestination);
         return true;
@@ -471,13 +590,23 @@ public class EnemyRegimentAI : MonoBehaviour
 
     private TroopCombat FindVisibleRetreatingFriendly()
     {
+        RtsCampManager campManager = RtsCampManager.Instance;
         for (int i = 0; i < visibleFriendlies.Count; i++)
         {
             TroopCombat friendly = visibleFriendlies[i];
-            if (friendly != null && friendly.IsRetreating)
+            if (friendly == null || !friendly.IsRetreating)
             {
-                return friendly;
+                continue;
             }
+
+            if (campManager != null
+                && (campManager.IsInFriendlyProtectedZone(friendly.transform.position)
+                    || friendly.IsProtectedByFriendlyCamp()))
+            {
+                continue;
+            }
+
+            return friendly;
         }
 
         return null;
@@ -490,12 +619,19 @@ public class EnemyRegimentAI : MonoBehaviour
             return;
         }
 
-        if (useRangeAdvantageKiting && TryUpdateRangeAdvantageKite())
+        if (prioritizeCannonsOverTroops)
+        {
+            if (phase == AiPhase.Kiting || phase == AiPhase.CampingRetreatRoute || phase == AiPhase.Flanking)
+            {
+                phase = AiPhase.Advancing;
+            }
+        }
+        else if (useRangeAdvantageKiting && TryUpdateRangeAdvantageKite())
         {
             return;
         }
 
-        if (phase == AiPhase.Kiting)
+        if (!prioritizeCannonsOverTroops && phase == AiPhase.Kiting)
         {
             phase = AiPhase.Advancing;
         }
@@ -505,7 +641,7 @@ public class EnemyRegimentAI : MonoBehaviour
             && phase != AiPhase.Flanking)
         {
             TroopCombat target = combat.CurrentTarget;
-            if (target != null && ShouldPrioritizeFriendlyUnit(target.transform.position))
+            if (target != null && ShouldEngageFriendlyForCombat(target))
             {
                 return;
             }
@@ -532,6 +668,11 @@ public class EnemyRegimentAI : MonoBehaviour
 
     private bool TryUpdateRangeAdvantageKite()
     {
+        if (prioritizeCannonsOverTroops)
+        {
+            return false;
+        }
+
         TroopCombat target = GetRangeAdvantageTarget();
         if (target == null)
         {
@@ -544,6 +685,16 @@ public class EnemyRegimentAI : MonoBehaviour
         }
 
         if (!ShouldPrioritizeFriendlyUnit(target.transform.position))
+        {
+            if (phase == AiPhase.Kiting)
+            {
+                phase = AiPhase.Advancing;
+            }
+
+            return false;
+        }
+
+        if (!ShouldEngageFriendlyForCombat(target))
         {
             if (phase == AiPhase.Kiting)
             {
@@ -579,6 +730,12 @@ public class EnemyRegimentAI : MonoBehaviour
         }
 
         tacticalDestination = GetKitePosition(target.transform.position, idealDistance);
+        RtsCampManager campManager = RtsCampManager.Instance;
+        if (campManager != null)
+        {
+            tacticalDestination = campManager.ClampOutsideFriendlyProtectedZone(tacticalDestination);
+        }
+
         IssueMoveOrder(tacticalDestination);
         return true;
     }
@@ -615,6 +772,14 @@ public class EnemyRegimentAI : MonoBehaviour
     private bool IsValidKiteTarget(TroopCombat target)
     {
         if (target == null || target.CurrentState == TroopCombat.State.Dead || target.IsRetreating)
+        {
+            return false;
+        }
+
+        RtsCampManager campManager = RtsCampManager.Instance;
+        if (campManager != null
+            && (campManager.IsInFriendlyProtectedZone(target.transform.position)
+                || target.IsProtectedByFriendlyCamp()))
         {
             return false;
         }
@@ -657,6 +822,13 @@ public class EnemyRegimentAI : MonoBehaviour
 
     private bool ShouldPrioritizeFriendlyUnit(Vector3 friendlyPosition)
     {
+        RtsCampManager campManager = RtsCampManager.Instance;
+        if (campManager != null
+            && campManager.IsInFriendlyProtectedZone(friendlyPosition))
+        {
+            return false;
+        }
+
         RtsSiegeObjectives objectives = RtsSiegeObjectives.Instance;
         if (objectives == null || !objectives.HasCannons())
         {
@@ -670,12 +842,12 @@ public class EnemyRegimentAI : MonoBehaviour
             return true;
         }
 
-        if (GetHorizontalDistance(friendlyPosition, cannonPosition) <= friendlyCannonProximityRadius)
-        {
-            return Random.value <= unitInterceptChanceNearCannon;
-        }
+        return IsDefendingCannon(friendlyPosition, cannonPosition);
+    }
 
-        return false;
+    private bool IsDefendingCannon(Vector3 friendlyPosition, Vector3 cannonPosition)
+    {
+        return GetHorizontalDistance(friendlyPosition, cannonPosition) <= friendlyCannonProximityRadius;
     }
 
     private bool IsRetreatInterceptWorthwhile(TroopCombat retreatingFriendly)
@@ -694,16 +866,35 @@ public class EnemyRegimentAI : MonoBehaviour
         Vector3 cannonPosition = objectives.GetNearestCannonPosition(transform.position);
         Vector3 retreatPosition = retreatingFriendly.transform.position;
 
+        RtsCampManager campManager = RtsCampManager.Instance;
+        if (campManager != null)
+        {
+            float distanceToCamp = GetHorizontalDistance(
+                retreatPosition,
+                campManager.GetCampCenter(TroopCombat.Faction.Friendly));
+            float distanceToCannon = GetHorizontalDistance(retreatPosition, cannonPosition);
+            if (distanceToCamp + 2f < distanceToCannon)
+            {
+                return false;
+            }
+        }
+
         if (IsBlockingDirectPathToCannon(retreatPosition, cannonPosition))
         {
             return true;
         }
 
-        return GetHorizontalDistance(retreatPosition, cannonPosition) <= friendlyCannonProximityRadius;
+        return false;
     }
 
     private bool IsBlockingDirectPathToCannon(Vector3 friendlyPosition, Vector3 cannonPosition)
     {
+        RtsCampManager campManager = RtsCampManager.Instance;
+        if (campManager != null && campManager.IsInFriendlyProtectedZone(friendlyPosition))
+        {
+            return false;
+        }
+
         Vector3 path = cannonPosition - transform.position;
         path.y = 0f;
         float pathLength = path.magnitude;
@@ -742,6 +933,12 @@ public class EnemyRegimentAI : MonoBehaviour
     private void IssueMoveOrder(Vector3 destination)
     {
         destination.y = transform.position.y;
+        RtsCampManager campManager = RtsCampManager.Instance;
+        if (campManager != null)
+        {
+            destination = campManager.ClampOutsideFriendlyProtectedZone(destination);
+        }
+
         tacticalDestination = destination;
 
         if (!motor.HasDestination
@@ -784,6 +981,11 @@ public class EnemyRegimentAI : MonoBehaviour
 
     internal bool CanParticipateInEncirclement()
     {
+        if (prioritizeCannonsOverTroops)
+        {
+            return false;
+        }
+
         return aiMode == AiMode.Advanced
             && IsDeployedOnField
             && combat.CurrentState != TroopCombat.State.Fight
