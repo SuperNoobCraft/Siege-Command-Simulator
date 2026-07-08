@@ -8,6 +8,17 @@ using UnityEditor;
 [DefaultExecutionOrder(-50)]
 public class TroopCombat : MonoBehaviour
 {
+    public static event System.Action<TroopCombat> RegimentEnteredRetreat;
+    public static event System.Action<TroopCombat> RegimentRegroupCompleted;
+    public static event System.Action<TroopCombat> RegimentPermanentlyDestroyed;
+
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+    private static void ResetTroopCombatStatics()
+    {
+        RegimentEnteredRetreat = null;
+        RegimentRegroupCompleted = null;
+        RegimentPermanentlyDestroyed = null;
+    }
     public enum Faction
     {
         Friendly,
@@ -876,6 +887,7 @@ public class TroopCombat : MonoBehaviour
 
         SyncTroopVisualsToHealth(forceMinimum: true);
         SetFlagHolderDefeatedVisual();
+        RegimentEnteredRetreat?.Invoke(this);
     }
 
     private void EnterRegroup()
@@ -914,6 +926,8 @@ public class TroopCombat : MonoBehaviour
         {
             SetHoldInCampUntilNextWave(true);
         }
+
+        RegimentRegroupCompleted?.Invoke(this);
     }
 
     public void TakeDamage(float amount, TroopCombat attacker = null, bool isRangedAttack = false)
@@ -1297,6 +1311,8 @@ public class TroopCombat : MonoBehaviour
 
     private void CompletePermanentDestroy()
     {
+        RegimentPermanentlyDestroyed?.Invoke(this);
+
         if (destroyOnDeath)
         {
             Destroy(gameObject);

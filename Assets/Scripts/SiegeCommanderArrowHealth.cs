@@ -1,3 +1,4 @@
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
@@ -11,6 +12,14 @@ using UnityEngine.UI;
 public class SiegeCommanderArrowHealth : MonoBehaviour
 {
     public static SiegeCommanderArrowHealth Instance { get; private set; }
+    public static event Action<int> CommanderHitRegistered;
+
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+    private static void ResetStatics()
+    {
+        Instance = null;
+        CommanderHitRegistered = null;
+    }
 
     [Header("Hits")]
     [SerializeField, Min(1)] private int maxHits = 3;
@@ -192,6 +201,7 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
         HitCount = Mathf.Min(maxHits, HitCount + 1);
         invulnerableUntil = Time.time + hitInvulnerabilityDuration;
         onArrowHit?.Invoke();
+        CommanderHitRegistered?.Invoke(HitCount);
 
         if (HitCount >= maxHits)
         {
@@ -226,6 +236,12 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
 
         Debug.Log("Commander defeated after " + maxHits + " arrow hits.", this);
         onGameOver?.Invoke();
+
+        SiegeAudioManager audioManager = SiegeAudioManager.Instance;
+        if (audioManager != null)
+        {
+            audioManager.PlayCommanderFallen();
+        }
 
         SiegeGameManager gameManager = SiegeGameManager.Instance;
         if (gameManager != null)
