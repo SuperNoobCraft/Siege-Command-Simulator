@@ -48,11 +48,19 @@ public class EnemyRegimentAI : MonoBehaviour
     [SerializeField, Min(0f)] private float kiteRangeBuffer = 0.75f;
 
     [Header("Advanced Tactics")]
-    [SerializeField, Range(0f, 1f)] private float retreatCampChance = 0.65f;
-    [SerializeField, Range(0f, 1f)] private float encirclementChance = 0.45f;
+    [SerializeField, Range(0f, 1f)] private float retreatCampChance = 0.2f;
+    [SerializeField, Range(0f, 1f)] private float encirclementChance = 0.12f;
     [SerializeField, Min(1)] private int encirclementMinFriendlyCount = 2;
     [SerializeField, Min(1)] private int encirclementMinEnemyCount = 2;
     [SerializeField, Min(2f)] private float encirclementFlankDistance = 8f;
+
+    [Header("Cannon Focus")]
+    [Tooltip("When a friendly unit is within this distance of a cannon, AI is less likely to divert toward it.")]
+    [SerializeField, Min(0f)] private float friendlyCannonProximityRadius = 12f;
+    [Tooltip("Chance to chase a nearby friendly unit that is not blocking the route to the cannon.")]
+    [SerializeField, Range(0f, 1f)] private float unitInterceptChanceNearCannon = 0.08f;
+    [Tooltip("Width of the corridor treated as a direct blocking path to the cannon.")]
+    [SerializeField, Min(0.5f)] private float directPathBlockWidth = 3.5f;
 
     [Header("Obstacle Recovery")]
     [SerializeField, Min(0.1f)] private float unstuckRetryInterval = 0.5f;
@@ -441,6 +449,16 @@ public class EnemyRegimentAI : MonoBehaviour
             return false;
         }
 
+        if (!IsRetreatInterceptWorthwhile(retreatingFriendly))
+        {
+            return false;
+        }
+
+        if (!ShouldPrioritizeFriendlyUnit(retreatingFriendly.transform.position))
+        {
+            return false;
+        }
+
         RtsSiegeObjectives objectives = RtsSiegeObjectives.Instance;
         tacticalDestination = objectives != null
             ? objectives.GetBestRetreatInterceptPosition(transform.position, retreatingFriendly.transform.position)
@@ -486,6 +504,14 @@ public class EnemyRegimentAI : MonoBehaviour
             && phase != AiPhase.CampingRetreatRoute
             && phase != AiPhase.Flanking)
         {
+            TroopCombat target = combat.CurrentTarget;
+            if (target != null && ShouldPrioritizeFriendlyUnit(target.transform.position))
+            {
+                return;
+            }
+
+            phase = AiPhase.Advancing;
+            IssueMoveOrder(GetPrimaryObjectivePosition());
             return;
         }
 
@@ -508,6 +534,16 @@ public class EnemyRegimentAI : MonoBehaviour
     {
         TroopCombat target = GetRangeAdvantageTarget();
         if (target == null)
+        {
+            if (phase == AiPhase.Kiting)
+            {
+                phase = AiPhase.Advancing;
+            }
+
+            return false;
+        }
+
+        if (!ShouldPrioritizeFriendlyUnit(target.transform.position))
         {
             if (phase == AiPhase.Kiting)
             {
@@ -617,6 +653,77 @@ public class EnemyRegimentAI : MonoBehaviour
             : transform.position + transform.forward * 10f;
 
         return ApplyFormationOffset(baseDestination);
+    }
+
+    private bool ShouldPrioritizeFriendlyUnit(Vector3 friendlyPosition)
+    {
+        RtsSiegeObjectives objectives = RtsSiegeObjectives.Instance;
+        if (objectives == null || !objectives.HasCannons())
+        {
+            return false;
+        }
+
+        Vector3 cannonPosition = objectives.GetNearestCannonPosition(transform.position);
+
+        if (IsBlockingDirectPathToCannon(friendlyPosition, cannonPosition))
+        {
+            return true;
+        }
+
+        if (GetHorizontalDistance(friendlyPosition, cannonPosition) <= friendlyCannonProximityRadius)
+        {
+            return Random.value <= unitInterceptChanceNearCannon;
+        }
+
+        return false;
+    }
+
+    private bool IsRetreatInterceptWorthwhile(TroopCombat retreatingFriendly)
+    {
+        if (retreatingFriendly == null)
+        {
+            return false;
+        }
+
+        RtsSiegeObjectives objectives = RtsSiegeObjectives.Instance;
+        if (objectives == null || !objectives.HasCannons())
+        {
+            return false;
+        }
+
+        Vector3 cannonPosition = objectives.GetNearestCannonPosition(transform.position);
+        Vector3 retreatPosition = retreatingFriendly.transform.position;
+
+        if (IsBlockingDirectPathToCannon(retreatPosition, cannonPosition))
+        {
+            return true;
+        }
+
+        return GetHorizontalDistance(retreatPosition, cannonPosition) <= friendlyCannonProximityRadius;
+    }
+
+    private bool IsBlockingDirectPathToCannon(Vector3 friendlyPosition, Vector3 cannonPosition)
+    {
+        Vector3 path = cannonPosition - transform.position;
+        path.y = 0f;
+        float pathLength = path.magnitude;
+        if (pathLength <= 0.01f)
+        {
+            return false;
+        }
+
+        Vector3 pathDirection = path / pathLength;
+        Vector3 toFriendly = friendlyPosition - transform.position;
+        toFriendly.y = 0f;
+        float forwardDistance = Vector3.Dot(toFriendly, pathDirection);
+        if (forwardDistance <= 0f || forwardDistance >= pathLength)
+        {
+            return false;
+        }
+
+        Vector3 closestPoint = transform.position + pathDirection * forwardDistance;
+        float lateralDistance = GetHorizontalDistance(closestPoint, friendlyPosition);
+        return lateralDistance <= directPathBlockWidth;
     }
 
     private Vector3 ApplyFormationOffset(Vector3 destination)

@@ -15,6 +15,11 @@ public class EnemyWaveController : MonoBehaviour
     }
 
     public static EnemyWaveController Instance { get; private set; }
+    public static event System.Action<int> WaveDeployed;
+    public float MatchElapsedSeconds => Time.time - matchStartTime;
+    public bool HasWave3Started => triggeredWaves.Contains(wave3.waveNumber);
+    public float Wave3StartTime => wave3StartTime;
+    public float Wave3SpawnTimeSeconds => wave3.spawnTimeSeconds;
     public bool AreAllWavesTriggered =>
         triggeredWaves.Contains(wave1.waveNumber)
         && triggeredWaves.Contains(wave2.waveNumber)
@@ -35,6 +40,7 @@ public class EnemyWaveController : MonoBehaviour
     private readonly HashSet<int> triggeredWaves = new HashSet<int>();
     private float nextEncirclementEvaluationTime;
     private float matchStartTime;
+    private float wave3StartTime = -1f;
 
     private void Awake()
     {
@@ -124,7 +130,13 @@ public class EnemyWaveController : MonoBehaviour
         }
 
         triggeredWaves.Add(schedule.waveNumber);
+        if (schedule.waveNumber == wave3.waveNumber)
+        {
+            wave3StartTime = Time.time;
+        }
+
         DeployWave(schedule.waveNumber);
+        WaveDeployed?.Invoke(schedule.waveNumber);
     }
 
     private void DeployWave(int waveNumber)
