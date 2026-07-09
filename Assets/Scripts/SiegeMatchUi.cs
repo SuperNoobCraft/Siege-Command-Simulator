@@ -1,6 +1,7 @@
 using System.Collections;
 using UnityEngine;
 using UnityEngine.Serialization;
+using Votanic.vXR.vGear;
 
 /// <summary>
 /// Drives match UI labels. Position each SiegeUiLabel yourself in the Canvas; this script only sets text/visibility.
@@ -43,6 +44,8 @@ public class SiegeMatchUi : MonoBehaviour
     [SerializeField] private string arrowDefeatMessage = "The commander has fallen.";
     [SerializeField] private string cannonDefeatMessage = "The cannons were overrun.";
     [SerializeField] private string restartPrompt = "Click anywhere to restart.";
+    [SerializeField] private string trackedRestartPrompt = "Press Grab on the wand to restart.";
+    [SerializeField] private string vrRestartCommandName = "Grab";
 
     [Header("Editor Preview")]
     [SerializeField] private bool previewInEditor = true;
@@ -347,7 +350,7 @@ public class SiegeMatchUi : MonoBehaviour
         SetLabelText(commanderHpLabel, string.Empty, true);
         SetLabelText(victoryLabel, victoryMessage, false);
         SetLabelText(defeatLabel, string.Empty, false);
-        SetLabelText(restartLabel, enableClickToRestart ? restartPrompt : string.Empty, false);
+        SetLabelText(restartLabel, enableClickToRestart ? GetActiveRestartPrompt() : string.Empty, false);
     }
 
     private void ApplyDefeatLayout(string reason)
@@ -359,7 +362,7 @@ public class SiegeMatchUi : MonoBehaviour
         SetLabelText(commanderHpLabel, string.Empty, true);
         SetLabelText(victoryLabel, string.Empty, false);
         SetLabelText(defeatLabel, ResolveDefeatMessage(reason), false);
-        SetLabelText(restartLabel, enableClickToRestart ? restartPrompt : string.Empty, false);
+        SetLabelText(restartLabel, enableClickToRestart ? GetActiveRestartPrompt() : string.Empty, false);
     }
 
     private void ApplyEditorPreview()
@@ -425,19 +428,34 @@ public class SiegeMatchUi : MonoBehaviour
         }
     }
 
-    private static bool WasRestartClickPressed()
+    private bool WasRestartClickPressed()
     {
-        if (Input.GetMouseButtonDown(0))
+        if (SiegePlayEnvironment.IsDesktopInput)
+        {
+            if (Input.GetMouseButtonDown(0))
+            {
+                return true;
+            }
+
+            if (Input.touchCount > 0)
+            {
+                Touch touch = Input.GetTouch(0);
+                return touch.phase == TouchPhase.Began;
+            }
+
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(vrRestartCommandName) && vGear.Cmd.Received(vrRestartCommandName))
         {
             return true;
         }
 
-        if (Input.touchCount > 0)
-        {
-            Touch touch = Input.GetTouch(0);
-            return touch.phase == TouchPhase.Began;
-        }
+        return vGear.Cmd.Received("Trigger") || vGear.Cmd.Received("Grab");
+    }
 
-        return false;
+    private string GetActiveRestartPrompt()
+    {
+        return SiegePlayEnvironment.GetRestartPrompt(restartPrompt, trackedRestartPrompt);
     }
 }

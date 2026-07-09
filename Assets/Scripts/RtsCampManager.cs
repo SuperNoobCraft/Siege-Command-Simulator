@@ -29,6 +29,8 @@ public class RtsCampManager : MonoBehaviour
 
     [Header("Arrival Zones")]
     [SerializeField, Min(0.1f)] private float gateArrivalRadius = 2f;
+    [Tooltip("How close a retreating regiment must be before its gate opens.")]
+    [SerializeField, Min(0.1f)] private float gateOpenRadius = 12f;
     [FormerlySerializedAs("campArrivalRadius")]
     [SerializeField, Min(0.1f)] private float campZoneRadius = 3f;
     [SerializeField, Min(0.05f)] private float campCenterArrivalRadius = 0.5f;
@@ -43,6 +45,7 @@ public class RtsCampManager : MonoBehaviour
     public float CampZoneRadius => campZoneRadius;
     public float CampCenterArrivalRadius => campCenterArrivalRadius;
     public float GateArrivalRadius => gateArrivalRadius;
+    public float GateOpenRadius => gateOpenRadius;
     public Transform FriendlyCamp => friendlyCamp;
     public Transform EnemyCamp => enemyCamp;
     public Transform FriendlyGate => friendlyGate;
@@ -344,6 +347,27 @@ public class RtsCampManager : MonoBehaviour
     {
         Vector3 gateOutside = GetGateOutsidePosition(faction);
         return IsWithinHorizontalRadius(worldPosition, gateOutside, gateArrivalRadius);
+    }
+
+    public bool IsNearGateForOpening(Vector3 worldPosition, TroopCombat.Faction faction)
+    {
+        if (!HasGate(faction))
+        {
+            return false;
+        }
+
+        if (IsWithinHorizontalRadius(worldPosition, GetGateOutsidePosition(faction), gateOpenRadius))
+        {
+            return true;
+        }
+
+        if (IsWithinHorizontalRadius(worldPosition, GetGateInsidePosition(faction), gateOpenRadius))
+        {
+            return true;
+        }
+
+        Transform gate = GetGateTransform(faction);
+        return gate != null && IsWithinHorizontalRadius(worldPosition, gate.position, gateOpenRadius);
     }
 
     private Transform GetCampTransform(TroopCombat.Faction faction)

@@ -289,7 +289,7 @@ public class RtsUnitHighlight : MonoBehaviour
             return Mathf.Max(outlineMinWorldWidth, outlineWidth);
         }
 
-        Camera camera = Camera.main;
+        UnityEngine.Camera camera = SiegePlayEnvironment.ResolveViewCamera();
         if (camera == null)
         {
             return Mathf.Max(outlineMinWorldWidth, outlineWidth);

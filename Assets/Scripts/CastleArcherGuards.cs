@@ -1,6 +1,5 @@
 using System.Collections.Generic;
 using UnityEngine;
-using Votanic.vXR.vGear;
 
 /// <summary>
 /// Static castle-wall archers. Attach to a parent (e.g. castleArchers) whose children are archer visuals.
@@ -26,7 +25,7 @@ public class CastleArcherGuards : MonoBehaviour
     [SerializeField, Min(0f)] private float regimentShotSpreadRadius = 1.75f;
 
     [Header("Command Tower Harassment")]
-    [Tooltip("Optional override. Defaults to vGear head, then main camera.")]
+    [Tooltip("Optional override. Defaults to the tracked Votanic head, then main camera.")]
     [SerializeField] private Transform playerTarget;
     [Tooltip("Minimum seconds before the next player-shot roll is allowed.")]
     [SerializeField, Min(0.5f)] private float playerHarassmentMinTimeGap = 18f;
@@ -444,13 +443,7 @@ public class CastleArcherGuards : MonoBehaviour
             return playerTarget;
         }
 
-        if (vGear.head != null)
-        {
-            return vGear.head.transform;
-        }
-
-        Camera mainCamera = Camera.main;
-        return mainCamera != null ? mainCamera.transform : null;
+        return SiegePlayEnvironment.ResolvePlayerTransform();
     }
 
     private static void FaceArcherToward(Transform archerSlot, Vector3 targetPosition)

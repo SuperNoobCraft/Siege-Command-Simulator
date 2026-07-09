@@ -11,6 +11,7 @@ public class TroopCombat : MonoBehaviour
     public static event System.Action<TroopCombat> RegimentEnteredRetreat;
     public static event System.Action<TroopCombat> RegimentRegroupCompleted;
     public static event System.Action<TroopCombat> RegimentPermanentlyDestroyed;
+    public static event System.Action<TroopCombat, Vector3> MeleeAttackPerformed;
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
     private static void ResetTroopCombatStatics()
@@ -18,6 +19,7 @@ public class TroopCombat : MonoBehaviour
         RegimentEnteredRetreat = null;
         RegimentRegroupCompleted = null;
         RegimentPermanentlyDestroyed = null;
+        MeleeAttackPerformed = null;
     }
     public enum Faction
     {
@@ -173,7 +175,8 @@ public class TroopCombat : MonoBehaviour
         CurrentState == State.Retreat
         && retreatPhase != RetreatPhase.ToCamp
         && RtsCampManager.Instance != null
-        && RtsCampManager.Instance.HasGate(faction);
+        && RtsCampManager.Instance.HasGate(faction)
+        && RtsCampManager.Instance.IsNearGateForOpening(transform.position, faction);
     public bool HoldsInCampUntilNextWave { get; private set; }
     public bool IsRegrouping => CurrentState == State.Regroup;
     public float CombatMoveSpeedMultiplier => GetCombatMoveSpeedMultiplier();
@@ -556,6 +559,10 @@ public class TroopCombat : MonoBehaviour
         if (attackProfile.IsRanged)
         {
             SpawnRangedAttackVolley(currentTarget);
+        }
+        else
+        {
+            MeleeAttackPerformed?.Invoke(this, transform.position);
         }
 
         currentTarget.TakeDamage(attackProfile.Damage, this, attackProfile.IsRanged);

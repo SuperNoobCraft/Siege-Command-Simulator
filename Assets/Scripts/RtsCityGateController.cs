@@ -2,7 +2,7 @@ using UnityEngine;
 
 /// <summary>
 /// Animates a city gate up while troops enter or leave through it, and keeps it closed otherwise.
-/// Attach to the moving gate mesh/pivot and assign the transform that should rise on the local Y axis.
+/// Attach to the moving gate mesh/pivot and assign the transform that should rise on the local Z axis.
 /// </summary>
 public class RtsCityGateController : MonoBehaviour
 {
@@ -11,13 +11,13 @@ public class RtsCityGateController : MonoBehaviour
     [SerializeField] private TroopCombat.Faction gateFaction = TroopCombat.Faction.Enemy;
 
     [Header("Animation")]
-    [Tooltip("How far the gate rises on local Y when open.")]
-    [SerializeField, Min(0f)] private float openHeight = 4f;
+    [Tooltip("How far the gate rises on local Z when open.")]
+    [SerializeField] private float openHeight = -4f;
     [SerializeField, Min(0.1f)] private float moveSpeed = 6f;
     [SerializeField, Min(0.05f)] private float troopScanInterval = 0.15f;
 
     private Vector3 closedLocalPosition;
-    private float openLocalY;
+    private float openLocalZ;
     private float currentOpenAmount;
     private float nextTroopScanTime;
     private bool shouldBeOpen;
@@ -30,12 +30,12 @@ public class RtsCityGateController : MonoBehaviour
         }
 
         closedLocalPosition = gateTransform.localPosition;
-        openLocalY = closedLocalPosition.y + openHeight;
+        openLocalZ = closedLocalPosition.z + openHeight;
     }
 
     private void OnValidate()
     {
-        openHeight = Mathf.Max(0f, openHeight);
+        //openHeight = Mathf.Max(0f, openHeight);
         moveSpeed = Mathf.Max(0.1f, moveSpeed);
         troopScanInterval = Mathf.Max(0.05f, troopScanInterval);
     }
@@ -52,7 +52,7 @@ public class RtsCityGateController : MonoBehaviour
         currentOpenAmount = Mathf.MoveTowards(currentOpenAmount, targetOpenAmount, moveSpeed * Time.deltaTime);
 
         Vector3 localPosition = gateTransform.localPosition;
-        localPosition.y = Mathf.Lerp(closedLocalPosition.y, openLocalY, currentOpenAmount);
+        localPosition.z = Mathf.Lerp(closedLocalPosition.z, openLocalZ, currentOpenAmount);
         gateTransform.localPosition = localPosition;
     }
 

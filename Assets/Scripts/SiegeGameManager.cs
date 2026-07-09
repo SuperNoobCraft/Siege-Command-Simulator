@@ -10,7 +10,8 @@ using UnityEditor;
 /// <summary>
 /// Central match flow: cannon occupation loss, commander arrow loss, and timed victory after wave 3.
 /// </summary>
-[DefaultExecutionOrder(100)]
+[DefaultExecutionOrder(-100)]
+[RequireComponent(typeof(SiegePlayEnvironment))]
 public class SiegeGameManager : MonoBehaviour
 {
     public enum MatchState
@@ -85,6 +86,9 @@ public class SiegeGameManager : MonoBehaviour
         Mathf.Max(0f, GetWave3StartTimeSeconds() + secondsAfterWave3UntilCannonsFire - MatchElapsedSeconds);
     public float TotalSecondsUntilCannonsFire =>
         Mathf.Max(0f, GetWave3StartTimeSeconds() + secondsAfterWave3UntilCannonsFire);
+    public SiegePlayEnvironmentMode PlayEnvironment => SiegePlayEnvironment.ActiveMode;
+    public bool UsesDesktopInput => SiegePlayEnvironment.IsDesktopInput;
+    public bool UsesTrackedXr => SiegePlayEnvironment.IsTrackedXr;
 
     public event Action<MatchState> MatchStateChanged;
     public event Action<float> CannonFireCountdownUpdated;

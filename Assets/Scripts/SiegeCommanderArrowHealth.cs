@@ -12,7 +12,7 @@ using UnityEngine.UI;
 public class SiegeCommanderArrowHealth : MonoBehaviour
 {
     public static SiegeCommanderArrowHealth Instance { get; private set; }
-    public static event Action<int> CommanderHitRegistered;
+    public static event Action<int, Vector3> CommanderHitRegistered;
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
     private static void ResetStatics()
@@ -201,7 +201,7 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
         HitCount = Mathf.Min(maxHits, HitCount + 1);
         invulnerableUntil = Time.time + hitInvulnerabilityDuration;
         onArrowHit?.Invoke();
-        CommanderHitRegistered?.Invoke(HitCount);
+        CommanderHitRegistered?.Invoke(HitCount, hitPoint);
 
         if (HitCount >= maxHits)
         {

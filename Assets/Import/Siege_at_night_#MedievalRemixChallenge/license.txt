@@ -1,0 +1,11 @@
+Model Information:
+* title:	Siege at night #MedievalRemixChallenge
+* source:	https://sketchfab.com/3d-models/siege-at-night-medievalremixchallenge-885f519b5a2e417c850736d3d9cd0ef3
+* author:	Dyson (https://sketchfab.com/ch0mpy)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Siege at night #MedievalRemixChallenge" (https://sketchfab.com/3d-models/siege-at-night-medievalremixchallenge-885f519b5a2e417c850736d3d9cd0ef3) by Dyson (https://sketchfab.com/ch0mpy) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

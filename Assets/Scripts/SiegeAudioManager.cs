@@ -146,7 +146,6 @@ public class SiegeAudioManager : MonoBehaviour
 
     private void BindGameManager(SiegeGameManager manager)
     {
-        manager.CannonsFired += HandleCannonsFired;
         manager.CannonOverrun += HandleCannonsDestroyed;
         manager.CannonFireCountdownUpdated += HandleCannonCountdownUpdated;
         manager.MatchStateChanged += HandleMatchStateChanged;
@@ -154,7 +153,6 @@ public class SiegeAudioManager : MonoBehaviour
 
     private void UnbindGameManager(SiegeGameManager manager)
     {
-        manager.CannonsFired -= HandleCannonsFired;
         manager.CannonOverrun -= HandleCannonsDestroyed;
         manager.CannonFireCountdownUpdated -= HandleCannonCountdownUpdated;
         manager.MatchStateChanged -= HandleMatchStateChanged;
@@ -219,7 +217,7 @@ public class SiegeAudioManager : MonoBehaviour
         PlayVoiceClip(fifteenSecondsUntilCannonsClip, timeAnnouncementOverlapMode);
     }
 
-    private void HandleCannonsFired()
+    public void PlayCannonsFiredVoiceline()
     {
         PlayGameEndingClip(cannonsFiredClip);
     }
@@ -229,7 +227,7 @@ public class SiegeAudioManager : MonoBehaviour
         PlayGameEndingClip(cannonsDestroyedClip);
     }
 
-    private void HandleCommanderHit(int hitCount)
+    private void HandleCommanderHit(int hitCount, Vector3 hitPoint)
     {
         SiegeCommanderArrowHealth commander = SiegeCommanderArrowHealth.Instance;
         if (commander != null && hitCount >= commander.MaxHits)

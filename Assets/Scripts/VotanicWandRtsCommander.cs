@@ -6,7 +6,10 @@ public class VotanicWandRtsCommander : MonoBehaviour
 {
     [Header("Input")]
     [SerializeField] private string issueCommandName = "Grab";
+    [Tooltip("When enabled, left mouse issues commands while testing on desktop. Ignored in CAVE/HMD modes.")]
     [SerializeField] private bool enableDesktopFallback = true;
+    [Tooltip("Use Camera.main mouse ray on desktop instead of a transform forward ray.")]
+    [SerializeField] private bool useDesktopMouseRay = true;
     [SerializeField] private KeyCode desktopKeyA = KeyCode.Mouse0;
     [SerializeField] private KeyCode desktopKeyB = KeyCode.None;
     [SerializeField] private Transform wandOrigin;
@@ -325,7 +328,7 @@ public class VotanicWandRtsCommander : MonoBehaviour
 
     private bool IsCommandHeld()
     {
-        if (enableDesktopFallback)
+        if (ShouldUseDesktopFallback())
         {
             if (desktopKeyA != KeyCode.None && Input.GetKey(desktopKeyA))
             {
@@ -355,6 +358,15 @@ public class VotanicWandRtsCommander : MonoBehaviour
 
     private Ray BuildWandRay()
     {
+        if (ShouldUseDesktopFallback() && useDesktopMouseRay)
+        {
+            UnityEngine.Camera viewCamera = SiegePlayEnvironment.ResolveViewCamera();
+            if (viewCamera != null)
+            {
+                return viewCamera.ScreenPointToRay(Input.mousePosition);
+            }
+        }
+
         Transform source = wandOrigin;
 
         if (source == null && vGear.controller != null)
@@ -373,6 +385,11 @@ public class VotanicWandRtsCommander : MonoBehaviour
         }
 
         return new Ray(source.position, source.forward);
+    }
+
+    private bool ShouldUseDesktopFallback()
+    {
+        return enableDesktopFallback && SiegePlayEnvironment.IsDesktopInput;
     }
 
     private bool TryGetBattlefieldPoint(Ray ray, out Vector3 point)
@@ -541,6 +558,6 @@ public class VotanicWandRtsCommander : MonoBehaviour
         GUI.Label(new Rect(20f, 55f, 500f, 20f), debugHoverLine);
         GUI.Label(new Rect(20f, 75f, 500f, 20f), debugPathLine);
         GUI.Label(new Rect(20f, 95f, 720f, 20f), "Hovered: " + (hoveredUnit != null ? hoveredUnit.name : "none") + " | Commanding: " + (commandingUnit != null ? commandingUnit.name : "none"));
-        GUI.Label(new Rect(20f, 115f, 720f, 20f), "Recording: " + isRecordingPath + " | Raw points: " + recordedPathPoints.Count);
+        GUI.Label(new Rect(20f, 115f, 720f, 20f), "Recording: " + isRecordingPath + " | Raw points: " + recordedPathPoints.Count + " | Env: " + SiegePlayEnvironment.ActiveMode);
     }
 }
