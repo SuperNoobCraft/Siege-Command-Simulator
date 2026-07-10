@@ -190,15 +190,27 @@ public class SiegeAudioManager : MonoBehaviour
 
     private void HandleWaveDeployed(int waveNumber)
     {
-        AudioClip clip = waveNumber switch
+        PlayVoiceClip(ResolveWaveClip(waveNumber), waveOverlapMode);
+    }
+
+    private AudioClip ResolveWaveClip(int waveNumber)
+    {
+        int finalWave = EnemyWaveController.Instance != null
+            ? EnemyWaveController.Instance.FinalWaveNumber
+            : SiegeMatchSettings.MaxWaves;
+
+        if (waveNumber == finalWave)
+        {
+            return wave3Clip;
+        }
+
+        return waveNumber switch
         {
             1 => wave1Clip,
             2 => wave2Clip,
             3 => wave3Clip,
             _ => null
         };
-
-        PlayVoiceClip(clip, waveOverlapMode);
     }
 
     private void HandleCannonCountdownUpdated(float secondsRemaining)

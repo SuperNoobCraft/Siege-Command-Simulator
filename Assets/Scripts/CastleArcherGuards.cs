@@ -60,6 +60,7 @@ public class CastleArcherGuards : MonoBehaviour
     private readonly List<ArcherSlotState> slots = new List<ArcherSlotState>();
     private float nextScanTime;
     private float nextPlayerHarassmentRollTime;
+    private float nextPlayerTargetBindTime;
     private float matchStartTime;
     private TroopCombat cachedRegimentTarget;
 
@@ -128,6 +129,7 @@ public class CastleArcherGuards : MonoBehaviour
         }
 
         UpdatePlayerHarassment();
+        TryRefreshPlayerHitBinding();
 
         if (Time.time >= nextScanTime)
         {
@@ -143,6 +145,11 @@ public class CastleArcherGuards : MonoBehaviour
 
     private void UpdatePlayerHarassment()
     {
+        if (!ShouldHarassCommander())
+        {
+            return;
+        }
+
         if (SiegeCommanderArrowHealth.Instance != null && SiegeCommanderArrowHealth.Instance.IsDefeated)
         {
             return;
@@ -170,6 +177,23 @@ public class CastleArcherGuards : MonoBehaviour
 
         ArcherSlotState archer = slots[Random.Range(0, slots.Count)];
         FirePlayerHazardShot(archer, player);
+    }
+
+    private bool ShouldHarassCommander()
+    {
+        SiegeGameManager manager = SiegeGameManager.Instance;
+        return manager != null && manager.IsPlaying;
+    }
+
+    private void TryRefreshPlayerHitBinding()
+    {
+        if (Time.time < nextPlayerTargetBindTime)
+        {
+            return;
+        }
+
+        nextPlayerTargetBindTime = Time.time + 1f;
+        RegisterPlayerHitRig();
     }
 
     private void ScheduleNextPlayerHarassmentRoll()
@@ -213,9 +237,8 @@ public class CastleArcherGuards : MonoBehaviour
             return;
         }
 
-        Vector3 spread = Random.insideUnitSphere * playerShotSpreadRadius;
-        spread.y *= 0.65f;
-        Vector3 aimPoint = player.position + spread;
+        Vector2 spreadXZ = Random.insideUnitCircle * playerShotSpreadRadius;
+        Vector3 aimPoint = player.position + new Vector3(spreadXZ.x, 0f, spreadXZ.y);
 
         Vector3 launchPoint = archer.Transform.position;
         launchPoint.y += projectileLaunchHeight;

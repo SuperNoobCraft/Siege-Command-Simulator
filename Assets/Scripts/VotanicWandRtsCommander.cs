@@ -19,7 +19,8 @@ public class VotanicWandRtsCommander : MonoBehaviour
 
     [Header("Wand Pointer (CAVE/HMD)")]
     [SerializeField] private bool showWandPointerInTrackedXr = true;
-    [SerializeField] private bool enableVotanicSdkWandRay = true;
+    [Tooltip("Off when wand ray/layers are configured on vGear_Controller on this object.")]
+    [SerializeField] private bool enableVotanicSdkWandRay = false;
     [Tooltip("Custom LineRenderer beam length. Uses Max Ray Distance when zero.")]
     [SerializeField, Min(0f)] private float wandPointerLength = 0f;
     [Tooltip("Pushed to Votanic SDK each refresh. Config defaults are ~2m in Setting.vxrs and override SetMaxLength.")]
@@ -148,6 +149,24 @@ public class VotanicWandRtsCommander : MonoBehaviour
 
     private void Update()
     {
+        if (!SiegeSceneBootstrap.IsWarmUpComplete)
+        {
+            return;
+        }
+
+        SiegeGameManager manager = SiegeGameManager.Instance;
+        if (manager != null
+            && (manager.CurrentState == SiegeGameManager.MatchState.SelectingDifficulty
+                || !manager.IsPlaying))
+        {
+            if (SiegePlayEnvironment.IsTrackedXr)
+            {
+                UpdateWandPointer(BuildWandRay());
+            }
+
+            return;
+        }
+
         if (commandingUnit != null && !commandingUnit.CanReceiveCommands)
         {
             CancelCommandMode();
@@ -469,6 +488,11 @@ public class VotanicWandRtsCommander : MonoBehaviour
         }
 
         return vrCommandLatched;
+    }
+
+    public Ray BuildGameplayRay()
+    {
+        return BuildWandRay();
     }
 
     private Ray BuildWandRay()

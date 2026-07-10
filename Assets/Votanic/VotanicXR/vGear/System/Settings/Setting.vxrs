@@ -38,13 +38,13 @@
         },
         "Frame": {
             "StartPosition": [
-                0.0,
-                0.0,
-                38.29999923706055
+                174.41160583496095,
+                12.812012672424317,
+                -78.77642059326172
             ],
             "StartRotation": [
                 0.0,
-                0.0,
+                270.0,
                 0.0
             ],
             "Transition": {
@@ -67,9 +67,9 @@
         "User": [
             {
                 "Name": "User",
-                "EnableRaising": true,
-                "EnableSinking": true,
-                "StartAsGround": true,
+                "EnableRaising": false,
+                "EnableSinking": false,
+                "StartAsGround": false,
                 "NavigateInWall": false,
                 "UnscaledDeltaTime": false,
                 "Synchronizer": {
@@ -143,1272 +143,21 @@
                 "DefaultTool": "Wand",
                 "Tools": [
                     {
-                        "Name": "None",
-                        "AutoSwitch": true,
-                        "EnableScan": false,
-                        "ScanLength": 0.0,
-                        "PriorityLayer": false,
-                        "DetectLayer": [],
-                        "IgnoreLayer": [],
-                        "Position": [
-                            0.0,
-                            0.0,
-                            0.0
-                        ],
-                        "Rotation": [
-                            0.0,
-                            0.0,
-                            0.0
-                        ],
-                        "WandRay": {
-                            "Enable": false,
-                            "Interactive": false,
-                            "Display": false,
-                            "ApplyLaserPointer": false,
-                            "ApplyCursor": false,
-                            "Length": 0.0,
-                            "RenderQueue": 3000,
-                            "AlwaysOnTop": false,
-                            "NormalDisplay": [
-                                1.0,
-                                1.0,
-                                1.0,
-                                1.0,
-                                0.0
-                            ],
-                            "SelectDisplay": [
-                                0.0,
-                                1.0,
-                                0.0,
-                                1.0,
-                                0.25
-                            ],
-                            "PressDisplay": [
-                                1.0,
-                                0.0,
-                                0.0,
-                                1.0,
-                                0.25
-                            ],
-                            "DisableDisplay": [
-                                1.0,
-                                1.0,
-                                1.0,
-                                0.5,
-                                0.0
-                            ],
-                            "Position": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ],
-                            "Rotation": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ]
-                        },
-                        "Glove": {
-                            "Interactive": false,
-                            "Display": true,
-                            "NormalOutline": {
-                                "Enable": false,
-                                "Color": [
-                                    0.0,
-                                    0.0,
-                                    0.0,
-                                    0.0
-                                ],
-                                "Width": 0.0,
-                                "Mode": "OutlineAll"
-                            },
-                            "SelectOutline": {
-                                "Enable": true,
-                                "Color": [
-                                    0.0,
-                                    1.0,
-                                    0.0,
-                                    0.5
-                                ],
-                                "Width": 5.0,
-                                "Mode": "OutlineAll"
-                            },
-                            "PressOutline": {
-                                "Enable": true,
-                                "Color": [
-                                    1.0,
-                                    0.0,
-                                    0.0,
-                                    0.5
-                                ],
-                                "Width": 5.0,
-                                "Mode": "OutlineAll"
-                            },
-                            "Position": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ],
-                            "Rotation": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ],
-                            "Offset": [
-                                -0.02500000037252903,
-                                -0.029999999329447748,
-                                -0.05000000074505806
-                            ],
-                            "Radius": 0.10000000149011612
-                        }
-                    },
-                    {
                         "Name": "Wand",
                         "AutoSwitch": true,
                         "EnableScan": true,
-                        "ScanLength": 3.0,
+                        "ScanLength": 200.0,
                         "PriorityLayer": false,
                         "DetectLayer": [
                             28,
-                            5
-                        ],
-                        "IgnoreLayer": [
-                            29,
-                            30,
-                            31
-                        ],
-                        "Position": [
-                            0.0,
-                            0.0,
-                            0.0
-                        ],
-                        "Rotation": [
-                            0.0,
-                            0.0,
-                            0.0
-                        ],
-                        "WandRay": {
-                            "Enable": true,
-                            "Interactive": true,
-                            "Display": true,
-                            "ApplyLaserPointer": false,
-                            "ApplyCursor": false,
-                            "Length": 2.0,
-                            "RenderQueue": 3000,
-                            "AlwaysOnTop": false,
-                            "NormalDisplay": [
-                                1.0,
-                                1.0,
-                                1.0,
-                                1.0,
-                                0.0
-                            ],
-                            "SelectDisplay": [
-                                0.0,
-                                1.0,
-                                0.0,
-                                1.0,
-                                0.25
-                            ],
-                            "PressDisplay": [
-                                1.0,
-                                0.0,
-                                0.0,
-                                1.0,
-                                0.25
-                            ],
-                            "DisableDisplay": [
-                                1.0,
-                                1.0,
-                                1.0,
-                                0.5,
-                                0.0
-                            ],
-                            "Position": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ],
-                            "Rotation": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ]
-                        },
-                        "Glove": {
-                            "Interactive": false,
-                            "Display": false,
-                            "NormalOutline": {
-                                "Enable": false,
-                                "Color": [
-                                    0.0,
-                                    0.0,
-                                    0.0,
-                                    0.0
-                                ],
-                                "Width": 0.0,
-                                "Mode": "OutlineAll"
-                            },
-                            "SelectOutline": {
-                                "Enable": true,
-                                "Color": [
-                                    0.0,
-                                    1.0,
-                                    0.0,
-                                    0.5
-                                ],
-                                "Width": 5.0,
-                                "Mode": "OutlineAll"
-                            },
-                            "PressOutline": {
-                                "Enable": true,
-                                "Color": [
-                                    1.0,
-                                    0.0,
-                                    0.0,
-                                    0.5
-                                ],
-                                "Width": 5.0,
-                                "Mode": "OutlineAll"
-                            },
-                            "Position": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ],
-                            "Rotation": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ],
-                            "Offset": [
-                                -0.02500000037252903,
-                                -0.029999999329447748,
-                                -0.05000000074505806
-                            ],
-                            "Radius": 0.10000000149011612
-                        }
-                    },
-                    {
-                        "Name": "Teleport",
-                        "AutoSwitch": true,
-                        "EnableScan": true,
-                        "ScanLength": 3.0,
-                        "PriorityLayer": false,
-                        "DetectLayer": [
-                            29,
-                            30
-                        ],
-                        "IgnoreLayer": [
-                            29,
-                            31
-                        ],
-                        "Position": [
-                            0.0,
-                            0.0,
-                            0.0
-                        ],
-                        "Rotation": [
-                            0.0,
-                            0.0,
-                            0.0
-                        ],
-                        "WandRay": {
-                            "Enable": false,
-                            "Interactive": false,
-                            "Display": false,
-                            "ApplyLaserPointer": false,
-                            "ApplyCursor": false,
-                            "Length": 0.0,
-                            "RenderQueue": 3000,
-                            "AlwaysOnTop": false,
-                            "NormalDisplay": [
-                                1.0,
-                                1.0,
-                                1.0,
-                                1.0,
-                                0.0
-                            ],
-                            "SelectDisplay": [
-                                0.0,
-                                1.0,
-                                0.0,
-                                1.0,
-                                0.25
-                            ],
-                            "PressDisplay": [
-                                1.0,
-                                0.0,
-                                0.0,
-                                1.0,
-                                0.25
-                            ],
-                            "DisableDisplay": [
-                                1.0,
-                                1.0,
-                                1.0,
-                                0.5,
-                                0.0
-                            ],
-                            "Position": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ],
-                            "Rotation": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ]
-                        },
-                        "Glove": {
-                            "Interactive": false,
-                            "Display": false,
-                            "NormalOutline": {
-                                "Enable": false,
-                                "Color": [
-                                    0.0,
-                                    0.0,
-                                    0.0,
-                                    0.0
-                                ],
-                                "Width": 0.0,
-                                "Mode": "OutlineAll"
-                            },
-                            "SelectOutline": {
-                                "Enable": true,
-                                "Color": [
-                                    0.0,
-                                    1.0,
-                                    0.0,
-                                    0.5
-                                ],
-                                "Width": 5.0,
-                                "Mode": "OutlineAll"
-                            },
-                            "PressOutline": {
-                                "Enable": true,
-                                "Color": [
-                                    1.0,
-                                    0.0,
-                                    0.0,
-                                    0.5
-                                ],
-                                "Width": 5.0,
-                                "Mode": "OutlineAll"
-                            },
-                            "Position": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ],
-                            "Rotation": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ],
-                            "Offset": [
-                                -0.02500000037252903,
-                                -0.029999999329447748,
-                                -0.05000000074505806
-                            ],
-                            "Radius": 0.10000000149011612
-                        }
-                    },
-                    {
-                        "Name": "Glove",
-                        "AutoSwitch": true,
-                        "EnableScan": true,
-                        "ScanLength": 0.20000000298023225,
-                        "PriorityLayer": false,
-                        "DetectLayer": [
-                            28,
-                            5
-                        ],
-                        "IgnoreLayer": [
-                            29,
-                            30,
-                            31
-                        ],
-                        "Position": [
-                            0.0,
-                            0.0,
-                            0.0
-                        ],
-                        "Rotation": [
-                            0.0,
-                            0.0,
-                            0.0
-                        ],
-                        "WandRay": {
-                            "Enable": false,
-                            "Interactive": false,
-                            "Display": false,
-                            "ApplyLaserPointer": false,
-                            "ApplyCursor": false,
-                            "Length": 0.20000000298023225,
-                            "RenderQueue": 3000,
-                            "AlwaysOnTop": false,
-                            "NormalDisplay": [
-                                1.0,
-                                1.0,
-                                1.0,
-                                1.0,
-                                0.0
-                            ],
-                            "SelectDisplay": [
-                                0.0,
-                                1.0,
-                                0.0,
-                                1.0,
-                                0.25
-                            ],
-                            "PressDisplay": [
-                                1.0,
-                                0.0,
-                                0.0,
-                                1.0,
-                                0.25
-                            ],
-                            "DisableDisplay": [
-                                1.0,
-                                1.0,
-                                1.0,
-                                0.5,
-                                0.0
-                            ],
-                            "Position": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ],
-                            "Rotation": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ]
-                        },
-                        "Glove": {
-                            "Interactive": true,
-                            "Display": true,
-                            "NormalOutline": {
-                                "Enable": false,
-                                "Color": [
-                                    0.0,
-                                    0.0,
-                                    0.0,
-                                    0.0
-                                ],
-                                "Width": 0.0,
-                                "Mode": "OutlineAll"
-                            },
-                            "SelectOutline": {
-                                "Enable": true,
-                                "Color": [
-                                    0.0,
-                                    1.0,
-                                    0.0,
-                                    0.5
-                                ],
-                                "Width": 5.0,
-                                "Mode": "OutlineAll"
-                            },
-                            "PressOutline": {
-                                "Enable": true,
-                                "Color": [
-                                    1.0,
-                                    0.0,
-                                    0.0,
-                                    0.5
-                                ],
-                                "Width": 5.0,
-                                "Mode": "OutlineAll"
-                            },
-                            "Position": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ],
-                            "Rotation": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ],
-                            "Offset": [
-                                -0.02500000037252903,
-                                -0.029999999329447748,
-                                -0.05000000074505806
-                            ],
-                            "Radius": 0.10000000149011612
-                        }
-                    },
-                    {
-                        "Name": "Magnifier",
-                        "AutoSwitch": false,
-                        "EnableScan": false,
-                        "ScanLength": 3.0,
-                        "PriorityLayer": false,
-                        "DetectLayer": [],
-                        "IgnoreLayer": [
-                            26,
-                            27,
-                            31
-                        ],
-                        "Position": [
-                            0.0,
-                            0.0,
-                            0.25
-                        ],
-                        "Rotation": [
-                            0.0,
-                            0.0,
-                            0.0
-                        ],
-                        "WandRay": {
-                            "Enable": false,
-                            "Interactive": false,
-                            "Display": false,
-                            "ApplyLaserPointer": false,
-                            "ApplyCursor": false,
-                            "Length": 0.0,
-                            "RenderQueue": 3000,
-                            "AlwaysOnTop": false,
-                            "NormalDisplay": [
-                                1.0,
-                                1.0,
-                                1.0,
-                                1.0,
-                                0.0
-                            ],
-                            "SelectDisplay": [
-                                0.0,
-                                1.0,
-                                0.0,
-                                1.0,
-                                0.25
-                            ],
-                            "PressDisplay": [
-                                1.0,
-                                0.0,
-                                0.0,
-                                1.0,
-                                0.25
-                            ],
-                            "DisableDisplay": [
-                                1.0,
-                                1.0,
-                                1.0,
-                                0.5,
-                                0.0
-                            ],
-                            "Position": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ],
-                            "Rotation": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ]
-                        },
-                        "Glove": {
-                            "Interactive": false,
-                            "Display": false,
-                            "NormalOutline": {
-                                "Enable": false,
-                                "Color": [
-                                    0.0,
-                                    0.0,
-                                    0.0,
-                                    0.0
-                                ],
-                                "Width": 0.0,
-                                "Mode": "OutlineAll"
-                            },
-                            "SelectOutline": {
-                                "Enable": true,
-                                "Color": [
-                                    0.0,
-                                    1.0,
-                                    0.0,
-                                    0.5
-                                ],
-                                "Width": 5.0,
-                                "Mode": "OutlineAll"
-                            },
-                            "PressOutline": {
-                                "Enable": true,
-                                "Color": [
-                                    1.0,
-                                    0.0,
-                                    0.0,
-                                    0.5
-                                ],
-                                "Width": 5.0,
-                                "Mode": "OutlineAll"
-                            },
-                            "Position": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ],
-                            "Rotation": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ],
-                            "Offset": [
-                                -0.02500000037252903,
-                                -0.029999999329447748,
-                                -0.05000000074505806
-                            ],
-                            "Radius": 0.10000000149011612
-                        }
-                    },
-                    {
-                        "Name": "Reporter",
-                        "AutoSwitch": false,
-                        "EnableScan": false,
-                        "ScanLength": 3.0,
-                        "PriorityLayer": false,
-                        "DetectLayer": [
-                            28,
-                            5
-                        ],
-                        "IgnoreLayer": [
-                            26,
-                            27,
-                            31
-                        ],
-                        "Position": [
-                            0.0,
-                            0.15000000596046449,
-                            0.15000000596046449
-                        ],
-                        "Rotation": [
-                            300.0,
-                            0.0,
-                            0.0
-                        ],
-                        "WandRay": {
-                            "Enable": true,
-                            "Interactive": true,
-                            "Display": false,
-                            "ApplyLaserPointer": false,
-                            "ApplyCursor": false,
-                            "Length": 0.5,
-                            "RenderQueue": 3000,
-                            "AlwaysOnTop": false,
-                            "NormalDisplay": [
-                                1.0,
-                                1.0,
-                                1.0,
-                                1.0,
-                                0.0
-                            ],
-                            "SelectDisplay": [
-                                0.0,
-                                1.0,
-                                0.0,
-                                1.0,
-                                0.25
-                            ],
-                            "PressDisplay": [
-                                1.0,
-                                0.0,
-                                0.0,
-                                1.0,
-                                0.25
-                            ],
-                            "DisableDisplay": [
-                                1.0,
-                                1.0,
-                                1.0,
-                                0.5,
-                                0.0
-                            ],
-                            "Position": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ],
-                            "Rotation": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ]
-                        },
-                        "Glove": {
-                            "Interactive": false,
-                            "Display": false,
-                            "NormalOutline": {
-                                "Enable": false,
-                                "Color": [
-                                    0.0,
-                                    0.0,
-                                    0.0,
-                                    0.0
-                                ],
-                                "Width": 0.0,
-                                "Mode": "OutlineAll"
-                            },
-                            "SelectOutline": {
-                                "Enable": true,
-                                "Color": [
-                                    0.0,
-                                    1.0,
-                                    0.0,
-                                    0.5
-                                ],
-                                "Width": 5.0,
-                                "Mode": "OutlineAll"
-                            },
-                            "PressOutline": {
-                                "Enable": true,
-                                "Color": [
-                                    1.0,
-                                    0.0,
-                                    0.0,
-                                    0.5
-                                ],
-                                "Width": 5.0,
-                                "Mode": "OutlineAll"
-                            },
-                            "Position": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ],
-                            "Rotation": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ],
-                            "Offset": [
-                                -0.02500000037252903,
-                                -0.029999999329447748,
-                                -0.05000000074505806
-                            ],
-                            "Radius": 0.10000000149011612
-                        }
-                    },
-                    {
-                        "Name": "Brush",
-                        "AutoSwitch": false,
-                        "EnableScan": false,
-                        "ScanLength": 3.0,
-                        "PriorityLayer": false,
-                        "DetectLayer": [
-                            28,
-                            5
-                        ],
-                        "IgnoreLayer": [
-                            31
-                        ],
-                        "Position": [
-                            0.0,
-                            0.0,
-                            0.0
-                        ],
-                        "Rotation": [
-                            0.0,
-                            0.0,
-                            0.0
-                        ],
-                        "WandRay": {
-                            "Enable": true,
-                            "Interactive": true,
-                            "Display": true,
-                            "ApplyLaserPointer": false,
-                            "ApplyCursor": false,
-                            "Length": 0.10000000149011612,
-                            "RenderQueue": 3000,
-                            "AlwaysOnTop": false,
-                            "NormalDisplay": [
-                                1.0,
-                                1.0,
-                                1.0,
-                                1.0,
-                                0.0
-                            ],
-                            "SelectDisplay": [
-                                0.0,
-                                1.0,
-                                0.0,
-                                1.0,
-                                0.25
-                            ],
-                            "PressDisplay": [
-                                1.0,
-                                0.0,
-                                0.0,
-                                1.0,
-                                0.25
-                            ],
-                            "DisableDisplay": [
-                                1.0,
-                                1.0,
-                                1.0,
-                                0.5,
-                                0.0
-                            ],
-                            "Position": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ],
-                            "Rotation": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ]
-                        },
-                        "Glove": {
-                            "Interactive": false,
-                            "Display": false,
-                            "NormalOutline": {
-                                "Enable": false,
-                                "Color": [
-                                    0.0,
-                                    0.0,
-                                    0.0,
-                                    0.0
-                                ],
-                                "Width": 0.0,
-                                "Mode": "OutlineAll"
-                            },
-                            "SelectOutline": {
-                                "Enable": true,
-                                "Color": [
-                                    0.0,
-                                    1.0,
-                                    0.0,
-                                    0.5
-                                ],
-                                "Width": 5.0,
-                                "Mode": "OutlineAll"
-                            },
-                            "PressOutline": {
-                                "Enable": true,
-                                "Color": [
-                                    1.0,
-                                    0.0,
-                                    0.0,
-                                    0.5
-                                ],
-                                "Width": 5.0,
-                                "Mode": "OutlineAll"
-                            },
-                            "Position": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ],
-                            "Rotation": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ],
-                            "Offset": [
-                                -0.02500000037252903,
-                                -0.029999999329447748,
-                                -0.05000000074505806
-                            ],
-                            "Radius": 0.10000000149011612
-                        }
-                    },
-                    {
-                        "Name": "Measurer",
-                        "AutoSwitch": false,
-                        "EnableScan": false,
-                        "ScanLength": 3.0,
-                        "PriorityLayer": false,
-                        "DetectLayer": [
-                            28,
-                            5
-                        ],
-                        "IgnoreLayer": [
-                            31
-                        ],
-                        "Position": [
-                            0.0,
-                            0.0,
-                            0.0
-                        ],
-                        "Rotation": [
-                            0.0,
-                            0.0,
-                            0.0
-                        ],
-                        "WandRay": {
-                            "Enable": true,
-                            "Interactive": true,
-                            "Display": true,
-                            "ApplyLaserPointer": false,
-                            "ApplyCursor": false,
-                            "Length": 0.30000001192092898,
-                            "RenderQueue": 3000,
-                            "AlwaysOnTop": false,
-                            "NormalDisplay": [
-                                1.0,
-                                1.0,
-                                1.0,
-                                1.0,
-                                0.0
-                            ],
-                            "SelectDisplay": [
-                                0.0,
-                                1.0,
-                                0.0,
-                                1.0,
-                                0.25
-                            ],
-                            "PressDisplay": [
-                                1.0,
-                                0.0,
-                                0.0,
-                                1.0,
-                                0.25
-                            ],
-                            "DisableDisplay": [
-                                1.0,
-                                1.0,
-                                1.0,
-                                0.5,
-                                0.0
-                            ],
-                            "Position": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ],
-                            "Rotation": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ]
-                        },
-                        "Glove": {
-                            "Interactive": false,
-                            "Display": false,
-                            "NormalOutline": {
-                                "Enable": false,
-                                "Color": [
-                                    0.0,
-                                    0.0,
-                                    0.0,
-                                    0.0
-                                ],
-                                "Width": 0.0,
-                                "Mode": "OutlineAll"
-                            },
-                            "SelectOutline": {
-                                "Enable": true,
-                                "Color": [
-                                    0.0,
-                                    1.0,
-                                    0.0,
-                                    0.5
-                                ],
-                                "Width": 5.0,
-                                "Mode": "OutlineAll"
-                            },
-                            "PressOutline": {
-                                "Enable": true,
-                                "Color": [
-                                    1.0,
-                                    0.0,
-                                    0.0,
-                                    0.5
-                                ],
-                                "Width": 5.0,
-                                "Mode": "OutlineAll"
-                            },
-                            "Position": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ],
-                            "Rotation": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ],
-                            "Offset": [
-                                -0.02500000037252903,
-                                -0.029999999329447748,
-                                -0.05000000074505806
-                            ],
-                            "Radius": 0.10000000149011612
-                        }
-                    },
-                    {
-                        "Name": "DrumStick",
-                        "AutoSwitch": false,
-                        "EnableScan": false,
-                        "ScanLength": 3.0,
-                        "PriorityLayer": false,
-                        "DetectLayer": [
-                            28,
-                            5
-                        ],
-                        "IgnoreLayer": [
-                            31
-                        ],
-                        "Position": [
-                            0.0,
-                            0.0,
-                            0.0
-                        ],
-                        "Rotation": [
-                            0.0,
-                            0.0,
-                            0.0
-                        ],
-                        "WandRay": {
-                            "Enable": true,
-                            "Interactive": false,
-                            "Display": true,
-                            "ApplyLaserPointer": false,
-                            "ApplyCursor": false,
-                            "Length": 0.30000001192092898,
-                            "RenderQueue": 3000,
-                            "AlwaysOnTop": false,
-                            "NormalDisplay": [
-                                1.0,
-                                1.0,
-                                1.0,
-                                1.0,
-                                0.0
-                            ],
-                            "SelectDisplay": [
-                                0.0,
-                                1.0,
-                                0.0,
-                                1.0,
-                                0.25
-                            ],
-                            "PressDisplay": [
-                                1.0,
-                                0.0,
-                                0.0,
-                                1.0,
-                                0.25
-                            ],
-                            "DisableDisplay": [
-                                1.0,
-                                1.0,
-                                1.0,
-                                0.5,
-                                0.0
-                            ],
-                            "Position": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ],
-                            "Rotation": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ]
-                        },
-                        "Glove": {
-                            "Interactive": false,
-                            "Display": false,
-                            "NormalOutline": {
-                                "Enable": false,
-                                "Color": [
-                                    0.0,
-                                    0.0,
-                                    0.0,
-                                    0.0
-                                ],
-                                "Width": 0.0,
-                                "Mode": "OutlineAll"
-                            },
-                            "SelectOutline": {
-                                "Enable": true,
-                                "Color": [
-                                    0.0,
-                                    1.0,
-                                    0.0,
-                                    0.5
-                                ],
-                                "Width": 5.0,
-                                "Mode": "OutlineAll"
-                            },
-                            "PressOutline": {
-                                "Enable": true,
-                                "Color": [
-                                    1.0,
-                                    0.0,
-                                    0.0,
-                                    0.5
-                                ],
-                                "Width": 5.0,
-                                "Mode": "OutlineAll"
-                            },
-                            "Position": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ],
-                            "Rotation": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ],
-                            "Offset": [
-                                -0.02500000037252903,
-                                -0.029999999329447748,
-                                -0.05000000074505806
-                            ],
-                            "Radius": 0.10000000149011612
-                        }
-                    },
-                    {
-                        "Name": "LaserPointer",
-                        "AutoSwitch": false,
-                        "EnableScan": false,
-                        "ScanLength": 3.0,
-                        "PriorityLayer": false,
-                        "DetectLayer": [
-                            28,
-                            5
-                        ],
-                        "IgnoreLayer": [
-                            29,
-                            30,
-                            31
-                        ],
-                        "Position": [
-                            0.0,
-                            0.0,
-                            0.0
-                        ],
-                        "Rotation": [
-                            0.0,
-                            0.0,
-                            0.0
-                        ],
-                        "WandRay": {
-                            "Enable": true,
-                            "Interactive": true,
-                            "Display": false,
-                            "ApplyLaserPointer": true,
-                            "ApplyCursor": false,
-                            "Length": 550.0,
-                            "RenderQueue": 3000,
-                            "AlwaysOnTop": false,
-                            "NormalDisplay": [
-                                1.0,
-                                1.0,
-                                1.0,
-                                1.0,
-                                0.0
-                            ],
-                            "SelectDisplay": [
-                                0.0,
-                                1.0,
-                                0.0,
-                                1.0,
-                                0.25
-                            ],
-                            "PressDisplay": [
-                                1.0,
-                                0.0,
-                                0.0,
-                                1.0,
-                                0.25
-                            ],
-                            "DisableDisplay": [
-                                1.0,
-                                1.0,
-                                1.0,
-                                0.5,
-                                0.0
-                            ],
-                            "Position": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ],
-                            "Rotation": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ]
-                        },
-                        "Glove": {
-                            "Interactive": false,
-                            "Display": false,
-                            "NormalOutline": {
-                                "Enable": false,
-                                "Color": [
-                                    0.0,
-                                    0.0,
-                                    0.0,
-                                    0.0
-                                ],
-                                "Width": 0.0,
-                                "Mode": "OutlineAll"
-                            },
-                            "SelectOutline": {
-                                "Enable": true,
-                                "Color": [
-                                    0.0,
-                                    1.0,
-                                    0.0,
-                                    0.5
-                                ],
-                                "Width": 5.0,
-                                "Mode": "OutlineAll"
-                            },
-                            "PressOutline": {
-                                "Enable": true,
-                                "Color": [
-                                    1.0,
-                                    0.0,
-                                    0.0,
-                                    0.5
-                                ],
-                                "Width": 5.0,
-                                "Mode": "OutlineAll"
-                            },
-                            "Position": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ],
-                            "Rotation": [
-                                0.0,
-                                0.0,
-                                0.0
-                            ],
-                            "Offset": [
-                                -0.02500000037252903,
-                                -0.029999999329447748,
-                                -0.05000000074505806
-                            ],
-                            "Radius": 0.10000000149011612
-                        }
-                    },
-                    {
-                        "Name": "Cursor",
-                        "AutoSwitch": false,
-                        "EnableScan": false,
-                        "ScanLength": 100.0,
-                        "PriorityLayer": true,
-                        "DetectLayer": [
                             5,
-                            28
+                            6
                         ],
                         "IgnoreLayer": [
                             29,
                             30,
-                            31
+                            31,
+                            0
                         ],
                         "Position": [
                             0.0,
@@ -1423,10 +172,10 @@
                         "WandRay": {
                             "Enable": true,
                             "Interactive": true,
-                            "Display": false,
+                            "Display": true,
                             "ApplyLaserPointer": false,
-                            "ApplyCursor": true,
-                            "Length": 100.0,
+                            "ApplyCursor": false,
+                            "Length": 200.0,
                             "RenderQueue": 3000,
                             "AlwaysOnTop": true,
                             "NormalDisplay": [
@@ -8303,6 +7052,102 @@
         {
             "Path": [
                 "Assets/Votanic/VotanicXR_Tutorial 2020/Tutorial01_GettingStarted/Sample/Demo Sample.unity"
+            ],
+            "ApplyScene": false,
+            "ApplyDevice": false,
+            "ApplyCommand": false,
+            "Scene": {
+                "Attribute": {
+                    "Traveler": true,
+                    "Soul": false,
+                    "Debug": false,
+                    "Tracking": true,
+                    "Stereo": true,
+                    "Test3D": false
+                },
+                "Update": {
+                    "RefreshRate": 0.20000000298023225,
+                    "TargetFrameRate": 120
+                },
+                "Quality": {
+                    "ForceQuality": false,
+                    "Level": 0,
+                    "VSync": 0,
+                    "Rendering": {
+                        "LightCount": 1,
+                        "Anisotropic": "ForcedOn",
+                        "AntiAliasing": 8
+                    },
+                    "Shadows": {
+                        "Type": "Hard",
+                        "Resolution": "High",
+                        "Projection": "CloseFit",
+                        "Distance": 100.0,
+                        "NearPlaneOffset": 1.0,
+                        "Cascades": []
+                    }
+                },
+                "Frame": {
+                    "StartPosition": [
+                        0.0,
+                        0.0,
+                        0.0
+                    ],
+                    "StartRotation": [
+                        0.0,
+                        0.0,
+                        0.0
+                    ],
+                    "Transition": {
+                        "Method": "",
+                        "Parameter": "Velocity",
+                        "TransitionFactor": 1.0,
+                        "AccelerationFactor": 0.0,
+                        "DecelerationFactor": 0.0,
+                        "RotationRatio": 45.0,
+                        "FadeColor": [
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.0
+                        ],
+                        "FadedDuration": 0.10000000149011612,
+                        "UnscaledDeltaTime": false
+                    }
+                },
+                "User": []
+            },
+            "Device": {
+                "GeneralInput": {
+                    "DeadZone": 0.14000000059604646,
+                    "PressDetect": 0.699999988079071,
+                    "HoldingDuration": 1.0
+                },
+                "Buttons": {
+                    "GeneralButtons": [],
+                    "VRPNButtons": []
+                },
+                "Axes": {
+                    "GeneralAxes": [],
+                    "VRPNAxes": []
+                },
+                "Tracker": {
+                    "VRPNTracker": []
+                },
+                "Controller": [],
+                "Sensor": []
+            },
+            "Command": {
+                "ComboTimeLimit": 0.25,
+                "CountTimeLimit": 0.25,
+                "Separator": "=,_|",
+                "BuiltIn": [],
+                "Custom": []
+            }
+        },
+        {
+            "Path": [
+                "Assets/Scenes/Small Battlefield.unity"
             ],
             "ApplyScene": false,
             "ApplyDevice": false,

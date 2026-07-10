@@ -30,12 +30,16 @@ public class EnemyWaveController : MonoBehaviour
         }
     }
     public bool HasWave3Started => triggeredWaves.Contains(wave3.waveNumber);
+    public bool HasFinalWaveStarted => triggeredWaves.Contains(FinalWaveNumber);
+    public int FinalWaveNumber => SiegeMatchSettings.MaxWaves >= wave3.waveNumber ? wave3.waveNumber : wave2.waveNumber;
     public float Wave3StartTime => wave3StartTime;
     public float Wave3SpawnTimeSeconds => wave3.spawnTimeSeconds;
+    public float FinalWaveSpawnTimeSeconds =>
+        FinalWaveNumber == wave3.waveNumber ? wave3.spawnTimeSeconds : wave2.spawnTimeSeconds;
     public bool AreAllWavesTriggered =>
         triggeredWaves.Contains(wave1.waveNumber)
         && triggeredWaves.Contains(wave2.waveNumber)
-        && triggeredWaves.Contains(wave3.waveNumber);
+        && (SiegeMatchSettings.MaxWaves < wave3.waveNumber || triggeredWaves.Contains(wave3.waveNumber));
 
     [Header("Wave Timing")]
     [SerializeField] private WaveSchedule wave1 = new WaveSchedule { waveNumber = 1, spawnTimeSeconds = 10f };
@@ -187,7 +191,10 @@ public class EnemyWaveController : MonoBehaviour
 
         EvaluateWave(wave1);
         EvaluateWave(wave2);
-        EvaluateWave(wave3);
+        if (SiegeMatchSettings.MaxWaves >= wave3.waveNumber)
+        {
+            EvaluateWave(wave3);
+        }
 
         if (Time.time >= nextEncirclementEvaluationTime)
         {

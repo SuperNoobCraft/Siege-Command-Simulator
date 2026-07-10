@@ -46,6 +46,22 @@ public class RtsSiegeObjectives : MonoBehaviour
         return GetValidTransforms(friendlyCannons).Count > 0;
     }
 
+    public Vector3 GetRandomCannonPosition(Vector3 fromPosition)
+    {
+        List<Transform> cannons = GetValidTransforms(friendlyCannons);
+        if (cannons.Count == 0)
+        {
+            return fromPosition;
+        }
+
+        if (cannons.Count == 1)
+        {
+            return cannons[0].position;
+        }
+
+        return cannons[Random.Range(0, cannons.Count)].position;
+    }
+
     public Vector3 GetNearestCannonPosition(Vector3 fromPosition)
     {
         List<Transform> cannons = GetValidTransforms(friendlyCannons);

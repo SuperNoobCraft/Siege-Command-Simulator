@@ -8,14 +8,16 @@ using UnityEditor;
 #endif
 
 /// <summary>
-/// Central match flow: cannon occupation loss, commander arrow loss, and timed victory after wave 3.
+/// Central match flow: difficulty select, cannon occupation loss, commander arrow loss, and timed victory.
 /// </summary>
 [DefaultExecutionOrder(-100)]
 [RequireComponent(typeof(SiegePlayEnvironment))]
+[RequireComponent(typeof(SiegeSceneBootstrap))]
 public class SiegeGameManager : MonoBehaviour
 {
     public enum MatchState
     {
+        SelectingDifficulty,
         Playing,
         Won,
         Lost
@@ -27,10 +29,10 @@ public class SiegeGameManager : MonoBehaviour
     private static int playSessionId;
 
     [Header("Victory")]
-    [Tooltip("Seconds after wave 3 begins before friendly cannons auto-fire and the match is won.")]
-    [SerializeField, Min(0f)] private float secondsAfterWave3UntilCannonsFire = 50f;
+    [Tooltip("Seconds after the final wave begins before friendly cannons auto-fire and the match is won.")]
+    [SerializeField, Min(0f)] private float secondsAfterFinalWaveUntilCannonsFire = 50f;
     [Tooltip("Fallback if EnemyWaveController is missing.")]
-    [SerializeField, Min(0f)] private float fallbackWave3StartTimeSeconds = 130f;
+    [SerializeField, Min(0f)] private float fallbackFinalWaveStartTimeSeconds = 130f;
     [SerializeField] private UnityEvent onCannonsFired;
     [SerializeField] private UnityEvent onVictory;
 
@@ -45,7 +47,7 @@ public class SiegeGameManager : MonoBehaviour
     [Header("Debug")]
     [SerializeField] private bool logMatchEvents = true;
 
-    private MatchState currentState = MatchState.Playing;
+    private MatchState currentState = MatchState.SelectingDifficulty;
     private float matchElapsedSeconds;
     private int initializedPlaySessionId = -1;
     private string defeatReason;
@@ -78,14 +80,15 @@ public class SiegeGameManager : MonoBehaviour
 
     public MatchState CurrentState => currentState;
     public float CannonOccupationLossSeconds => cannonOccupationLossSeconds;
-    public float SecondsAfterWave3UntilCannonsFire => secondsAfterWave3UntilCannonsFire;
+    public float SecondsAfterFinalWaveUntilCannonsFire => secondsAfterFinalWaveUntilCannonsFire;
     public string DefeatReason => defeatReason;
     public bool IsPlaying => currentState == MatchState.Playing;
     public float MatchElapsedSeconds => matchElapsedSeconds;
+    public int MaxWaves => SiegeMatchSettings.MaxWaves;
     public float SecondsUntilCannonsFire =>
-        Mathf.Max(0f, GetWave3StartTimeSeconds() + secondsAfterWave3UntilCannonsFire - MatchElapsedSeconds);
+        Mathf.Max(0f, GetFinalWaveStartTimeSeconds() + secondsAfterFinalWaveUntilCannonsFire - MatchElapsedSeconds);
     public float TotalSecondsUntilCannonsFire =>
-        Mathf.Max(0f, GetWave3StartTimeSeconds() + secondsAfterWave3UntilCannonsFire);
+        Mathf.Max(0f, GetFinalWaveStartTimeSeconds() + secondsAfterFinalWaveUntilCannonsFire);
     public SiegePlayEnvironmentMode PlayEnvironment => SiegePlayEnvironment.ActiveMode;
     public bool UsesDesktopInput => SiegePlayEnvironment.IsDesktopInput;
     public bool UsesTrackedXr => SiegePlayEnvironment.IsTrackedXr;
@@ -98,7 +101,7 @@ public class SiegeGameManager : MonoBehaviour
     private void Awake()
     {
         RegisterInstance();
-        EnsureMatchReadyForPlaySession();
+        EnsureSessionInitialized();
     }
 
     private void RegisterInstance()
@@ -113,10 +116,10 @@ public class SiegeGameManager : MonoBehaviour
 
     private void Start()
     {
-        EnsureMatchReadyForPlaySession();
+        EnsureSessionInitialized();
     }
 
-    private void EnsureMatchReadyForPlaySession()
+    private void EnsureSessionInitialized()
     {
         if (!Application.isPlaying)
         {
@@ -129,6 +132,24 @@ public class SiegeGameManager : MonoBehaviour
         }
 
         initializedPlaySessionId = playSessionId;
+        SiegeMatchSettings.Reset();
+        BeginDifficultySelection();
+
+        EnemyWaveController waveController = EnemyWaveController.Instance;
+        if (waveController != null)
+        {
+            waveController.PrepareForMatchStart();
+        }
+    }
+
+    public void ConfirmDifficulty(int maxWaves)
+    {
+        if (currentState != MatchState.SelectingDifficulty)
+        {
+            return;
+        }
+
+        SiegeMatchSettings.Configure(maxWaves);
         BeginNewMatch();
         ResetCannonSites();
 
@@ -141,13 +162,27 @@ public class SiegeGameManager : MonoBehaviour
         if (logMatchEvents)
         {
             Debug.Log(
-                "Siege match started. Session "
-                + playSessionId + ". Wave 3 countdown begins at "
-                + SecondsUntilCannonsFire.ToString("F0") + "s.",
+                "Siege match started with " + SiegeMatchSettings.MaxWaves + " waves. Session "
+                + playSessionId + ". Cannons fire in "
+                + TotalSecondsUntilCannonsFire.ToString("F0") + "s.",
                 this);
         }
 
         CannonFireCountdownUpdated?.Invoke(SecondsUntilCannonsFire);
+    }
+
+    private void BeginDifficultySelection()
+    {
+        if (pauseCoroutine != null)
+        {
+            StopCoroutine(pauseCoroutine);
+            pauseCoroutine = null;
+        }
+
+        Time.timeScale = 1f;
+        matchElapsedSeconds = 0f;
+        defeatReason = null;
+        SetMatchState(MatchState.SelectingDifficulty);
     }
 
     private void BeginNewMatch()
@@ -159,9 +194,9 @@ public class SiegeGameManager : MonoBehaviour
         }
 
         Time.timeScale = 1f;
-        currentState = MatchState.Playing;
         defeatReason = null;
         matchElapsedSeconds = 0f;
+        SetMatchState(MatchState.Playing);
     }
 
     private void OnDestroy()
@@ -177,7 +212,7 @@ public class SiegeGameManager : MonoBehaviour
         if (Application.isPlaying)
         {
             RegisterInstance();
-            EnsureMatchReadyForPlaySession();
+            EnsureSessionInitialized();
         }
 
         EnemyWaveController.WaveDeployed += HandleWaveDeployed;
@@ -191,7 +226,7 @@ public class SiegeGameManager : MonoBehaviour
     private void Update()
     {
         RegisterInstance();
-        EnsureMatchReadyForPlaySession();
+        EnsureSessionInitialized();
 
         if (currentState != MatchState.Playing)
         {
@@ -206,7 +241,7 @@ public class SiegeGameManager : MonoBehaviour
         matchElapsedSeconds += Time.unscaledDeltaTime;
         CannonFireCountdownUpdated?.Invoke(SecondsUntilCannonsFire);
 
-        if (SecondsUntilCannonsFire <= 0f && HasWave3Started())
+        if (SecondsUntilCannonsFire <= 0f && HasFinalWaveStarted())
         {
             FireCannonsAndWin();
         }
@@ -214,7 +249,14 @@ public class SiegeGameManager : MonoBehaviour
 
     private void HandleWaveDeployed(int waveNumber)
     {
-        if (currentState != MatchState.Playing || waveNumber != 3)
+        if (currentState != MatchState.Playing)
+        {
+            return;
+        }
+
+        EnemyWaveController waveController = EnemyWaveController.Instance;
+        int finalWave = waveController != null ? waveController.FinalWaveNumber : SiegeMatchSettings.MaxWaves;
+        if (waveNumber != finalWave)
         {
             return;
         }
@@ -222,23 +264,23 @@ public class SiegeGameManager : MonoBehaviour
         if (logMatchEvents)
         {
             Debug.Log(
-                "Wave 3 started. Cannons will fire in "
-                + secondsAfterWave3UntilCannonsFire.ToString("F1") + "s.",
+                "Final wave (" + waveNumber + ") started. Cannons will fire in "
+                + secondsAfterFinalWaveUntilCannonsFire.ToString("F1") + "s.",
                 this);
         }
 
         CannonFireCountdownUpdated?.Invoke(SecondsUntilCannonsFire);
     }
 
-    private float GetWave3StartTimeSeconds()
+    private float GetFinalWaveStartTimeSeconds()
     {
         EnemyWaveController waveController = EnemyWaveController.Instance;
         if (waveController != null)
         {
-            return waveController.Wave3SpawnTimeSeconds;
+            return waveController.FinalWaveSpawnTimeSeconds;
         }
 
-        return fallbackWave3StartTimeSeconds;
+        return fallbackFinalWaveStartTimeSeconds;
     }
 
     private void ResetCannonSites()
@@ -253,10 +295,10 @@ public class SiegeGameManager : MonoBehaviour
         }
     }
 
-    private bool HasWave3Started()
+    private bool HasFinalWaveStarted()
     {
         EnemyWaveController waveController = EnemyWaveController.Instance;
-        return waveController == null || waveController.HasWave3Started;
+        return waveController == null || waveController.HasFinalWaveStarted;
     }
 
     public void NotifyCommanderDefeated()

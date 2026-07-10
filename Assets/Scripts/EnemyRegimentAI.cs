@@ -41,6 +41,9 @@ public class EnemyRegimentAI : MonoBehaviour
     [SerializeField, Min(0.1f)] private float decisionInterval = 0.35f;
     [SerializeField, Min(0.1f)] private float destinationRefreshInterval = 0.75f;
     [SerializeField, Min(0f)] private float formationSpreadRadius = 2.5f;
+    [SerializeField, Min(0f)] private float formationJitterRadius = 1.25f;
+    [SerializeField, Range(0f, 1f)] private float advanceLateralSweepChance = 0.35f;
+    [SerializeField, Min(0f)] private float advanceLateralSweepDistance = 4f;
     [SerializeField] private LayerMask visionLayers = ~0;
 
     [Header("Range Advantage (Archer Logic)")]
@@ -59,6 +62,8 @@ public class EnemyRegimentAI : MonoBehaviour
     [SerializeField] private bool prioritizeCannonsOverTroops = true;
     [Tooltip("When a friendly unit is within this distance of a cannon, AI may treat them as a cannon defender.")]
     [SerializeField, Min(0f)] private float friendlyCannonProximityRadius = 12f;
+    [Tooltip("Stop and hold once this close to the assigned cannon objective.")]
+    [SerializeField, Min(0.5f)] private float objectiveArrivalRadius = 3.5f;
     [Tooltip("Ignored while Prioritize Cannons Over Troops is enabled.")]
     [SerializeField, Range(0f, 1f)] private float unitInterceptChanceNearCannon = 0.08f;
     [Tooltip("Width of the corridor treated as a direct blocking path to the cannon.")]
@@ -80,6 +85,17 @@ public class EnemyRegimentAI : MonoBehaviour
     private float nextUnstuckAttemptTime;
     private int unstuckAttemptIndex;
     private bool hasEnteredBattlefield;
+    private bool hasAssignedCannonObjective;
+    private Vector3 assignedCannonObjective;
+    private float formationAngleOffset;
+    private float formationRadiusMultiplier;
+    private int formationSlot;
+    private Vector2 formationJitter;
+    private float advanceSweepSign;
+    private bool useAdvanceLateralSweep;
+    private bool hasCachedObjectiveDestination;
+    private bool isHoldingAtObjective;
+    private Vector3 cachedObjectiveDestination;
     private Vector3 tacticalDestination;
     private readonly List<TroopCombat> visibleFriendlies = new List<TroopCombat>();
     private readonly List<TroopCombat> visibleEnemies = new List<TroopCombat>();
@@ -96,6 +112,11 @@ public class EnemyRegimentAI : MonoBehaviour
         combat = GetComponent<TroopCombat>();
         motor = GetComponent<RtsUnitMotor>();
         motor.CanReceiveCommands = false;
+        formationAngleOffset = Random.Range(0f, Mathf.PI * 2f);
+        formationRadiusMultiplier = Random.Range(0.65f, 1.35f);
+        formationSlot = Random.Range(0, 8);
+        formationJitter = Random.insideUnitCircle;
+        advanceSweepSign = Random.value < 0.5f ? -1f : 1f;
 
         if (combat != null && combat.TroopFaction != TroopCombat.Faction.Enemy)
         {
@@ -169,6 +190,8 @@ public class EnemyRegimentAI : MonoBehaviour
             return;
         }
 
+        UpdateObjectiveHoldState();
+
         if (Time.time >= nextDecisionTime)
         {
             nextDecisionTime = Time.time + decisionInterval;
@@ -213,7 +236,7 @@ public class EnemyRegimentAI : MonoBehaviour
         }
 
         Vector3 friendlyPosition = friendly.transform.position;
-        Vector3 cannonPosition = objectives.GetNearestCannonPosition(transform.position);
+        Vector3 cannonPosition = GetCannonObjectivePosition();
         float friendlyDistanceToCannon = GetHorizontalDistance(friendlyPosition, cannonPosition);
 
         if (campManager != null)
@@ -249,6 +272,11 @@ public class EnemyRegimentAI : MonoBehaviour
         }
 
         combat.ClearCurrentTarget();
+
+        if (ShouldHoldAtObjective())
+        {
+            return;
+        }
 
         if (phase == AiPhase.Kiting || phase == AiPhase.CampingRetreatRoute)
         {
@@ -311,7 +339,98 @@ public class EnemyRegimentAI : MonoBehaviour
         phase = AiPhase.ExitingGate;
         nextDecisionTime = 0f;
         nextDestinationRefreshTime = 0f;
+        useAdvanceLateralSweep = Random.value < advanceLateralSweepChance;
+        AssignRandomCannonObjective();
+        CacheObjectiveDestination();
         BeginGateExit();
+    }
+
+    private void CacheObjectiveDestination()
+    {
+        cachedObjectiveDestination = BuildFormationDestination(GetCannonObjectivePosition());
+        hasCachedObjectiveDestination = true;
+        isHoldingAtObjective = false;
+    }
+
+    private void UpdateObjectiveHoldState()
+    {
+        if (!prioritizeCannonsOverTroops || phase != AiPhase.Advancing)
+        {
+            isHoldingAtObjective = false;
+            return;
+        }
+
+        if (combat.CurrentState == TroopCombat.State.Fight)
+        {
+            return;
+        }
+
+        if (isHoldingAtObjective)
+        {
+            if (!IsNearObjectiveArea())
+            {
+                isHoldingAtObjective = false;
+                return;
+            }
+
+            motor.Stop();
+            return;
+        }
+
+        if (IsNearObjectiveArea())
+        {
+            isHoldingAtObjective = true;
+            motor.Stop();
+        }
+    }
+
+    private bool IsNearObjectiveArea()
+    {
+        float arrivalRadiusSqr = objectiveArrivalRadius * objectiveArrivalRadius;
+        if (hasCachedObjectiveDestination
+            && GetHorizontalDistanceSqr(transform.position, cachedObjectiveDestination) <= arrivalRadiusSqr)
+        {
+            return true;
+        }
+
+        return GetHorizontalDistanceSqr(transform.position, GetCannonObjectivePosition()) <= arrivalRadiusSqr;
+    }
+
+    private bool ShouldHoldAtObjective()
+    {
+        return prioritizeCannonsOverTroops
+            && phase == AiPhase.Advancing
+            && isHoldingAtObjective
+            && combat.CurrentState != TroopCombat.State.Fight;
+    }
+
+    private void AssignRandomCannonObjective()
+    {
+        RtsSiegeObjectives objectives = RtsSiegeObjectives.Instance;
+        if (objectives == null || !objectives.HasCannons())
+        {
+            hasAssignedCannonObjective = false;
+            return;
+        }
+
+        assignedCannonObjective = objectives.GetRandomCannonPosition(transform.position);
+        hasAssignedCannonObjective = true;
+    }
+
+    private Vector3 GetCannonObjectivePosition()
+    {
+        if (hasAssignedCannonObjective)
+        {
+            return assignedCannonObjective;
+        }
+
+        RtsSiegeObjectives objectives = RtsSiegeObjectives.Instance;
+        if (objectives != null && objectives.HasCannons())
+        {
+            return objectives.GetRandomCannonPosition(transform.position);
+        }
+
+        return transform.position + transform.forward * 10f;
     }
 
     public void AssignEncirclementDestination(Vector3 targetCenter, bool useLeftFlank)
@@ -402,6 +521,12 @@ public class EnemyRegimentAI : MonoBehaviour
     {
         if (phase == AiPhase.WaitingInCamp)
         {
+            return;
+        }
+
+        if (ShouldHoldAtObjective())
+        {
+            unstuckAttemptIndex = 0;
             return;
         }
 
@@ -619,6 +744,12 @@ public class EnemyRegimentAI : MonoBehaviour
             return;
         }
 
+        if (ShouldHoldAtObjective())
+        {
+            motor.Stop();
+            return;
+        }
+
         if (prioritizeCannonsOverTroops)
         {
             if (phase == AiPhase.Kiting || phase == AiPhase.CampingRetreatRoute || phase == AiPhase.Flanking)
@@ -812,12 +943,48 @@ public class EnemyRegimentAI : MonoBehaviour
 
     private Vector3 GetPrimaryObjectivePosition()
     {
-        RtsSiegeObjectives objectives = RtsSiegeObjectives.Instance;
-        Vector3 baseDestination = objectives != null && objectives.HasCannons()
-            ? objectives.GetNearestCannonPosition(transform.position)
-            : transform.position + transform.forward * 10f;
+        if (hasCachedObjectiveDestination)
+        {
+            return cachedObjectiveDestination;
+        }
 
-        return ApplyFormationOffset(baseDestination);
+        return BuildFormationDestination(GetCannonObjectivePosition());
+    }
+
+    private Vector3 BuildFormationDestination(Vector3 cannonPosition)
+    {
+        Vector3 destination = cannonPosition;
+        if (formationSpreadRadius <= 0f)
+        {
+            return destination;
+        }
+
+        float angle = formationAngleOffset + formationSlot * Mathf.PI * 0.25f;
+        float radius = formationSpreadRadius * formationRadiusMultiplier;
+        Vector3 offset = new Vector3(Mathf.Cos(angle), 0f, Mathf.Sin(angle)) * radius;
+
+        if (formationJitterRadius > 0f)
+        {
+            offset += new Vector3(formationJitter.x, 0f, formationJitter.y) * formationJitterRadius;
+        }
+
+        destination += offset;
+
+        if (useAdvanceLateralSweep)
+        {
+            Vector3 approachDirection = cannonPosition - transform.position;
+            approachDirection.y = 0f;
+            if (approachDirection.sqrMagnitude < 0.0001f)
+            {
+                approachDirection = transform.forward;
+            }
+
+            approachDirection.Normalize();
+            Vector3 tangent = new Vector3(-approachDirection.z, 0f, approachDirection.x);
+            destination += tangent * (advanceLateralSweepDistance * advanceSweepSign);
+        }
+
+        return destination;
     }
 
     private bool ShouldPrioritizeFriendlyUnit(Vector3 friendlyPosition)
@@ -835,7 +1002,7 @@ public class EnemyRegimentAI : MonoBehaviour
             return false;
         }
 
-        Vector3 cannonPosition = objectives.GetNearestCannonPosition(transform.position);
+        Vector3 cannonPosition = GetCannonObjectivePosition();
 
         if (IsBlockingDirectPathToCannon(friendlyPosition, cannonPosition))
         {
@@ -863,7 +1030,7 @@ public class EnemyRegimentAI : MonoBehaviour
             return false;
         }
 
-        Vector3 cannonPosition = objectives.GetNearestCannonPosition(transform.position);
+        Vector3 cannonPosition = GetCannonObjectivePosition();
         Vector3 retreatPosition = retreatingFriendly.transform.position;
 
         RtsCampManager campManager = RtsCampManager.Instance;
@@ -917,21 +1084,14 @@ public class EnemyRegimentAI : MonoBehaviour
         return lateralDistance <= directPathBlockWidth;
     }
 
-    private Vector3 ApplyFormationOffset(Vector3 destination)
-    {
-        if (formationSpreadRadius <= 0f)
-        {
-            return destination;
-        }
-
-        int slot = Mathf.Abs(GetInstanceID()) % 8;
-        float angle = slot * Mathf.PI * 0.25f;
-        Vector3 offset = new Vector3(Mathf.Cos(angle), 0f, Mathf.Sin(angle)) * formationSpreadRadius;
-        return destination + offset;
-    }
-
     private void IssueMoveOrder(Vector3 destination)
     {
+        if (ShouldHoldAtObjective())
+        {
+            motor.Stop();
+            return;
+        }
+
         destination.y = transform.position.y;
         RtsCampManager campManager = RtsCampManager.Instance;
         if (campManager != null)
@@ -941,10 +1101,22 @@ public class EnemyRegimentAI : MonoBehaviour
 
         tacticalDestination = destination;
 
+        float arrivalRadiusSqr = objectiveArrivalRadius * objectiveArrivalRadius;
+        if (GetHorizontalDistanceSqr(transform.position, destination) <= arrivalRadiusSqr)
+        {
+            if (prioritizeCannonsOverTroops && phase == AiPhase.Advancing)
+            {
+                isHoldingAtObjective = true;
+            }
+
+            motor.Stop();
+            return;
+        }
+
         if (!motor.HasDestination
             || motor.IsBlockedBySolidObstacle
             || motor.IsStuck
-            || GetHorizontalDistanceSqr(transform.position, destination) > 1f)
+            || GetHorizontalDistanceSqr(transform.position, destination) > arrivalRadiusSqr)
         {
             motor.MoveTo(destination);
         }

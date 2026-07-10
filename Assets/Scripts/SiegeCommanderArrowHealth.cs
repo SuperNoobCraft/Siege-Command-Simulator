@@ -27,6 +27,14 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
     [SerializeField] private bool autoCreateHeadHitVolume = false;
     [SerializeField] private bool autoRegisterChildColliders = true;
     [SerializeField, Min(0.05f)] private float headHitVolumeRadius = 0.22f;
+    [Tooltip("Create and follow a sphere trigger on the tracked head/camera for arrow hits.")]
+    [SerializeField] private bool useTrackedHeadHitVolume = true;
+
+    [Header("Debug Gizmo")]
+    [Tooltip("Draw the active commander hurtbox in the Scene view. Toggle on SiegeCommanderArrowHealth.")]
+    [SerializeField] private bool drawHitVolumeGizmo = true;
+    [SerializeField] private Color hitVolumeGizmoColor = new Color(1f, 0.2f, 0.2f, 0.85f);
+    [SerializeField] private Color hitVolumeGizmoFillColor = new Color(1f, 0.2f, 0.2f, 0.12f);
 
     [Header("Screen Tint")]
     [Tooltip("Leave empty to create a standalone overlay canvas (recommended). Do not assign vGear head or user.")]
@@ -49,6 +57,8 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
     private Coroutine tintCoroutine;
     private readonly HashSet<Collider> registeredHitColliders = new HashSet<Collider>();
     private readonly HashSet<Transform> registeredHitRoots = new HashSet<Transform>();
+    private Transform trackedHeadTransform;
+    private SphereCollider trackedHeadHitCollider;
 
     public int HitCount { get; private set; }
     public int MaxHits => maxHits;
@@ -74,6 +84,170 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
     private void Start()
     {
         RefreshCommanderHpUi();
+    }
+
+    private void LateUpdate()
+    {
+        SyncTrackedHeadHitVolume();
+    }
+
+    private void SyncTrackedHeadHitVolume()
+    {
+        if (!Application.isPlaying || !useTrackedHeadHitVolume)
+        {
+            return;
+        }
+
+        Transform headTransform = ResolveTrackedHeadTransform();
+        if (headTransform == null)
+        {
+            return;
+        }
+
+        if (trackedHeadTransform != headTransform)
+        {
+            trackedHeadTransform = headTransform;
+            trackedHeadHitCollider = null;
+            RegisterHitRoot(headTransform);
+        }
+
+        EnsureTrackedHeadHitCollider(headTransform);
+    }
+
+    private Transform ResolveTrackedHeadTransform()
+    {
+        Transform headTransform = SiegePlayEnvironment.ResolvePlayerTransform();
+        if (headTransform != null)
+        {
+            return headTransform;
+        }
+
+        foreach (Transform root in registeredHitRoots)
+        {
+            if (root != null)
+            {
+                return root;
+            }
+        }
+
+        return transform;
+    }
+
+    private void EnsureTrackedHeadHitCollider(Transform headTransform)
+    {
+        if (headTransform == null)
+        {
+            return;
+        }
+
+        if (trackedHeadHitCollider == null)
+        {
+            trackedHeadHitCollider = FindTrackedHeadHitCollider(headTransform);
+        }
+
+        if (trackedHeadHitCollider == null)
+        {
+            GameObject hitVolumeObject = new GameObject("CommanderTrackedHeadHitVolume");
+            hitVolumeObject.transform.SetParent(headTransform, false);
+            hitVolumeObject.transform.localPosition = Vector3.zero;
+            hitVolumeObject.transform.localRotation = Quaternion.identity;
+            hitVolumeObject.layer = gameObject.layer;
+
+            trackedHeadHitCollider = hitVolumeObject.AddComponent<SphereCollider>();
+            trackedHeadHitCollider.isTrigger = true;
+            hitVolumeObject.AddComponent<SiegeCommanderHitVolume>();
+        }
+
+        trackedHeadHitCollider.radius = headHitVolumeRadius;
+        RegisterHitCollider(trackedHeadHitCollider);
+    }
+
+    private static SphereCollider FindTrackedHeadHitCollider(Transform headTransform)
+    {
+        SiegeCommanderHitVolume[] hitVolumes = headTransform.GetComponentsInChildren<SiegeCommanderHitVolume>(true);
+        for (int i = 0; i < hitVolumes.Length; i++)
+        {
+            SphereCollider sphere = hitVolumes[i].GetComponent<SphereCollider>();
+            if (sphere != null)
+            {
+                return sphere;
+            }
+        }
+
+        return headTransform.GetComponentInChildren<SphereCollider>(true);
+    }
+
+    public bool TryGetActiveHitVolume(out Vector3 center, out float radius)
+    {
+        if (trackedHeadHitCollider != null)
+        {
+            center = trackedHeadHitCollider.bounds.center;
+            radius = trackedHeadHitCollider.radius * GetMaxAxis(trackedHeadHitCollider.transform.lossyScale);
+            return true;
+        }
+
+        Collider fallback = GetPrimaryHitCollider();
+        if (fallback != null)
+        {
+            center = fallback.bounds.center;
+            radius = fallback.bounds.extents.magnitude;
+            return true;
+        }
+
+        center = transform.position;
+        radius = headHitVolumeRadius;
+        return false;
+    }
+
+    private Collider GetPrimaryHitCollider()
+    {
+        if (trackedHeadHitCollider != null)
+        {
+            return trackedHeadHitCollider;
+        }
+
+        foreach (Collider collider in registeredHitColliders)
+        {
+            if (collider != null)
+            {
+                return collider;
+            }
+        }
+
+        return GetComponentInChildren<Collider>(true);
+    }
+
+    private static float GetMaxAxis(Vector3 scale)
+    {
+        return Mathf.Max(Mathf.Abs(scale.x), Mathf.Abs(scale.y), Mathf.Abs(scale.z));
+    }
+
+    private void OnDrawGizmos()
+    {
+        if (!drawHitVolumeGizmo)
+        {
+            return;
+        }
+
+        if (!TryGetActiveHitVolume(out Vector3 center, out float radius))
+        {
+            center = transform.position;
+            radius = headHitVolumeRadius;
+        }
+
+        if (Application.isPlaying)
+        {
+            Transform headTransform = ResolveTrackedHeadTransform();
+            if (headTransform != null)
+            {
+                center = headTransform.position;
+            }
+        }
+
+        Gizmos.color = hitVolumeGizmoFillColor;
+        Gizmos.DrawSphere(center, radius);
+        Gizmos.color = hitVolumeGizmoColor;
+        Gizmos.DrawWireSphere(center, radius);
     }
 
     private void RefreshCommanderHpUi()

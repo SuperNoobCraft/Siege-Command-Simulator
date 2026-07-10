@@ -90,6 +90,8 @@ public class TroopCombat : MonoBehaviour
     [SerializeField] private bool scaleCombatSpeedByEnemyOverlap = true;
     [SerializeField, Min(0f)] private float combatOverlapSmoothingSpeed = 8f;
     [SerializeField] private Collider footprintCollider;
+    [SerializeField] private Collider movementBoundsCollider;
+    [SerializeField, Range(0.15f, 1f)] private float movementBoundsScale = 0.55f;
 
     [Header("Regiment Visuals")]
     [SerializeField] private GameObject troopPrefab;
@@ -196,10 +198,16 @@ public class TroopCombat : MonoBehaviour
             footprintCollider = GetComponent<Collider>();
         }
 
+        EnsureMovementBoundsCollider();
+
         if (motor != null)
         {
             motor.CanReceiveCommands = motor.IsCommandUnit;
-            if (footprintCollider != null)
+            if (movementBoundsCollider != null)
+            {
+                motor.SetMovementBoundsCollider(movementBoundsCollider);
+            }
+            else if (footprintCollider != null)
             {
                 motor.SetMovementBoundsCollider(footprintCollider);
             }
@@ -216,6 +224,57 @@ public class TroopCombat : MonoBehaviour
         {
             troopVisualRoot.localScale = Vector3.one;
         }
+    }
+
+    private void EnsureMovementBoundsCollider()
+    {
+        if (movementBoundsCollider != null)
+        {
+            return;
+        }
+
+        Transform existing = transform.Find("MovementBounds");
+        if (existing != null)
+        {
+            movementBoundsCollider = existing.GetComponent<Collider>();
+            if (movementBoundsCollider != null)
+            {
+                return;
+            }
+        }
+
+        if (footprintCollider == null)
+        {
+            footprintCollider = GetComponent<Collider>();
+        }
+
+        GameObject boundsObject = new GameObject("MovementBounds");
+        boundsObject.transform.SetParent(transform, false);
+
+        BoxCollider movementBox = boundsObject.AddComponent<BoxCollider>();
+        movementBox.isTrigger = false;
+
+        if (footprintCollider is BoxCollider footprintBox)
+        {
+            movementBox.center = footprintBox.center;
+            movementBox.size = footprintBox.size * movementBoundsScale;
+        }
+        else if (footprintCollider != null)
+        {
+            Bounds bounds = footprintCollider.bounds;
+            movementBox.center = transform.InverseTransformPoint(bounds.center);
+            Vector3 localSize = transform.InverseTransformVector(bounds.size) * movementBoundsScale;
+            movementBox.size = new Vector3(
+                Mathf.Abs(localSize.x),
+                Mathf.Max(0.5f, Mathf.Abs(localSize.y)),
+                Mathf.Abs(localSize.z));
+        }
+        else
+        {
+            movementBox.size = new Vector3(1.2f, 1f, 1.2f) * movementBoundsScale;
+        }
+
+        movementBoundsCollider = movementBox;
     }
 
     private void OnValidate()
