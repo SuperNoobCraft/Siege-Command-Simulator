@@ -1,5 +1,7 @@
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using Votanic.vXR.vCast;
 using Votanic.vXR.vGear;
 
 public class VotanicWandRtsCommander : MonoBehaviour
@@ -15,6 +17,22 @@ public class VotanicWandRtsCommander : MonoBehaviour
     [SerializeField] private Transform wandOrigin;
     [SerializeField] private float maxRayDistance = 1000f;
 
+    [Header("Wand Pointer (CAVE/HMD)")]
+    [SerializeField] private bool showWandPointerInTrackedXr = true;
+    [SerializeField] private bool enableVotanicSdkWandRay = true;
+    [Tooltip("Custom LineRenderer beam length. Uses Max Ray Distance when zero.")]
+    [SerializeField, Min(0f)] private float wandPointerLength = 0f;
+    [Tooltip("Pushed to Votanic SDK each refresh. Config defaults are ~2m in Setting.vxrs and override SetMaxLength.")]
+    [SerializeField, Min(1f)] private float votanicSdkWandRayLength = 120f;
+    [SerializeField, Min(0.05f)] private float votanicWandRayRefreshInterval = 0.25f;
+    [SerializeField, Min(0.5f)] private float votanicWandRayInitRetryDuration = 4f;
+    [SerializeField, Min(0.01f)] private float wandPointerWidth = 0.035f;
+    [SerializeField] private Color wandPointerColor = new Color(0.2f, 0.85f, 1f, 0.95f);
+    [SerializeField] private Color wandPointerHitColor = new Color(0.2f, 1f, 0.35f, 0.95f);
+    [Tooltip("Keep the visible beam at full length. Hits only change color, they do not shorten the beam.")]
+    [SerializeField] private bool wandPointerAlwaysFullLength = true;
+    [SerializeField] private LayerMask wandPointerIgnoreLayers;
+
     [Header("Raycast Layers")]
     [SerializeField] private LayerMask selectableLayers = ~0;
     [SerializeField] private LayerMask groundLayers = ~0;
@@ -29,6 +47,17 @@ public class VotanicWandRtsCommander : MonoBehaviour
     [SerializeField, Range(0, 4)] private int pathSmoothIterations = 1;
     [SerializeField, Min(0.25f)] private float pathMaxWaypointSpacing = 2f;
     [SerializeField, Min(0.1f)] private float pathMinIssueLength = 0.75f;
+
+    [Header("Tracked XR Path Tuning")]
+    [Tooltip("Applied automatically in CAVE/HMD. Higher values ignore controller noise better.")]
+    [SerializeField, Min(0.05f)] private float trackedPathSampleMinDistance = 0.85f;
+    [SerializeField, Min(0.05f)] private float trackedPathInitialSampleMinDistance = 1.1f;
+    [SerializeField, Min(0f)] private float trackedPathSimplifyEpsilon = 1.1f;
+    [SerializeField, Range(0, 4)] private int trackedPathSmoothIterations = 2;
+    [SerializeField, Min(0.25f)] private float trackedPathMaxWaypointSpacing = 2.75f;
+    [SerializeField, Range(1, 8)] private int trackedPathStabilizeWindow = 5;
+    [SerializeField, Range(0.02f, 1f)] private float trackedAimSmoothingStrength = 0.18f;
+    [SerializeField, Min(0f)] private float trackedPathStartJitterRadius = 0.6f;
 
     [Header("Path Preview")]
     [SerializeField] private Color previewPathColor = Color.green;
@@ -51,6 +80,7 @@ public class VotanicWandRtsCommander : MonoBehaviour
     private readonly List<Vector3> previewPathPoints = new List<Vector3>();
     private readonly List<Vector3> smoothedPathScratch = new List<Vector3>();
     private LineRenderer previewPathLine;
+    private LineRenderer wandPointerLine;
     private bool isRecordingPath;
     private bool wasCommandHeld;
     private bool vrCommandLatched;
@@ -58,10 +88,62 @@ public class VotanicWandRtsCommander : MonoBehaviour
     private string debugStatusLine = "Ready";
     private string debugHoverLine = "Hover: none";
     private string debugPathLine = "Path: none";
+    private Vector3 smoothedAimPoint;
+    private bool hasSmoothedAimPoint;
+    private float nextVotanicWandRayRefreshTime;
+    private Coroutine votanicWandRayInitCoroutine;
+    private bool votanicWandRayConfigured;
 
     private void Awake()
     {
         EnsurePreviewPathLine();
+        EnsureWandPointerLine();
+    }
+
+    private void OnEnable()
+    {
+        SiegePlayEnvironment.EnvironmentChanged += HandlePlayEnvironmentChanged;
+        BeginVotanicWandRayInitialization();
+    }
+
+    private void OnDisable()
+    {
+        SiegePlayEnvironment.EnvironmentChanged -= HandlePlayEnvironmentChanged;
+        if (votanicWandRayInitCoroutine != null)
+        {
+            StopCoroutine(votanicWandRayInitCoroutine);
+            votanicWandRayInitCoroutine = null;
+        }
+    }
+
+    private void Start()
+    {
+        BeginVotanicWandRayInitialization();
+    }
+
+    private void HandlePlayEnvironmentChanged()
+    {
+        votanicWandRayConfigured = false;
+        if (votanicWandRayInitCoroutine != null)
+        {
+            StopCoroutine(votanicWandRayInitCoroutine);
+            votanicWandRayInitCoroutine = null;
+        }
+
+        BeginVotanicWandRayInitialization();
+    }
+
+    private void BeginVotanicWandRayInitialization()
+    {
+        if (!isActiveAndEnabled)
+        {
+            return;
+        }
+
+        if (votanicWandRayInitCoroutine == null)
+        {
+            votanicWandRayInitCoroutine = StartCoroutine(InitializeVotanicWandRayWhenReady());
+        }
     }
 
     private void Update()
@@ -73,6 +155,7 @@ public class VotanicWandRtsCommander : MonoBehaviour
 
         Ray ray = BuildWandRay();
         UpdateHoveredUnit(ray);
+        UpdateWandPointer(ray);
 
         if (drawDebugRay)
         {
@@ -110,6 +193,12 @@ public class VotanicWandRtsCommander : MonoBehaviour
 
         UpdateHighlights();
         wasCommandHeld = commandHeld;
+
+        if (SiegePlayEnvironment.IsTrackedXr && Time.time >= nextVotanicWandRayRefreshTime)
+        {
+            ConfigureTrackedWandPointer();
+            nextVotanicWandRayRefreshTime = Time.time + votanicWandRayRefreshInterval;
+        }
     }
 
     private void BeginCommandMode(RtsUnitMotor unit)
@@ -128,6 +217,8 @@ public class VotanicWandRtsCommander : MonoBehaviour
         isRecordingPath = true;
         pathRecordingStartTime = Time.time;
         recordedPathPoints.Clear();
+        smoothedAimPoint = Vector3.zero;
+        hasSmoothedAimPoint = false;
         recordedPathPoints.Add(GetGroundedUnitPosition(unit));
 
         SetPathHoverVisible(hoveredPathDisplay, false);
@@ -176,20 +267,35 @@ public class VotanicWandRtsCommander : MonoBehaviour
 
         float groundY = recordedPathPoints[0].y;
         smoothedPathScratch.Clear();
-        smoothedPathScratch.AddRange(RtsPathUtility.BuildCommandPath(
-            recordedPathPoints,
-            groundY,
-            pathSampleMinDistance,
-            pathSimplifyEpsilon,
-            pathSmoothIterations,
-            pathMaxWaypointSpacing));
+        if (UsesTrackedPathTuning())
+        {
+            smoothedPathScratch.AddRange(RtsPathUtility.BuildTrackedCommandPath(
+                recordedPathPoints,
+                groundY,
+                trackedPathSampleMinDistance,
+                trackedPathSimplifyEpsilon,
+                trackedPathSmoothIterations,
+                trackedPathMaxWaypointSpacing,
+                trackedPathStabilizeWindow));
+        }
+        else
+        {
+            smoothedPathScratch.AddRange(RtsPathUtility.BuildCommandPath(
+                recordedPathPoints,
+                groundY,
+                pathSampleMinDistance,
+                pathSimplifyEpsilon,
+                pathSmoothIterations,
+                pathMaxWaypointSpacing));
+        }
 
-        if (pathStartJitterRadius > 0f && smoothedPathScratch.Count >= 2)
+        float jitterRadius = UsesTrackedPathTuning() ? trackedPathStartJitterRadius : pathStartJitterRadius;
+        if (jitterRadius > 0f && smoothedPathScratch.Count >= 2)
         {
             List<Vector3> trimmed = RtsPathUtility.TrimLeadingStartJitter(
                 smoothedPathScratch,
                 recordedPathPoints[0],
-                pathStartJitterRadius);
+                jitterRadius);
             smoothedPathScratch.Clear();
             smoothedPathScratch.AddRange(trimmed);
         }
@@ -204,7 +310,7 @@ public class VotanicWandRtsCommander : MonoBehaviour
             return;
         }
 
-        if (!TryGetBattlefieldPoint(ray, out Vector3 battlefieldPoint))
+        if (!TryGetSmoothedBattlefieldPoint(ray, out Vector3 battlefieldPoint))
         {
             return;
         }
@@ -220,8 +326,8 @@ public class VotanicWandRtsCommander : MonoBehaviour
         offset.y = 0f;
 
         float minDistance = recordedPathPoints.Count == 1
-            ? pathInitialSampleMinDistance
-            : pathSampleMinDistance;
+            ? GetEffectiveInitialSampleDistance()
+            : GetEffectiveSampleDistance();
         if (offset.sqrMagnitude < minDistance * minDistance)
         {
             return;
@@ -245,12 +351,12 @@ public class VotanicWandRtsCommander : MonoBehaviour
             previewPathPoints.Add(GetGroundedUnitPosition(commandingUnit));
         }
 
-        if (TryGetBattlefieldPoint(BuildWandRay(), out Vector3 livePoint))
+        if (TryGetSmoothedBattlefieldPoint(BuildWandRay(), out Vector3 livePoint))
         {
             Vector3 lastPoint = previewPathPoints[previewPathPoints.Count - 1];
             Vector3 offset = livePoint - lastPoint;
             offset.y = 0f;
-            if (offset.sqrMagnitude >= 0.05f)
+            if (offset.sqrMagnitude >= GetEffectiveSampleDistance() * GetEffectiveSampleDistance() * 0.25f)
             {
                 previewPathPoints.Add(livePoint);
             }
@@ -262,13 +368,22 @@ public class VotanicWandRtsCommander : MonoBehaviour
             return;
         }
 
-        List<Vector3> smoothedPreview = RtsPathUtility.BuildCommandPath(
-            previewPathPoints,
-            previewPathPoints[0].y,
-            pathSampleMinDistance,
-            pathSimplifyEpsilon,
-            pathSmoothIterations,
-            pathMaxWaypointSpacing);
+        List<Vector3> smoothedPreview = UsesTrackedPathTuning()
+            ? RtsPathUtility.BuildTrackedCommandPath(
+                previewPathPoints,
+                previewPathPoints[0].y,
+                trackedPathSampleMinDistance,
+                trackedPathSimplifyEpsilon,
+                trackedPathSmoothIterations,
+                trackedPathMaxWaypointSpacing,
+                trackedPathStabilizeWindow)
+            : RtsPathUtility.BuildCommandPath(
+                previewPathPoints,
+                previewPathPoints[0].y,
+                pathSampleMinDistance,
+                pathSimplifyEpsilon,
+                pathSmoothIterations,
+                pathMaxWaypointSpacing);
 
         UpdatePreviewLine(smoothedPreview);
     }
@@ -281,7 +396,7 @@ public class VotanicWandRtsCommander : MonoBehaviour
             previousDisplay.SetHoverVisible(false);
         }
 
-        if (!Physics.Raycast(ray, out RaycastHit hit, maxRayDistance, selectableLayers, QueryTriggerInteraction.Ignore))
+        if (!TryRaycastGameplayHit(ray, maxRayDistance, selectableLayers, out RaycastHit hit))
         {
             hoveredUnit = null;
             hoveredPathDisplay = null;
@@ -404,11 +519,23 @@ public class VotanicWandRtsCommander : MonoBehaviour
                 return false;
             }
 
+            if (ShouldIgnoreRaycastCollider(hit.collider))
+            {
+                if (!TryRaycastGameplayHit(ray, maxRayDistance, groundLayers, out RaycastHit gameplayHit))
+                {
+                    debugPathLine = "Path: no ground hit";
+                    return false;
+                }
+
+                point = gameplayHit.point;
+                return true;
+            }
+
             point = hit.point;
             return true;
         }
 
-        if (!Physics.Raycast(ray, out RaycastHit groundHit, maxRayDistance, groundLayers, QueryTriggerInteraction.Ignore))
+        if (!TryRaycastGameplayHit(ray, maxRayDistance, groundLayers, out RaycastHit groundHit))
         {
             debugPathLine = "Path: no ground hit";
             return false;
@@ -416,6 +543,46 @@ public class VotanicWandRtsCommander : MonoBehaviour
 
         point = groundHit.point;
         return true;
+    }
+
+    private bool TryRaycastGameplayHit(Ray ray, float maxDistance, LayerMask layers, out RaycastHit hit)
+    {
+        hit = default;
+        RaycastHit[] hits = Physics.RaycastAll(ray, maxDistance, layers, QueryTriggerInteraction.Ignore);
+        if (hits == null || hits.Length == 0)
+        {
+            return false;
+        }
+
+        System.Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
+        for (int i = 0; i < hits.Length; i++)
+        {
+            if (ShouldIgnoreRaycastCollider(hits[i].collider))
+            {
+                continue;
+            }
+
+            hit = hits[i];
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool ShouldIgnoreRaycastCollider(Collider collider)
+    {
+        if (collider == null)
+        {
+            return true;
+        }
+
+        if (SiegePlayerBoundary.IsBoundaryCollider(collider))
+        {
+            return true;
+        }
+
+        return wandPointerIgnoreLayers != 0
+            && ((wandPointerIgnoreLayers.value & (1 << collider.gameObject.layer)) != 0);
     }
 
     private static Vector3 GetGroundedUnitPosition(RtsUnitMotor unit)
@@ -519,6 +686,275 @@ public class VotanicWandRtsCommander : MonoBehaviour
         {
             previewPathLine.enabled = visible;
         }
+    }
+
+    private IEnumerator InitializeVotanicWandRayWhenReady()
+    {
+        float deadline = Time.time + votanicWandRayInitRetryDuration;
+        while (Time.time < deadline)
+        {
+            if (!SiegePlayEnvironment.IsTrackedXr)
+            {
+                SetWandPointerVisible(false);
+                yield return null;
+                continue;
+            }
+
+            if (ConfigureTrackedWandPointer())
+            {
+                break;
+            }
+
+            yield return null;
+        }
+
+        votanicWandRayInitCoroutine = null;
+    }
+
+    private bool ConfigureTrackedWandPointer()
+    {
+        if (!SiegePlayEnvironment.IsTrackedXr)
+        {
+            SetWandPointerVisible(false);
+            return false;
+        }
+
+        if (!enableVotanicSdkWandRay)
+        {
+            return true;
+        }
+
+        try
+        {
+            if (vCast.controller != null)
+            {
+                vCast.controller.SetTool("Wand");
+                vCast.controller.EnableWandRay(true);
+                vCast.controller.DisplayWandRay(true);
+                vCast.controller.SetMaxLength(GetVotanicSdkWandRayLength());
+                ApplyVotanicSdkIgnoreLayers();
+                votanicWandRayConfigured = true;
+                return true;
+            }
+        }
+        catch (System.Exception exception)
+        {
+            Debug.LogWarning("Could not enable Votanic SDK wand ray: " + exception.Message, this);
+        }
+
+        return false;
+    }
+
+    private float GetEffectiveWandPointerLength()
+    {
+        return wandPointerLength > 0f ? wandPointerLength : maxRayDistance;
+    }
+
+    private void ApplyVotanicSdkIgnoreLayers()
+    {
+        System.Collections.Generic.List<int> ignoreLayers = new System.Collections.Generic.List<int>();
+        if (wandPointerIgnoreLayers.value != 0)
+        {
+            for (int layer = 0; layer < 32; layer++)
+            {
+                if ((wandPointerIgnoreLayers.value & (1 << layer)) != 0)
+                {
+                    ignoreLayers.Add(layer);
+                }
+            }
+        }
+
+        SiegePlayerBoundary[] boundaries = FindObjectsOfType<SiegePlayerBoundary>();
+        for (int i = 0; i < boundaries.Length; i++)
+        {
+            SiegePlayerBoundary boundary = boundaries[i];
+            if (boundary == null)
+            {
+                continue;
+            }
+
+            Collider boundaryCollider = boundary.GetComponent<Collider>();
+            if (boundaryCollider != null)
+            {
+                int layer = boundaryCollider.gameObject.layer;
+                if (!ignoreLayers.Contains(layer))
+                {
+                    ignoreLayers.Add(layer);
+                }
+            }
+        }
+
+        if (ignoreLayers.Count > 0)
+        {
+            vCast.controller.SetIgnoreLayers(ignoreLayers.ToArray());
+        }
+    }
+
+    private float GetVotanicSdkWandRayLength()
+    {
+        return Mathf.Max(votanicSdkWandRayLength, GetEffectiveWandPointerLength());
+    }
+
+    private void EnsureWandPointerLine()
+    {
+        if (wandPointerLine != null)
+        {
+            return;
+        }
+
+        GameObject lineObject = new GameObject("WandPointer");
+        lineObject.transform.SetParent(transform, false);
+        int ignoreRaycastLayer = LayerMask.NameToLayer("Ignore Raycast");
+        lineObject.layer = ignoreRaycastLayer >= 0 ? ignoreRaycastLayer : gameObject.layer;
+
+        wandPointerLine = lineObject.AddComponent<LineRenderer>();
+        wandPointerLine.useWorldSpace = true;
+        wandPointerLine.loop = false;
+        wandPointerLine.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+        wandPointerLine.receiveShadows = false;
+        wandPointerLine.allowOcclusionWhenDynamic = false;
+        wandPointerLine.textureMode = LineTextureMode.Stretch;
+        wandPointerLine.alignment = LineAlignment.View;
+        wandPointerLine.numCornerVertices = 2;
+        wandPointerLine.numCapVertices = 2;
+        wandPointerLine.widthMultiplier = wandPointerWidth;
+        wandPointerLine.positionCount = 2;
+        wandPointerLine.sharedMaterial = new Material(Shader.Find("Sprites/Default"));
+        wandPointerLine.enabled = false;
+    }
+
+    private void UpdateWandPointer(Ray ray)
+    {
+        if (!showWandPointerInTrackedXr || SiegePlayEnvironment.IsDesktopInput)
+        {
+            SetWandPointerVisible(false);
+            return;
+        }
+
+        EnsureWandPointerLine();
+        float pointerLength = GetEffectiveWandPointerLength();
+        Vector3 fullEndPoint = ray.origin + ray.direction * pointerLength;
+        bool hasHit = TryRaycastForPointer(ray, pointerLength, out RaycastHit hit);
+        Vector3 endPoint = wandPointerAlwaysFullLength || !hasHit ? fullEndPoint : hit.point;
+
+        wandPointerLine.positionCount = hasHit && wandPointerAlwaysFullLength ? 3 : 2;
+        wandPointerLine.SetPosition(0, ray.origin);
+        if (hasHit && wandPointerAlwaysFullLength)
+        {
+            wandPointerLine.SetPosition(1, hit.point);
+            wandPointerLine.SetPosition(2, fullEndPoint);
+            wandPointerLine.startColor = wandPointerColor;
+            wandPointerLine.endColor = wandPointerColor;
+            wandPointerLine.colorGradient = BuildPointerGradient(wandPointerHitColor, wandPointerColor, hit.distance / pointerLength);
+        }
+        else
+        {
+            wandPointerLine.SetPosition(1, endPoint);
+            wandPointerLine.startColor = hasHit ? wandPointerHitColor : wandPointerColor;
+            wandPointerLine.endColor = wandPointerLine.startColor;
+            wandPointerLine.colorGradient = DefaultPointerGradient(hasHit ? wandPointerHitColor : wandPointerColor);
+        }
+
+        wandPointerLine.widthMultiplier = wandPointerWidth;
+        wandPointerLine.enabled = true;
+    }
+
+    private static Gradient DefaultPointerGradient(Color color)
+    {
+        Gradient gradient = new Gradient();
+        gradient.SetKeys(
+            new[]
+            {
+                new GradientColorKey(color, 0f),
+                new GradientColorKey(color, 1f)
+            },
+            new[]
+            {
+                new GradientAlphaKey(color.a, 0f),
+                new GradientAlphaKey(color.a, 1f)
+            });
+        return gradient;
+    }
+
+    private static Gradient BuildPointerGradient(Color hitColor, Color tailColor, float hitFraction)
+    {
+        float clampedHit = Mathf.Clamp01(hitFraction);
+        Gradient gradient = new Gradient();
+        gradient.SetKeys(
+            new[]
+            {
+                new GradientColorKey(hitColor, 0f),
+                new GradientColorKey(hitColor, clampedHit),
+                new GradientColorKey(tailColor, clampedHit),
+                new GradientColorKey(tailColor, 1f)
+            },
+            new[]
+            {
+                new GradientAlphaKey(hitColor.a, 0f),
+                new GradientAlphaKey(hitColor.a, clampedHit),
+                new GradientAlphaKey(tailColor.a, clampedHit),
+                new GradientAlphaKey(tailColor.a, 1f)
+            });
+        return gradient;
+    }
+
+    private void SetWandPointerVisible(bool visible)
+    {
+        if (wandPointerLine != null)
+        {
+            wandPointerLine.enabled = visible;
+        }
+    }
+
+    private bool TryRaycastForPointer(Ray ray, float pointerLength, out RaycastHit hit)
+    {
+        LayerMask pointerLayers = selectableLayers | groundLayers;
+        return TryRaycastGameplayHit(ray, pointerLength, pointerLayers, out hit);
+    }
+
+    private bool UsesTrackedPathTuning()
+    {
+        return SiegePlayEnvironment.IsTrackedXr;
+    }
+
+    private float GetEffectiveSampleDistance()
+    {
+        return UsesTrackedPathTuning() ? trackedPathSampleMinDistance : pathSampleMinDistance;
+    }
+
+    private float GetEffectiveInitialSampleDistance()
+    {
+        return UsesTrackedPathTuning() ? trackedPathInitialSampleMinDistance : pathInitialSampleMinDistance;
+    }
+
+    private bool TryGetSmoothedBattlefieldPoint(Ray ray, out Vector3 point)
+    {
+        if (!TryGetBattlefieldPoint(ray, out Vector3 rawPoint))
+        {
+            point = default;
+            return false;
+        }
+
+        if (!UsesTrackedPathTuning())
+        {
+            point = rawPoint;
+            return true;
+        }
+
+        if (!hasSmoothedAimPoint)
+        {
+            smoothedAimPoint = rawPoint;
+            hasSmoothedAimPoint = true;
+            point = rawPoint;
+            return true;
+        }
+
+        smoothedAimPoint = RtsPathUtility.SmoothTrackedAimPoint(
+            smoothedAimPoint,
+            rawPoint,
+            trackedAimSmoothingStrength);
+        point = smoothedAimPoint;
+        return true;
     }
 
     private static void AppendArrowHead(List<Vector3> points, float arrowHeadLength, float arrowHeadAngle)

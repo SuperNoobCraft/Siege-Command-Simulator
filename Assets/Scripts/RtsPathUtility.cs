@@ -37,8 +37,100 @@ public static class RtsPathUtility
         int effectiveSmoothIterations = simplified.Count <= 3
             ? Mathf.Min(smoothIterations, 1)
             : smoothIterations;
-        List<Vector3> smoothed = SmoothPolyline(simplified, effectiveSmoothIterations);
+        List<Vector3> cornerSafe = BevelSharpCorners(simplified, 90f, 2f);
+        List<Vector3> smoothed = SmoothPolylineSegmented(cornerSafe, effectiveSmoothIterations, 90f);
         return ResamplePolyline(smoothed, maxWaypointSpacing);
+    }
+
+    public static List<Vector3> BuildTrackedCommandPath(
+        IReadOnlyList<Vector3> rawPoints,
+        float groundY,
+        float minSampleDistance,
+        float simplifyEpsilon,
+        int smoothIterations,
+        float maxWaypointSpacing,
+        int stabilizeWindow = 4)
+    {
+        if (rawPoints == null || rawPoints.Count == 0)
+        {
+            return new List<Vector3>();
+        }
+
+        List<Vector3> stabilized = StabilizeRawPoints(rawPoints, groundY, stabilizeWindow);
+        List<Vector3> filtered = FilterByMinDistance(
+            stabilized,
+            minSampleDistance);
+        if (filtered.Count <= 1)
+        {
+            return filtered.Count == 0 ? new List<Vector3>() : filtered;
+        }
+
+        List<Vector3> simplified = SimplifyPolyline(filtered, simplifyEpsilon);
+        List<Vector3> cornerSafe = BevelSharpCorners(simplified, 90f, 2.5f);
+        List<Vector3> smoothed = SmoothPolylineSegmented(cornerSafe, smoothIterations, 90f);
+        return ResamplePolyline(smoothed, maxWaypointSpacing);
+    }
+
+    public static List<Vector3> StabilizeRawPoints(
+        IReadOnlyList<Vector3> rawPoints,
+        float groundY,
+        int windowSize)
+    {
+        if (rawPoints == null || rawPoints.Count == 0)
+        {
+            return new List<Vector3>();
+        }
+
+        if (windowSize <= 1 || rawPoints.Count <= 2)
+        {
+            List<Vector3> flattenedOnly = new List<Vector3>(rawPoints.Count);
+            for (int i = 0; i < rawPoints.Count; i++)
+            {
+                flattenedOnly.Add(FlattenToGround(rawPoints[i], groundY));
+            }
+
+            return flattenedOnly;
+        }
+
+        List<Vector3> flattened = new List<Vector3>(rawPoints.Count);
+        for (int i = 0; i < rawPoints.Count; i++)
+        {
+            flattened.Add(FlattenToGround(rawPoints[i], groundY));
+        }
+
+        List<Vector3> stabilized = new List<Vector3>(flattened.Count);
+        int radius = Mathf.Max(1, windowSize / 2);
+
+        for (int i = 0; i < flattened.Count; i++)
+        {
+            Vector3 average = Vector3.zero;
+            int count = 0;
+            int start = Mathf.Max(0, i - radius);
+            int end = Mathf.Min(flattened.Count - 1, i + radius);
+
+            for (int j = start; j <= end; j++)
+            {
+                average += flattened[j];
+                count++;
+            }
+
+            stabilized.Add(average / Mathf.Max(1, count));
+        }
+
+        return stabilized;
+    }
+
+    public static Vector3 SmoothTrackedAimPoint(Vector3 previous, Vector3 raw, float smoothingStrength)
+    {
+        float alpha = Mathf.Clamp01(smoothingStrength);
+        if (previous.sqrMagnitude < 0.0001f)
+        {
+            return raw;
+        }
+
+        Vector3 blended = Vector3.Lerp(previous, raw, alpha);
+        blended.y = raw.y;
+        return blended;
     }
 
     public static List<Vector3> TrimLeadingStartJitter(
@@ -295,5 +387,122 @@ public static class RtsPathUtility
         Vector3 offset = a - b;
         offset.y = 0f;
         return offset.sqrMagnitude;
+    }
+
+    private static List<Vector3> SmoothPolylineSegmented(
+        IReadOnlyList<Vector3> points,
+        int iterations,
+        float splitAngleDegrees)
+    {
+        if (points.Count < 3 || iterations <= 0)
+        {
+            return new List<Vector3>(points);
+        }
+
+        List<int> cornerIndices = new List<int>();
+        for (int i = 1; i < points.Count - 1; i++)
+        {
+            if (GetTurnAngleDegrees(points[i - 1], points[i], points[i + 1]) > splitAngleDegrees)
+            {
+                cornerIndices.Add(i);
+            }
+        }
+
+        if (cornerIndices.Count == 0)
+        {
+            return SmoothPolyline(points, iterations);
+        }
+
+        List<Vector3> combined = new List<Vector3>(points.Count * 2);
+        int segmentStart = 0;
+
+        for (int i = 0; i <= cornerIndices.Count; i++)
+        {
+            int segmentEnd = i < cornerIndices.Count ? cornerIndices[i] : points.Count - 1;
+            int segmentLength = segmentEnd - segmentStart + 1;
+            if (segmentLength >= 2)
+            {
+                List<Vector3> segment = new List<Vector3>(segmentLength);
+                for (int j = segmentStart; j <= segmentEnd; j++)
+                {
+                    segment.Add(points[j]);
+                }
+
+                List<Vector3> smoothedSegment = SmoothPolyline(segment, iterations);
+                if (combined.Count > 0 && smoothedSegment.Count > 0)
+                {
+                    smoothedSegment.RemoveAt(0);
+                }
+
+                combined.AddRange(smoothedSegment);
+            }
+
+            segmentStart = segmentEnd;
+        }
+
+        return combined;
+    }
+
+    private static List<Vector3> BevelSharpCorners(
+        IReadOnlyList<Vector3> points,
+        float sharpAngleDegrees,
+        float bevelDistance)
+    {
+        if (points.Count < 3 || sharpAngleDegrees <= 0f || bevelDistance <= 0f)
+        {
+            return new List<Vector3>(points);
+        }
+
+        List<Vector3> beveled = new List<Vector3>(points.Count + 8);
+        beveled.Add(points[0]);
+
+        for (int i = 1; i < points.Count - 1; i++)
+        {
+            Vector3 previous = points[i - 1];
+            Vector3 corner = points[i];
+            Vector3 next = points[i + 1];
+            float turnAngle = GetTurnAngleDegrees(previous, corner, next);
+            if (turnAngle <= sharpAngleDegrees)
+            {
+                beveled.Add(corner);
+                continue;
+            }
+
+            Vector3 incoming = corner - previous;
+            Vector3 outgoing = next - corner;
+            incoming.y = 0f;
+            outgoing.y = 0f;
+            float incomingLength = incoming.magnitude;
+            float outgoingLength = outgoing.magnitude;
+            if (incomingLength < 0.05f || outgoingLength < 0.05f)
+            {
+                beveled.Add(corner);
+                continue;
+            }
+
+            float inset = Mathf.Min(bevelDistance, incomingLength * 0.45f, outgoingLength * 0.45f);
+            Vector3 beforeCorner = corner - incoming.normalized * inset;
+            Vector3 afterCorner = corner + outgoing.normalized * inset;
+            beveled.Add(beforeCorner);
+            beveled.Add(corner);
+            beveled.Add(afterCorner);
+        }
+
+        beveled.Add(points[points.Count - 1]);
+        return beveled;
+    }
+
+    private static float GetTurnAngleDegrees(Vector3 previous, Vector3 corner, Vector3 next)
+    {
+        Vector3 incoming = corner - previous;
+        Vector3 outgoing = next - corner;
+        incoming.y = 0f;
+        outgoing.y = 0f;
+        if (incoming.sqrMagnitude < 0.0001f || outgoing.sqrMagnitude < 0.0001f)
+        {
+            return 0f;
+        }
+
+        return Vector3.Angle(incoming.normalized, outgoing.normalized);
     }
 }

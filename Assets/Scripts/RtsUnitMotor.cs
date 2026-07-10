@@ -29,8 +29,8 @@ public class RtsUnitMotor : MonoBehaviour
     [SerializeField] private Vector3 fallbackCastHalfExtents = new Vector3(1f, 0.5f, 1f);
     [SerializeField, Min(0f)] private float obstacleSkin = 0.05f;
     [SerializeField] private bool stopImmediatelyOnWallHit = true;
-    [SerializeField, Min(0f)] private float wallEscapeGraceDuration = 1.25f;
-    [SerializeField, Range(0f, 1f)] private float wallEscapeDirectionThreshold = 0.25f;
+    [SerializeField, Min(0f)] private float wallEscapeGraceDuration = 2.75f;
+    [SerializeField, Range(0f, 1f)] private float wallEscapeDirectionThreshold = 0.1f;
     [SerializeField] private bool enableObstacleAvoidance = true;
     [SerializeField, Min(0.1f)] private float stuckDetectionTime = 0.6f;
     [SerializeField, Min(0.05f)] private float stuckProgressDistance = 0.12f;
@@ -42,7 +42,9 @@ public class RtsUnitMotor : MonoBehaviour
     [Tooltip("Shrinks the collision hull while following a drawn path so slight arcs near walls can still pass.")]
     [SerializeField, Min(0f)] private float pathCollisionBuffer = 0.35f;
     [Tooltip("Seconds a drawn-path unit can remain blocked before movement is halted.")]
-    [SerializeField, Min(0f)] private float pathBlockedHaltDelay = 0.2f;
+    [SerializeField, Min(0f)] private float pathBlockedHaltDelay = 0.45f;
+    [Tooltip("When blocked on a drawn path, try sliding along the wall instead of pushing into it.")]
+    [SerializeField] private bool slideAlongWallOnPath = true;
     [SerializeField] private bool drawCollisionDebug;
 
     private static readonly float[] AvoidanceAngleOffsets =
@@ -222,6 +224,24 @@ public class RtsUnitMotor : MonoBehaviour
             MoveDirection = direction;
         }
 
+        float stepDistance = moveSpeed * Mathf.Max(0f, MoveSpeedMultiplier) * Time.deltaTime;
+
+        if (IsFollowingPath() && IsBlockedBySolidObstacle && !IsInWallEscapeGrace)
+        {
+            if (ShouldHaltBlockedPath())
+            {
+                HaltBlockedPath();
+                return;
+            }
+
+            if (slideAlongWallOnPath && TrySlideAlongWall(direction, stepDistance))
+            {
+                return;
+            }
+
+            return;
+        }
+
         bool isOverlapping = solidObstacleLayers != 0 && IsCurrentlyOverlappingObstacle();
         bool movingAwayFromWall = isOverlapping && IsMovingAwayFromObstacle(direction);
         bool useAvoidance = enableObstacleAvoidance && solidObstacleLayers != 0;
@@ -234,6 +254,11 @@ public class RtsUnitMotor : MonoBehaviour
             }
             else if (!IsInWallEscapeGrace)
             {
+                if (IsFollowingPath() && slideAlongWallOnPath && TrySlideAlongWall(direction, stepDistance))
+                {
+                    return;
+                }
+
                 if (!useAvoidance || !TryMoveWithObstacleAvoidance(direction, isOverlapping))
                 {
                     StopOnWall();
@@ -257,7 +282,6 @@ public class RtsUnitMotor : MonoBehaviour
             wallEscapeGraceEndTime = 0f;
         }
 
-        float stepDistance = moveSpeed * Mathf.Max(0f, MoveSpeedMultiplier) * Time.deltaTime;
         float distanceToTarget = offset.magnitude;
         if (distanceToTarget <= arrivalSlowdownRadius && arrivalSlowdownRadius > 0.01f)
         {
@@ -278,6 +302,11 @@ public class RtsUnitMotor : MonoBehaviour
         }
         else if (!TryGetAllowedDelta(desiredDelta, out Vector3 allowedDelta))
         {
+            if (IsFollowingPath() && slideAlongWallOnPath && TrySlideAlongWall(direction, stepDistance))
+            {
+                return;
+            }
+
             if (!useAvoidance || !TryMoveWithObstacleAvoidance(direction, isOverlapping))
             {
                 StopOnWall();
@@ -361,6 +390,11 @@ public class RtsUnitMotor : MonoBehaviour
             return destination;
         }
 
+        if (HasSharpUpcomingTurn(pathWaypointIndex, 90f))
+        {
+            return pathWaypoints[pathWaypointIndex];
+        }
+
         Vector3 currentWaypoint = pathWaypoints[pathWaypointIndex];
         Vector3 nextWaypoint = pathWaypoints[pathWaypointIndex + 1];
         Vector3 segment = nextWaypoint - currentWaypoint;
@@ -379,6 +413,28 @@ public class RtsUnitMotor : MonoBehaviour
         float lookahead = Mathf.Max(GetWaypointPassRadius() * 1.5f, GetCurrentMoveSpeed() * 0.35f);
         float targetDistance = Mathf.Clamp(traveledAlongSegment + lookahead, 0f, segmentLength);
         return currentWaypoint + segmentDirection * targetDistance;
+    }
+
+    private bool HasSharpUpcomingTurn(int waypointIndex, float sharpAngleDegrees)
+    {
+        if (waypointIndex <= 0 || waypointIndex >= pathWaypoints.Count - 1)
+        {
+            return false;
+        }
+
+        Vector3 previous = pathWaypoints[waypointIndex - 1];
+        Vector3 corner = pathWaypoints[waypointIndex];
+        Vector3 next = pathWaypoints[waypointIndex + 1];
+        Vector3 incoming = corner - previous;
+        Vector3 outgoing = next - corner;
+        incoming.y = 0f;
+        outgoing.y = 0f;
+        if (incoming.sqrMagnitude < 0.0001f || outgoing.sqrMagnitude < 0.0001f)
+        {
+            return false;
+        }
+
+        return Vector3.Angle(incoming.normalized, outgoing.normalized) > sharpAngleDegrees;
     }
 
     private void ConsumePassedPathWaypoints()
@@ -444,7 +500,7 @@ public class RtsUnitMotor : MonoBehaviour
             return true;
         }
 
-        if (IsStuck && !IsFollowingPath() && Time.time >= nextDetourAttemptTime && TryInsertDetourWaypoint(goalDirection))
+        if (IsStuck && Time.time >= nextDetourAttemptTime && TryInsertDetourWaypoint(goalDirection))
         {
             nextDetourAttemptTime = Time.time + stuckDetectionTime;
             IsBlockedBySolidObstacle = false;
@@ -452,6 +508,44 @@ public class RtsUnitMotor : MonoBehaviour
         }
 
         IsBlockedBySolidObstacle = true;
+        return false;
+    }
+
+    private bool TrySlideAlongWall(Vector3 desiredDirection, float stepDistance)
+    {
+        if (!TryGetOverlappingEscapeDirection(out Vector3 escapeDirection))
+        {
+            return false;
+        }
+
+        Vector3 goalDirection = GetGoalDirection();
+        Vector3 tangent = Vector3.ProjectOnPlane(goalDirection.sqrMagnitude > 0.0001f ? goalDirection : desiredDirection, escapeDirection);
+        tangent.y = 0f;
+        if (tangent.sqrMagnitude < 0.0001f)
+        {
+            tangent = new Vector3(-escapeDirection.z, 0f, escapeDirection.x);
+        }
+
+        tangent.Normalize();
+        Vector3[] slideDirections = { tangent, -tangent };
+
+        for (int i = 0; i < slideDirections.Length; i++)
+        {
+            Vector3 slideDelta = slideDirections[i] * stepDistance;
+            if (!TryGetAllowedDelta(slideDelta, out Vector3 allowedSlide) || allowedSlide.sqrMagnitude < 0.0001f)
+            {
+                continue;
+            }
+
+            transform.position += allowedSlide;
+            MoveDirection = allowedSlide.normalized;
+            pathBlockedSinceTime = -1f;
+            IsBlockedBySolidObstacle = false;
+            IsStuck = false;
+            ResetStuckTracking();
+            return true;
+        }
+
         return false;
     }
 

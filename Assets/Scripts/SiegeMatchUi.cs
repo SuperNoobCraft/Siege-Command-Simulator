@@ -25,6 +25,17 @@ public class SiegeMatchUi : MonoBehaviour
     [SerializeField] private SiegeUiLabel defeatLabel;
     [SerializeField] private SiegeUiLabel restartLabel;
 
+    [Header("World Labels (CAVE / physical signs)")]
+    [SerializeField] private bool useWorldLabelsInTrackedXr = true;
+    [SerializeField] private GameObject canvasRoot;
+    [SerializeField] private GameObject worldUiRoot;
+    [SerializeField] private SiegeWorldUiLabel worldStatusLabel;
+    [SerializeField] private SiegeWorldUiLabel worldCountdownLabel;
+    [SerializeField] private SiegeWorldUiLabel worldCommanderHpLabel;
+    [SerializeField] private SiegeWorldUiLabel worldVictoryLabel;
+    [SerializeField] private SiegeWorldUiLabel worldDefeatLabel;
+    [SerializeField] private SiegeWorldUiLabel worldRestartLabel;
+
     [Header("Optional Groups")]
     [Tooltip("Optional parent toggled on while playing. Leave empty to only toggle individual labels.")]
     [SerializeField] private GameObject playingGroup;
@@ -62,6 +73,8 @@ public class SiegeMatchUi : MonoBehaviour
     {
         Instance = this;
         ResolveMissingLabels();
+        ResolveMissingWorldLabels();
+        ApplyUiPresentationMode();
     }
 
     private void OnDestroy()
@@ -86,6 +99,7 @@ public class SiegeMatchUi : MonoBehaviour
 
     private void Start()
     {
+        ApplyUiPresentationMode();
         TryBindManager();
 
         ApplyPlayingLayout();
@@ -95,14 +109,14 @@ public class SiegeMatchUi : MonoBehaviour
 
         if (showOpeningStatusOnStart && !string.IsNullOrWhiteSpace(openingStatus))
         {
-            SetLabelText(statusLabel, openingStatus, false);
+            SetDualLabelText(statusLabel, worldStatusLabel, openingStatus, false);
             if (openingStatusDuration > 0f)
             {
                 openingStatusCoroutine = StartCoroutine(ClearOpeningStatusAfterDelay());
             }
             else
             {
-                SetLabelText(statusLabel, string.Empty, false);
+                SetDualLabelText(statusLabel, worldStatusLabel, string.Empty, false);
             }
         }
     }
@@ -225,8 +239,71 @@ public class SiegeMatchUi : MonoBehaviour
         }
 
         string message = string.Format(commanderHpFormat, hitsRemaining);
-        commanderHpLabel.SetText(message, true);
-        commanderHpLabel.SetVisible(true);
+        SetDualLabelText(commanderHpLabel, worldCommanderHpLabel, message, true);
+    }
+
+    private void ResolveMissingWorldLabels()
+    {
+        SiegeWorldUiLabel[] labels = GetComponentsInChildren<SiegeWorldUiLabel>(true);
+        for (int i = 0; i < labels.Length; i++)
+        {
+            SiegeWorldUiLabel label = labels[i];
+            if (label == null)
+            {
+                continue;
+            }
+
+            string name = label.gameObject.name;
+            if (worldCommanderHpLabel == null && ContainsNameToken(name, "commanderhp", "arrowhit", "hp"))
+            {
+                worldCommanderHpLabel = label;
+            }
+            else if (worldCountdownLabel == null && ContainsNameToken(name, "countdown", "cannon"))
+            {
+                worldCountdownLabel = label;
+            }
+            else if (worldStatusLabel == null && ContainsNameToken(name, "status", "opening"))
+            {
+                worldStatusLabel = label;
+            }
+            else if (worldVictoryLabel == null && ContainsNameToken(name, "victory", "win"))
+            {
+                worldVictoryLabel = label;
+            }
+            else if (worldDefeatLabel == null && ContainsNameToken(name, "defeat", "lose"))
+            {
+                worldDefeatLabel = label;
+            }
+            else if (worldRestartLabel == null && ContainsNameToken(name, "restart"))
+            {
+                worldRestartLabel = label;
+            }
+        }
+    }
+
+    private void ApplyUiPresentationMode()
+    {
+        bool useWorld = useWorldLabelsInTrackedXr && SiegePlayEnvironment.IsTrackedXr && HasAnyWorldLabel();
+
+        if (canvasRoot != null)
+        {
+            canvasRoot.SetActive(!useWorld);
+        }
+
+        if (worldUiRoot != null)
+        {
+            worldUiRoot.SetActive(useWorld);
+        }
+    }
+
+    private bool HasAnyWorldLabel()
+    {
+        return worldStatusLabel != null
+            || worldCountdownLabel != null
+            || worldCommanderHpLabel != null
+            || worldVictoryLabel != null
+            || worldDefeatLabel != null
+            || worldRestartLabel != null;
     }
 
     private void ResolveMissingLabels()
@@ -298,10 +375,15 @@ public class SiegeMatchUi : MonoBehaviour
             return;
         }
 
-        SetLabelText(countdownLabel, string.Format(wave3CountdownFormat, secondsRemaining), true);
+        SetDualLabelText(countdownLabel, worldCountdownLabel, string.Format(wave3CountdownFormat, secondsRemaining), true);
         if (countdownLabel != null)
         {
             countdownLabel.SetVisible(true);
+        }
+
+        if (worldCountdownLabel != null)
+        {
+            worldCountdownLabel.SetVisible(true);
         }
     }
 
@@ -314,7 +396,7 @@ public class SiegeMatchUi : MonoBehaviour
         }
 
         float secondsRemaining = manager != null ? manager.SecondsUntilCannonsFire : 0f;
-        SetLabelText(countdownLabel, string.Format(wave3CountdownFormat, secondsRemaining), true);
+        SetDualLabelText(countdownLabel, worldCountdownLabel, string.Format(wave3CountdownFormat, secondsRemaining), true);
     }
 
     private void RefreshCommanderHpDisplay()
@@ -332,12 +414,12 @@ public class SiegeMatchUi : MonoBehaviour
 
         if (!showOpeningStatusOnStart)
         {
-            SetLabelText(statusLabel, string.Empty, false);
+            SetDualLabelText(statusLabel, worldStatusLabel, string.Empty, false);
         }
 
-        SetLabelText(victoryLabel, string.Empty, false);
-        SetLabelText(defeatLabel, string.Empty, false);
-        SetLabelText(restartLabel, string.Empty, false);
+        SetDualLabelText(victoryLabel, worldVictoryLabel, string.Empty, false);
+        SetDualLabelText(defeatLabel, worldDefeatLabel, string.Empty, false);
+        SetDualLabelText(restartLabel, worldRestartLabel, string.Empty, false);
         RefreshCommanderHpDisplay();
     }
 
@@ -346,11 +428,11 @@ public class SiegeMatchUi : MonoBehaviour
         SetGroupActive(playingGroup, false);
         SetGroupActive(endGameGroup, true);
 
-        SetLabelText(statusLabel, string.Empty, false);
-        SetLabelText(commanderHpLabel, string.Empty, true);
-        SetLabelText(victoryLabel, victoryMessage, false);
-        SetLabelText(defeatLabel, string.Empty, false);
-        SetLabelText(restartLabel, enableClickToRestart ? GetActiveRestartPrompt() : string.Empty, false);
+        SetDualLabelText(statusLabel, worldStatusLabel, string.Empty, false);
+        SetDualLabelText(commanderHpLabel, worldCommanderHpLabel, string.Empty, true);
+        SetDualLabelText(victoryLabel, worldVictoryLabel, victoryMessage, false);
+        SetDualLabelText(defeatLabel, worldDefeatLabel, string.Empty, false);
+        SetDualLabelText(restartLabel, worldRestartLabel, enableClickToRestart ? GetActiveRestartPrompt() : string.Empty, false);
     }
 
     private void ApplyDefeatLayout(string reason)
@@ -358,11 +440,11 @@ public class SiegeMatchUi : MonoBehaviour
         SetGroupActive(playingGroup, false);
         SetGroupActive(endGameGroup, true);
 
-        SetLabelText(statusLabel, string.Empty, false);
-        SetLabelText(commanderHpLabel, string.Empty, true);
-        SetLabelText(victoryLabel, string.Empty, false);
-        SetLabelText(defeatLabel, ResolveDefeatMessage(reason), false);
-        SetLabelText(restartLabel, enableClickToRestart ? GetActiveRestartPrompt() : string.Empty, false);
+        SetDualLabelText(statusLabel, worldStatusLabel, string.Empty, false);
+        SetDualLabelText(commanderHpLabel, worldCommanderHpLabel, string.Empty, true);
+        SetDualLabelText(victoryLabel, worldVictoryLabel, string.Empty, false);
+        SetDualLabelText(defeatLabel, worldDefeatLabel, ResolveDefeatMessage(reason), false);
+        SetDualLabelText(restartLabel, worldRestartLabel, enableClickToRestart ? GetActiveRestartPrompt() : string.Empty, false);
     }
 
     private void ApplyEditorPreview()
@@ -382,9 +464,9 @@ public class SiegeMatchUi : MonoBehaviour
                 break;
             default:
                 ApplyPlayingLayout();
-                SetLabelText(statusLabel, openingStatus, false);
-                SetLabelText(commanderHpLabel, string.Format(commanderHpFormat, 3), true);
-                SetLabelText(countdownLabel, string.Format(wave3CountdownFormat, 42f), true);
+                SetDualLabelText(statusLabel, worldStatusLabel, openingStatus, false);
+                SetDualLabelText(commanderHpLabel, worldCommanderHpLabel, string.Format(commanderHpFormat, 3), true);
+                SetDualLabelText(countdownLabel, worldCountdownLabel, string.Format(wave3CountdownFormat, 42f), true);
                 break;
         }
     }
@@ -418,6 +500,26 @@ public class SiegeMatchUi : MonoBehaviour
         }
 
         label.SetText(message, keepVisible);
+    }
+
+    private static void SetWorldLabelText(SiegeWorldUiLabel label, string message, bool keepVisible)
+    {
+        if (label == null)
+        {
+            return;
+        }
+
+        label.SetText(message, keepVisible);
+    }
+
+    private static void SetDualLabelText(
+        SiegeUiLabel canvasLabel,
+        SiegeWorldUiLabel worldLabel,
+        string message,
+        bool keepVisible)
+    {
+        SetLabelText(canvasLabel, message, keepVisible);
+        SetWorldLabelText(worldLabel, message, keepVisible);
     }
 
     private static void SetGroupActive(GameObject group, bool active)
