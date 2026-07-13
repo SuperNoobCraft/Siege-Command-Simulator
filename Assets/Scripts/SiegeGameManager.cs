@@ -2,7 +2,6 @@ using System;
 using System.Collections;
 using UnityEngine;
 using UnityEngine.Events;
-using UnityEngine.SceneManagement;
 #if UNITY_EDITOR
 using UnityEditor;
 #endif
@@ -43,6 +42,12 @@ public class SiegeGameManager : MonoBehaviour
     [Header("Match End")]
     [SerializeField] private bool pauseTimeOnMatchEnd = true;
     [SerializeField, Min(0f)] private float matchEndPauseDelay = 1.25f;
+    [Tooltip("Ignore wand/UI presses briefly after soft restart so the restart click cannot auto-pick a mode.")]
+    [SerializeField, Min(0f)] private float postRestartInputCooldownSeconds = 1.5f;
+
+    [Header("Demo Mode")]
+    [Tooltip("Troop movement speed multiplier while playing Demo (Full always uses 100%).")]
+    [SerializeField, Range(0.1f, 1f)] private float demoMoveSpeedScale = 0.6f;
 
     [Header("Debug")]
     [SerializeField] private bool logMatchEvents = true;
@@ -85,6 +90,8 @@ public class SiegeGameManager : MonoBehaviour
     public bool IsPlaying => currentState == MatchState.Playing;
     public float MatchElapsedSeconds => matchElapsedSeconds;
     public int MaxWaves => SiegeMatchSettings.MaxWaves;
+    public SiegeGameMode GameMode => SiegeMatchSettings.GameMode;
+    public float DemoMoveSpeedScale => demoMoveSpeedScale;
     public float SecondsUntilCannonsFire =>
         Mathf.Max(0f, GetFinalWaveStartTimeSeconds() + secondsAfterFinalWaveUntilCannonsFire - MatchElapsedSeconds);
     public float TotalSecondsUntilCannonsFire =>
@@ -144,12 +151,19 @@ public class SiegeGameManager : MonoBehaviour
 
     public void ConfirmDifficulty(int maxWaves)
     {
+        ConfirmPlayMode(maxWaves <= SiegeMatchSettings.DemoWaveCount
+            ? SiegeGameMode.Demo
+            : SiegeGameMode.Full);
+    }
+
+    public void ConfirmPlayMode(SiegeGameMode gameMode)
+    {
         if (currentState != MatchState.SelectingDifficulty)
         {
             return;
         }
 
-        SiegeMatchSettings.Configure(maxWaves);
+        SiegeMatchSettings.Configure(gameMode, demoMoveSpeedScale);
         BeginNewMatch();
         ResetCannonSites();
 
@@ -162,8 +176,12 @@ public class SiegeGameManager : MonoBehaviour
         if (logMatchEvents)
         {
             Debug.Log(
-                "Siege match started with " + SiegeMatchSettings.MaxWaves + " waves. Session "
-                + playSessionId + ". Cannons fire in "
+                "Siege match started (" + SiegeMatchSettings.GameMode + ", "
+                + SiegeMatchSettings.MaxWaves + " waves"
+                + (SiegeMatchSettings.IsDemoMode
+                    ? ", move speed " + (SiegeMatchSettings.DemoMoveSpeedScale * 100f).ToString("F0") + "%"
+                    : string.Empty)
+                + "). Session " + playSessionId + ". Cannons fire in "
                 + TotalSecondsUntilCannonsFire.ToString("F0") + "s.",
                 this);
         }
@@ -182,7 +200,20 @@ public class SiegeGameManager : MonoBehaviour
         Time.timeScale = 1f;
         matchElapsedSeconds = 0f;
         defeatReason = null;
-        SetMatchState(MatchState.SelectingDifficulty);
+
+        if (currentState != MatchState.SelectingDifficulty)
+        {
+            SetMatchState(MatchState.SelectingDifficulty);
+        }
+        else
+        {
+            MatchStateChanged?.Invoke(MatchState.SelectingDifficulty);
+        }
+
+        if (SiegeMatchUi.Instance != null)
+        {
+            SiegeMatchUi.Instance.ShowModeSelect();
+        }
     }
 
     private void BeginNewMatch()
@@ -369,8 +400,119 @@ public class SiegeGameManager : MonoBehaviour
 
     public void RestartMatch()
     {
+        if (pauseCoroutine != null)
+        {
+            StopCoroutine(pauseCoroutine);
+            pauseCoroutine = null;
+        }
+
         Time.timeScale = 1f;
-        SceneManager.LoadScene(SceneManager.GetActiveScene().buildIndex);
+        SoftResetBattlefield();
+
+        playSessionId++;
+        initializedPlaySessionId = playSessionId;
+        SiegeMatchSettings.Reset();
+        SiegeSceneBootstrap.BeginInputCooldown(postRestartInputCooldownSeconds);
+        BeginDifficultySelection();
+
+        EnemyWaveController waveController = EnemyWaveController.Instance;
+        if (waveController != null)
+        {
+            waveController.PrepareForMatchStart();
+        }
+
+        if (logMatchEvents)
+        {
+            Debug.Log("Match soft-restarted in place (no scene reload). Session " + playSessionId + ".", this);
+        }
+    }
+
+    private void SoftResetBattlefield()
+    {
+        DestroyInFlightProjectiles();
+
+        VotanicWandRtsCommander wand = FindObjectOfType<VotanicWandRtsCommander>();
+        if (wand != null)
+        {
+            wand.CancelActiveCommand();
+        }
+
+        SiegeRevealChildren[] reveals = FindObjectsOfType<SiegeRevealChildren>(includeInactive: true);
+        for (int i = 0; i < reveals.Length; i++)
+        {
+            if (reveals[i] != null)
+            {
+                reveals[i].ResetForMatchStart();
+            }
+        }
+
+        RtsCityGateController[] gates = FindObjectsOfType<RtsCityGateController>(includeInactive: true);
+        for (int i = 0; i < gates.Length; i++)
+        {
+            if (gates[i] != null)
+            {
+                gates[i].ResetForMatchStart();
+            }
+        }
+
+        TroopCombat[] troops = FindObjectsOfType<TroopCombat>(includeInactive: true);
+        for (int i = 0; i < troops.Length; i++)
+        {
+            if (troops[i] != null)
+            {
+                troops[i].ResetForMatchStart();
+            }
+        }
+
+        EnemyRegimentAI[] enemies = FindObjectsOfType<EnemyRegimentAI>(includeInactive: true);
+        for (int i = 0; i < enemies.Length; i++)
+        {
+            if (enemies[i] != null)
+            {
+                enemies[i].ResetForMatchStart();
+            }
+        }
+
+        if (SiegeCommanderArrowHealth.Instance != null)
+        {
+            SiegeCommanderArrowHealth.Instance.ResetForMatchStart();
+        }
+        else
+        {
+            SiegeCommanderArrowHealth commander = FindObjectOfType<SiegeCommanderArrowHealth>(true);
+            if (commander != null)
+            {
+                commander.ResetForMatchStart();
+            }
+        }
+
+        ResetCannonSites();
+
+        CastleArcherGuards[] archers = FindObjectsOfType<CastleArcherGuards>(includeInactive: true);
+        for (int i = 0; i < archers.Length; i++)
+        {
+            if (archers[i] != null)
+            {
+                archers[i].ResetForMatchStart();
+            }
+        }
+
+        if (SiegeMatchUi.Instance != null)
+        {
+            SiegeMatchUi.Instance.ShowModeSelect();
+        }
+    }
+
+    private static void DestroyInFlightProjectiles()
+    {
+        TroopRangedProjectile[] projectiles = FindObjectsOfType<TroopRangedProjectile>(includeInactive: true);
+        for (int i = 0; i < projectiles.Length; i++)
+        {
+            if (projectiles[i] != null)
+            {
+                Destroy(projectiles[i].gameObject);
+            }
+        }
     }
 
     private void PauseMatchIfNeeded()

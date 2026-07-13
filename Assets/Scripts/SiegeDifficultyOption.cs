@@ -2,18 +2,22 @@ using TMPro;
 using UnityEngine;
 
 /// <summary>
-/// World-space difficulty button. Place a collider in the scene and wire a label.
+/// World-space Demo / Full mode button. Place a collider in the scene and wire a label.
 /// </summary>
 [DisallowMultipleComponent]
 public class SiegeDifficultyOption : MonoBehaviour
 {
-    [SerializeField, Min(2)] private int waveCount = 2;
+    [SerializeField] private SiegeGameMode gameMode = SiegeGameMode.Demo;
     [SerializeField] private Collider hitCollider;
     [SerializeField] private SiegeWorldUiLabel label;
     [SerializeField] private Color normalColor = Color.white;
     [SerializeField] private Color highlightedColor = new Color(0.35f, 1f, 0.45f, 1f);
 
-    public int WaveCount => waveCount;
+    public SiegeGameMode GameMode => gameMode;
+    public int WaveCount =>
+        gameMode == SiegeGameMode.Demo
+            ? SiegeMatchSettings.DemoWaveCount
+            : SiegeMatchSettings.FullWaveCount;
 
     public SiegeWorldUiLabel GetPresentationLabel()
     {
@@ -43,7 +47,6 @@ public class SiegeDifficultyOption : MonoBehaviour
 
     private void OnValidate()
     {
-        waveCount = Mathf.Clamp(waveCount, SiegeMatchSettings.MinWaves, SiegeMatchSettings.MaxSupportedWaves);
         if (hitCollider == null)
         {
             hitCollider = GetComponentInChildren<Collider>();

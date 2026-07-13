@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using TMPro;
 using UnityEngine;
 using UnityEngine.Serialization;
-using Votanic.vXR.vGear;
 
 /// <summary>
 /// Drives world-space match UI labels. Place <see cref="SiegeWorldUiLabel"/> signs in the scene.
@@ -31,7 +30,7 @@ public class SiegeMatchUi : MonoBehaviour
     [SerializeField] private SiegeWorldUiLabel worldRestartLabel;
 
     [Header("Difficulty Select Labels")]
-    [Tooltip("Drag the two 3D wave-choice signs here. Also auto-found by name if left empty.")]
+    [Tooltip("Drag the Demo / Full world-space signs here. Also auto-found by name if left empty.")]
     [SerializeField] private SiegeWorldUiLabel[] difficultyOptionLabels;
     [Tooltip("Optional fallback for plain 3D TextMeshPro objects without SiegeWorldUiLabel.")]
     [SerializeField] private GameObject[] difficultyOptionRoots;
@@ -49,7 +48,7 @@ public class SiegeMatchUi : MonoBehaviour
     [SerializeField, Min(0f)] private float restartDelaySeconds = 2f;
 
     [Header("Messages")]
-    [SerializeField] private string difficultySelectPrompt = "Select difficulty: 2 waves or 3 waves.";
+    [SerializeField] private string difficultySelectPrompt = "Select Demo or Full version.";
     [SerializeField] private string openingStatus = "Defend the cannons.";
     [SerializeField] private bool showOpeningStatusOnStart = true;
     [SerializeField, Min(0f)] private float openingStatusDuration = 3f;
@@ -59,8 +58,7 @@ public class SiegeMatchUi : MonoBehaviour
     [SerializeField] private string arrowDefeatMessage = "The commander has fallen.";
     [SerializeField] private string cannonDefeatMessage = "The cannons were overrun.";
     [SerializeField] private string restartPrompt = "Click anywhere to restart.";
-    [SerializeField] private string trackedRestartPrompt = "Press Grab on the wand to restart.";
-    [SerializeField] private string vrRestartCommandName = "Grab";
+    [SerializeField] private string trackedRestartPrompt = "Press any wand button to restart.";
 
     [Header("Editor Preview")]
     [SerializeField] private bool previewInEditor = true;
@@ -252,6 +250,11 @@ public class SiegeMatchUi : MonoBehaviour
         }
     }
 
+    private bool WasRestartClickPressed()
+    {
+        return SiegeVrInput.WasPointerPressedThisFrame();
+    }
+
     private void OnValidate()
     {
         if (!Application.isPlaying)
@@ -388,6 +391,21 @@ public class SiegeMatchUi : MonoBehaviour
         }
 
         return false;
+    }
+
+    public void ShowModeSelect()
+    {
+        CancelRestartDelay();
+        if (openingStatusCoroutine != null)
+        {
+            StopCoroutine(openingStatusCoroutine);
+            openingStatusCoroutine = null;
+        }
+
+        awaitingRestart = false;
+        CacheDifficultyOptions();
+        ResolveDifficultyPresentationTargets();
+        ApplyDifficultySelectLayout();
     }
 
     private void HandleMatchStateChanged(SiegeGameManager.MatchState state)
@@ -772,6 +790,10 @@ public class SiegeMatchUi : MonoBehaviour
 
         return ContainsAny(
             normalized,
+            "demo",
+            "full",
+            "fullversion",
+            "demoversion",
             "2wave",
             "3wave",
             "2waves",
@@ -974,32 +996,6 @@ public class SiegeMatchUi : MonoBehaviour
         {
             group.SetActive(active);
         }
-    }
-
-    private bool WasRestartClickPressed()
-    {
-        if (SiegePlayEnvironment.IsDesktopInput)
-        {
-            if (Input.GetMouseButtonDown(0))
-            {
-                return true;
-            }
-
-            if (Input.touchCount > 0)
-            {
-                Touch touch = Input.GetTouch(0);
-                return touch.phase == TouchPhase.Began;
-            }
-
-            return false;
-        }
-
-        if (!string.IsNullOrWhiteSpace(vrRestartCommandName) && vGear.Cmd.Received(vrRestartCommandName))
-        {
-            return true;
-        }
-
-        return vGear.Cmd.Received("Trigger") || vGear.Cmd.Received("Grab");
     }
 
     private string GetActiveRestartPrompt()

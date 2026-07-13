@@ -182,7 +182,8 @@ public class SiegeAudioManager : MonoBehaviour
 
     private void HandleMatchStateChanged(SiegeGameManager.MatchState state)
     {
-        if (state == SiegeGameManager.MatchState.Playing)
+        if (state == SiegeGameManager.MatchState.Playing
+            || state == SiegeGameManager.MatchState.SelectingDifficulty)
         {
             ResetMatchAudioState();
         }

@@ -107,6 +107,44 @@ public class EnemyRegimentAI : MonoBehaviour
     public bool IsExitingGate => phase == AiPhase.ExitingGate;
     public bool IsDeployedOnField => hasEnteredBattlefield && phase != AiPhase.WaitingInCamp && phase != AiPhase.ExitingGate;
 
+    public void ResetForMatchStart()
+    {
+        if (combat == null)
+        {
+            combat = GetComponent<TroopCombat>();
+        }
+
+        if (motor == null)
+        {
+            motor = GetComponent<RtsUnitMotor>();
+        }
+
+        if (combat != null)
+        {
+            combat.SetHoldInCampUntilNextWave(false);
+        }
+
+        hasEnteredBattlefield = false;
+        hasAssignedCannonObjective = false;
+        hasCachedObjectiveDestination = false;
+        isHoldingAtObjective = false;
+        unstuckAttemptIndex = 0;
+        nextDecisionTime = 0f;
+        nextDestinationRefreshTime = 0f;
+        nextUnstuckAttemptTime = 0f;
+        tacticalDestination = Vector3.zero;
+        assignedCannonObjective = Vector3.zero;
+        phase = AiPhase.WaitingInCamp;
+        visibleFriendlies.Clear();
+        visibleEnemies.Clear();
+
+        if (motor != null)
+        {
+            motor.Stop();
+            motor.CanReceiveCommands = false;
+        }
+    }
+
     private void Awake()
     {
         combat = GetComponent<TroopCombat>();

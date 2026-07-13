@@ -31,6 +31,21 @@ public class SiegeSceneBootstrap : MonoBehaviour
     private static GameObject warmUpRunner;
 
     public static bool IsWarmUpComplete { get; private set; } = true;
+    public static bool IsGameplayInputAllowed =>
+        IsWarmUpComplete && Time.unscaledTime >= gameplayInputAllowedAfterUnscaledTime;
+
+    private static float gameplayInputAllowedAfterUnscaledTime;
+
+    public static void BeginInputCooldown(float seconds)
+    {
+        if (seconds <= 0f)
+        {
+            return;
+        }
+
+        float unlockAt = Time.unscaledTime + seconds;
+        gameplayInputAllowedAfterUnscaledTime = Mathf.Max(gameplayInputAllowedAfterUnscaledTime, unlockAt);
+    }
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
     private static void ResetPlaySessionState()
@@ -39,6 +54,7 @@ public class SiegeSceneBootstrap : MonoBehaviour
         firstLoadWarmUpStarted = false;
         postReloadWarmUpStarted = false;
         IsWarmUpComplete = true;
+        gameplayInputAllowedAfterUnscaledTime = 0f;
         DestroyWarmUpRunner();
         SiegeMatchSettings.Reset();
     }

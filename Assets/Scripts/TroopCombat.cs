@@ -183,14 +183,62 @@ public class TroopCombat : MonoBehaviour
     public bool IsRegrouping => CurrentState == State.Regroup;
     public float CombatMoveSpeedMultiplier => GetCombatMoveSpeedMultiplier();
 
+    private Vector3 matchStartPosition;
+    private Quaternion matchStartRotation;
+    private bool hasCachedMatchStartPose;
+
     public void SetHoldInCampUntilNextWave(bool holdInCamp)
     {
         HoldsInCampUntilNextWave = holdInCamp;
     }
 
+    public void ResetForMatchStart()
+    {
+        if (retreatDeathDisappearCoroutine != null)
+        {
+            StopCoroutine(retreatDeathDisappearCoroutine);
+            retreatDeathDisappearCoroutine = null;
+        }
+
+        if (!gameObject.activeSelf)
+        {
+            gameObject.SetActive(true);
+        }
+
+        if (hasCachedMatchStartPose && ShouldRestoreMatchStartPose())
+        {
+            transform.SetPositionAndRotation(matchStartPosition, matchStartRotation);
+        }
+
+        isPermanentlyEliminated = false;
+        currentHealth = Mathf.Max(1f, maxHealth);
+        currentTarget = null;
+        HoldsInCampUntilNextWave = false;
+        CurrentState = State.Idle;
+        retreatPhase = RetreatPhase.ToGateOutside;
+        nextAttackTime = 0f;
+        nextScanTime = 0f;
+        invulnerableUntil = 0f;
+        smoothedCombatOverlap = 0f;
+        flagHolderShowingDefeated = false;
+
+        if (motor != null)
+        {
+            motor.Stop();
+            motor.CanReceiveCommands = motor.IsCommandUnit;
+            motor.MoveSpeedMultiplier = SiegeMatchSettings.ActiveMoveSpeedScale;
+        }
+
+        RestoreFlagHolderVisual();
+        SyncTroopVisualsToHealth();
+        ApplyTroopVisualFormation();
+        lastRegimentPosition = transform.position;
+    }
+
     private void Awake()
     {
         motor = GetComponent<RtsUnitMotor>();
+        CacheMatchStartPose();
         currentHealth = Mathf.Max(1f, maxHealth);
 
         if (footprintCollider == null)
@@ -224,6 +272,33 @@ public class TroopCombat : MonoBehaviour
         {
             troopVisualRoot.localScale = Vector3.one;
         }
+    }
+
+    private void CacheMatchStartPose()
+    {
+        matchStartPosition = transform.position;
+        matchStartRotation = transform.rotation;
+        hasCachedMatchStartPose = true;
+    }
+
+    private bool ShouldRestoreMatchStartPose()
+    {
+        // Never recenter the tracked CAVE/HMD player (or anything parented under them).
+        if (GetComponent<SiegeCommanderArrowHealth>() != null
+            || GetComponentInParent<SiegeCommanderArrowHealth>() != null)
+        {
+            return false;
+        }
+
+        Transform player = SiegePlayEnvironment.ResolvePlayerTransform();
+        if (player == null)
+        {
+            return true;
+        }
+
+        return transform != player
+            && !transform.IsChildOf(player)
+            && !player.IsChildOf(transform);
     }
 
     private void EnsureMovementBoundsCollider()
@@ -360,18 +435,21 @@ public class TroopCombat : MonoBehaviour
             return;
         }
 
+        float baseMultiplier;
         switch (CurrentState)
         {
             case State.Retreat:
-                motor.MoveSpeedMultiplier = retreatMoveSpeedMultiplier;
+                baseMultiplier = retreatMoveSpeedMultiplier;
                 break;
             case State.Fight:
-                motor.MoveSpeedMultiplier = GetCombatMoveSpeedMultiplier();
+                baseMultiplier = GetCombatMoveSpeedMultiplier();
                 break;
             default:
-                motor.MoveSpeedMultiplier = 1f;
+                baseMultiplier = 1f;
                 break;
         }
+
+        motor.MoveSpeedMultiplier = baseMultiplier * SiegeMatchSettings.ActiveMoveSpeedScale;
     }
 
     private float GetCombatMoveSpeedMultiplier()
@@ -1381,7 +1459,7 @@ public class TroopCombat : MonoBehaviour
 
         if (destroyOnDeath)
         {
-            Destroy(gameObject);
+            gameObject.SetActive(false);
             return;
         }
 

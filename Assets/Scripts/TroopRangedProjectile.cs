@@ -3,10 +3,8 @@ using UnityEngine.Rendering;
 
 public class TroopRangedProjectile : MonoBehaviour
 {
-    private const float HazardRadius = 0.2f;
     private static readonly int ColorId = Shader.PropertyToID("_Color");
 
-    private static Material outlineMaterial;
     private static MaterialPropertyBlock outlinePropertyBlock;
 
     private Vector3 startPosition;
@@ -17,6 +15,7 @@ public class TroopRangedProjectile : MonoBehaviour
     private float totalDistance;
     private Vector3 previousPosition;
     private bool isPlayerHazard;
+    private float playerHazardHitRadius = 0.1f;
     private LayerMask playerHitLayers;
     private bool hasRegisteredHit;
     private bool isInitialized;
@@ -51,6 +50,7 @@ public class TroopRangedProjectile : MonoBehaviour
         float speed,
         float arcHeight,
         LayerMask hitLayers,
+        float hitRadius = 0.1f,
         bool enableOutline = false,
         Color outlineColor = default,
         float outlineScale = 1.14f)
@@ -58,7 +58,7 @@ public class TroopRangedProjectile : MonoBehaviour
         TroopRangedProjectile projectile = Launch(prefab, start, target, speed, arcHeight);
         if (projectile != null)
         {
-            projectile.ConfigurePlayerHazard(hitLayers, enableOutline, outlineColor, outlineScale);
+            projectile.ConfigurePlayerHazard(hitLayers, hitRadius, enableOutline, outlineColor, outlineScale);
         }
 
         return projectile;
@@ -88,12 +88,14 @@ public class TroopRangedProjectile : MonoBehaviour
 
     public void ConfigurePlayerHazard(
         LayerMask hitLayers,
+        float hitRadius = 0.1f,
         bool enableOutline = false,
         Color outlineColor = default,
         float outlineScale = 1.14f)
     {
         isPlayerHazard = true;
         playerHitLayers = hitLayers;
+        playerHazardHitRadius = Mathf.Max(0.01f, hitRadius);
         EnsureHazardPhysics();
 
         if (enableOutline)
@@ -175,7 +177,7 @@ public class TroopRangedProjectile : MonoBehaviour
 
         if (Physics.SphereCast(
                 from,
-                HazardRadius,
+                playerHazardHitRadius,
                 delta.normalized,
                 out RaycastHit hit,
                 distance,
@@ -195,7 +197,7 @@ public class TroopRangedProjectile : MonoBehaviour
 
         Collider[] overlaps = Physics.OverlapSphere(
             position,
-            HazardRadius,
+            playerHazardHitRadius,
             playerHitLayers,
             QueryTriggerInteraction.Collide);
 
@@ -248,69 +250,113 @@ public class TroopRangedProjectile : MonoBehaviour
             outlineColor = new Color(1f, 0.12f, 0.12f, 1f);
         }
 
-        outlineScale = Mathf.Max(1f, outlineScale);
+        outlineScale = Mathf.Max(1.01f, outlineScale);
         int ignoreRaycastLayer = LayerMask.NameToLayer("Ignore Raycast");
+        Material redOutlineMaterial = CreateOutlineMaterial(outlineColor);
 
-        MeshRenderer[] renderers = GetComponentsInChildren<MeshRenderer>(includeInactive: true);
-        for (int i = 0; i < renderers.Length; i++)
+        if (outlinePropertyBlock == null)
         {
-            MeshRenderer sourceRenderer = renderers[i];
-            if (sourceRenderer == null || sourceRenderer.name == "PlayerHazardOutline")
+            outlinePropertyBlock = new MaterialPropertyBlock();
+        }
+
+        MeshFilter[] meshFilters = GetComponentsInChildren<MeshFilter>(true);
+        for (int i = 0; i < meshFilters.Length; i++)
+        {
+            MeshFilter sourceFilter = meshFilters[i];
+            if (sourceFilter == null
+                || sourceFilter.sharedMesh == null
+                || sourceFilter.name == "PlayerHazardOutline"
+                || sourceFilter.transform.name == "PlayerHazardOutline")
             {
                 continue;
             }
 
-            MeshFilter sourceFilter = sourceRenderer.GetComponent<MeshFilter>();
-            if (sourceFilter == null || sourceFilter.sharedMesh == null)
+            MeshRenderer sourceRenderer = sourceFilter.GetComponent<MeshRenderer>();
+            if (sourceRenderer == null || !sourceRenderer.enabled)
             {
                 continue;
             }
 
-            GameObject outlineObject = new GameObject("PlayerHazardOutline");
-            outlineObject.transform.SetParent(sourceRenderer.transform, false);
-            outlineObject.transform.localPosition = Vector3.zero;
-            outlineObject.transform.localRotation = Quaternion.identity;
-            outlineObject.transform.localScale = Vector3.one * outlineScale;
-            outlineObject.layer = ignoreRaycastLayer >= 0 ? ignoreRaycastLayer : sourceRenderer.gameObject.layer;
+            CreateMeshOutline(
+                sourceFilter.transform,
+                sourceFilter.sharedMesh,
+                redOutlineMaterial,
+                outlineColor,
+                outlineScale,
+                ignoreRaycastLayer >= 0 ? ignoreRaycastLayer : sourceFilter.gameObject.layer);
+        }
 
-            MeshFilter outlineFilter = outlineObject.AddComponent<MeshFilter>();
-            outlineFilter.sharedMesh = sourceFilter.sharedMesh;
-
-            MeshRenderer outlineRenderer = outlineObject.AddComponent<MeshRenderer>();
-            outlineRenderer.sharedMaterial = GetOutlineMaterial();
-            outlineRenderer.shadowCastingMode = ShadowCastingMode.Off;
-            outlineRenderer.receiveShadows = false;
-            outlineRenderer.allowOcclusionWhenDynamic = false;
-            outlineRenderer.lightProbeUsage = LightProbeUsage.Off;
-            outlineRenderer.reflectionProbeUsage = ReflectionProbeUsage.Off;
-
-            if (outlinePropertyBlock == null)
+        SkinnedMeshRenderer[] skinnedRenderers = GetComponentsInChildren<SkinnedMeshRenderer>(true);
+        for (int i = 0; i < skinnedRenderers.Length; i++)
+        {
+            SkinnedMeshRenderer sourceRenderer = skinnedRenderers[i];
+            if (sourceRenderer == null
+                || sourceRenderer.sharedMesh == null
+                || !sourceRenderer.enabled
+                || sourceRenderer.name == "PlayerHazardOutline")
             {
-                outlinePropertyBlock = new MaterialPropertyBlock();
+                continue;
             }
 
-            outlinePropertyBlock.Clear();
-            outlinePropertyBlock.SetColor(ColorId, outlineColor);
-            outlineRenderer.SetPropertyBlock(outlinePropertyBlock);
+            CreateMeshOutline(
+                sourceRenderer.transform,
+                sourceRenderer.sharedMesh,
+                redOutlineMaterial,
+                outlineColor,
+                outlineScale,
+                ignoreRaycastLayer >= 0 ? ignoreRaycastLayer : sourceRenderer.gameObject.layer);
         }
     }
 
-    private static Material GetOutlineMaterial()
+    private void CreateMeshOutline(
+        Transform sourceTransform,
+        Mesh mesh,
+        Material outlineMat,
+        Color outlineColor,
+        float outlineScale,
+        int layer)
     {
-        if (outlineMaterial != null)
-        {
-            return outlineMaterial;
-        }
+        GameObject outlineObject = new GameObject("PlayerHazardOutline");
+        outlineObject.transform.SetParent(sourceTransform, false);
+        outlineObject.transform.localPosition = Vector3.zero;
+        outlineObject.transform.localRotation = Quaternion.identity;
+        outlineObject.transform.localScale = Vector3.one * outlineScale;
+        outlineObject.layer = layer;
 
+        MeshFilter outlineFilter = outlineObject.AddComponent<MeshFilter>();
+        outlineFilter.sharedMesh = mesh;
+
+        MeshRenderer outlineRenderer = outlineObject.AddComponent<MeshRenderer>();
+        outlineRenderer.sharedMaterial = outlineMat;
+        outlineRenderer.shadowCastingMode = ShadowCastingMode.Off;
+        outlineRenderer.receiveShadows = false;
+        outlineRenderer.allowOcclusionWhenDynamic = false;
+        outlineRenderer.lightProbeUsage = LightProbeUsage.Off;
+        outlineRenderer.reflectionProbeUsage = ReflectionProbeUsage.Off;
+
+        outlinePropertyBlock.Clear();
+        outlinePropertyBlock.SetColor(ColorId, outlineColor);
+        outlineRenderer.SetPropertyBlock(outlinePropertyBlock);
+    }
+
+    private static Material CreateOutlineMaterial(Color outlineColor)
+    {
         Shader shader = Shader.Find("Unlit/Color");
         if (shader == null)
         {
             shader = Shader.Find("Sprites/Default");
         }
 
-        outlineMaterial = new Material(shader);
-        outlineMaterial.SetInt("_Cull", (int)CullMode.Front);
-        return outlineMaterial;
+        Material material = new Material(shader);
+        material.color = outlineColor;
+        if (material.HasProperty(ColorId))
+        {
+            material.SetColor(ColorId, outlineColor);
+        }
+
+        // Back-face shell so the slightly larger clone reads as an outline around the arrow mesh.
+        material.SetInt("_Cull", (int)CullMode.Front);
+        return material;
     }
 
     private void EnsureHazardPhysics()
@@ -332,7 +378,7 @@ public class TroopRangedProjectile : MonoBehaviour
         }
 
         collider.isTrigger = true;
-        collider.radius = HazardRadius;
+        collider.radius = playerHazardHitRadius;
     }
 
     private Vector3 GetPositionAtProgress(float progress)

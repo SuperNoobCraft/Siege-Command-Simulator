@@ -22,6 +22,18 @@ public class RtsCityGateController : MonoBehaviour
     private float nextTroopScanTime;
     private bool shouldBeOpen;
 
+    public void ResetForMatchStart()
+    {
+        currentOpenAmount = 0f;
+        shouldBeOpen = false;
+        nextTroopScanTime = 0f;
+
+        if (gateTransform != null)
+        {
+            gateTransform.localPosition = closedLocalPosition;
+        }
+    }
+
     private void Awake()
     {
         if (gateTransform == null)

@@ -2,8 +2,9 @@ using UnityEngine;
 using Votanic.vXR.vGear;
 
 /// <summary>
-/// Lets players pick 2-wave or 3-wave difficulty with the wand (or mouse on desktop).
+/// Lets players pick Demo or Full mode with the wand (or mouse on desktop).
 /// </summary>
+[DefaultExecutionOrder(10)]
 public class SiegeDifficultySelector : MonoBehaviour
 {
     [SerializeField] private VotanicWandRtsCommander wandCommander;
@@ -32,7 +33,7 @@ public class SiegeDifficultySelector : MonoBehaviour
             return;
         }
 
-        if (!SiegeSceneBootstrap.IsWarmUpComplete)
+        if (!SiegeVrInput.IsGameplayInputAllowed())
         {
             ClearHighlight();
             hoveredOption = null;
@@ -42,9 +43,9 @@ public class SiegeDifficultySelector : MonoBehaviour
         Ray ray = BuildSelectionRay();
         UpdateHoveredOption(ray);
 
-        if (WasSelectPressed() && hoveredOption != null)
+        if (SiegeVrInput.WasPointerPressedThisFrame() && hoveredOption != null)
         {
-            manager.ConfirmDifficulty(hoveredOption.WaveCount);
+            manager.ConfirmPlayMode(hoveredOption.GameMode);
         }
     }
 
@@ -109,17 +110,5 @@ public class SiegeDifficultySelector : MonoBehaviour
             lastHighlightedOption.SetHighlighted(false);
             lastHighlightedOption = null;
         }
-    }
-
-    private static bool WasSelectPressed()
-    {
-        if (SiegePlayEnvironment.IsDesktopInput)
-        {
-            return Input.GetMouseButtonDown(0);
-        }
-
-        return vGear.Cmd.Received("Grab")
-            || vGear.Cmd.Received("Trigger")
-            || vGear.Cmd.Received("Select");
     }
 }

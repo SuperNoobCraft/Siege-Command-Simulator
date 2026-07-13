@@ -149,7 +149,7 @@ public class VotanicWandRtsCommander : MonoBehaviour
 
     private void Update()
     {
-        if (!SiegeSceneBootstrap.IsWarmUpComplete)
+        if (!SiegeVrInput.IsGameplayInputAllowed())
         {
             return;
         }
@@ -266,6 +266,13 @@ public class VotanicWandRtsCommander : MonoBehaviour
             debugStatusLine = "Command cancelled";
             debugPathLine = "Path: too short";
         }
+    }
+
+    public void CancelActiveCommand()
+    {
+        CancelCommandMode();
+        vrCommandLatched = false;
+        wasCommandHeld = false;
     }
 
     private void CancelCommandMode()
@@ -475,14 +482,15 @@ public class VotanicWandRtsCommander : MonoBehaviour
                 vrCommandLatched = false;
                 return true;
             }
+
+            return false;
         }
 
-        float commandValue = vGear.Cmd.Value(issueCommandName);
-        if (vGear.Cmd.Received(issueCommandName) || commandValue > 0.5f)
+        if (SiegeVrInput.IsAnyVrButtonHeld())
         {
             vrCommandLatched = true;
         }
-        else if (vrCommandLatched && commandValue <= 0.01f)
+        else if (vrCommandLatched)
         {
             vrCommandLatched = false;
         }

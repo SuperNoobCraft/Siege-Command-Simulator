@@ -114,6 +114,8 @@ public class SiegeRevealChildren : MonoBehaviour
 
     public void HideCannonFireEffects()
     {
+        StopCannonFireSequence();
+        StopEffectSystems(cannonFireEffectsParent);
         SetChildrenActive(cannonFireEffectsParent, false);
         SetParentActive(cannonFireIntactWallsParent, true);
         cannonFireRevealed = false;
@@ -121,8 +123,16 @@ public class SiegeRevealChildren : MonoBehaviour
 
     public void HideCannonOverrunEffects()
     {
+        StopEffectSystems(cannonOverrunEffectsParent);
         SetChildrenActive(cannonOverrunEffectsParent, false);
         overrunRevealed = false;
+    }
+
+    public void ResetForMatchStart()
+    {
+        StopCannonFireSequence();
+        HideCannonFireEffects();
+        HideCannonOverrunEffects();
     }
 
     private void HandleCannonsFired()
@@ -259,6 +269,23 @@ public class SiegeRevealChildren : MonoBehaviour
             }
 
             animator.updateMode = AnimatorUpdateMode.UnscaledTime;
+        }
+    }
+
+    private static void StopEffectSystems(Transform parent)
+    {
+        if (parent == null)
+        {
+            return;
+        }
+
+        ParticleSystem[] particleSystems = parent.GetComponentsInChildren<ParticleSystem>(includeInactive: true);
+        for (int i = 0; i < particleSystems.Length; i++)
+        {
+            if (particleSystems[i] != null)
+            {
+                particleSystems[i].Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
+            }
         }
     }
 

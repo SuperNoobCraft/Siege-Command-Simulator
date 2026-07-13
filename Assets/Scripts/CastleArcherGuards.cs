@@ -35,7 +35,7 @@ public class CastleArcherGuards : MonoBehaviour
     [SerializeField, Min(0.5f)] private float playerHarassmentMinScaledTimeGap = 8f;
     [Tooltip("Highest possible shot chance late in the match after scaling is applied.")]
     [SerializeField, Range(0f, 1f)] private float playerHarassmentMaxScaledChance = 0.75f;
-    [Tooltip("Match time used as 100% progress for harassment scaling.")]
+    [Tooltip("Fallback only if SiegeGameManager is missing. Normally driven by total seconds until cannons fire.")]
     [SerializeField, Min(1f)] private float matchDurationReferenceSeconds = 180f;
     [Tooltip("How strongly the gap shrinks from min to scaled minimum by match end.")]
     [SerializeField, Range(0f, 2f)] private float gapScaleStrength = 1f;
@@ -46,6 +46,8 @@ public class CastleArcherGuards : MonoBehaviour
     [SerializeField] private bool enablePlayerShotOutline = true;
     [SerializeField] private Color playerShotOutlineColor = new Color(1f, 0.12f, 0.12f, 1f);
     [SerializeField, Min(1f)] private float playerShotOutlineScale = 1.14f;
+    [Tooltip("Radius of the runtime sphere used to detect commander hits. Arrows do not need prefab colliders.")]
+    [SerializeField, Min(0.01f)] private float playerHazardHitRadius = 0.1f;
 
     [Header("Projectile")]
     [SerializeField] private GameObject arrowPrefab;
@@ -116,6 +118,7 @@ public class CastleArcherGuards : MonoBehaviour
         chanceScaleStrength = Mathf.Clamp(chanceScaleStrength, 0f, 2f);
         playerShotSpreadRadius = Mathf.Max(0f, playerShotSpreadRadius);
         playerShotOutlineScale = Mathf.Max(1f, playerShotOutlineScale);
+        playerHazardHitRadius = Mathf.Max(0.01f, playerHazardHitRadius);
         projectileSpeed = Mathf.Max(0.1f, projectileSpeed);
         projectileArcHeight = Mathf.Max(0f, projectileArcHeight);
         projectileLaunchHeight = Mathf.Max(0f, projectileLaunchHeight);
@@ -204,7 +207,29 @@ public class CastleArcherGuards : MonoBehaviour
     private float GetMatchProgress()
     {
         float elapsed = GetMatchElapsedSeconds();
-        return Mathf.Clamp01(elapsed / matchDurationReferenceSeconds);
+        float reference = GetMatchDurationReferenceSeconds();
+        return Mathf.Clamp01(elapsed / reference);
+    }
+
+    private float GetMatchDurationReferenceSeconds()
+    {
+        SiegeGameManager manager = SiegeGameManager.Instance;
+        if (manager != null)
+        {
+            return Mathf.Max(1f, manager.TotalSecondsUntilCannonsFire);
+        }
+
+        return Mathf.Max(1f, matchDurationReferenceSeconds);
+    }
+
+    public void ResetForMatchStart()
+    {
+        matchStartTime = Time.time;
+        nextPlayerHarassmentRollTime = 0f;
+        nextPlayerTargetBindTime = 0f;
+        nextScanTime = 0f;
+        cachedRegimentTarget = null;
+        ScheduleNextPlayerHarassmentRoll();
     }
 
     private float GetMatchElapsedSeconds()
@@ -264,6 +289,7 @@ public class CastleArcherGuards : MonoBehaviour
             projectileSpeed,
             projectileArcHeight,
             playerHitLayers,
+            playerHazardHitRadius,
             enablePlayerShotOutline,
             playerShotOutlineColor,
             playerShotOutlineScale);

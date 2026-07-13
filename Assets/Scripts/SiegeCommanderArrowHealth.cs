@@ -35,6 +35,17 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
     [SerializeField] private bool drawHitVolumeGizmo = true;
     [SerializeField] private Color hitVolumeGizmoColor = new Color(1f, 0.2f, 0.2f, 0.85f);
     [SerializeField] private Color hitVolumeGizmoFillColor = new Color(1f, 0.2f, 0.2f, 0.12f);
+    [Tooltip("Draw a world-space circle on the ground at the hitbox X/Z for CAVE testing.")]
+    [SerializeField] private bool drawGroundHitboxRing = true;
+    [SerializeField] private Color groundHitboxRingColor = new Color(1f, 0.15f, 0.15f, 0.95f);
+    [SerializeField, Min(0.01f)] private float groundHitboxRingYOffset = 0.05f;
+    [SerializeField, Min(8)] private int groundHitboxRingSegments = 48;
+    [SerializeField, Min(0.01f)] private float groundHitboxRingLineWidth = 0.08f;
+    [SerializeField] private LayerMask groundHitboxRingGroundLayers = ~0;
+    [Tooltip("Ray starts at this world Y and casts straight down to find floor height.")]
+    [SerializeField, Min(1f)] private float groundHitboxRingRayStartHeight = 256f;
+    [Tooltip("Used only when no ground collider is hit under the ring.")]
+    [SerializeField] private float groundHitboxRingFallbackGroundY = 0f;
 
     [Header("Screen Tint")]
     [Tooltip("Leave empty to create a standalone overlay canvas (recommended). Do not assign vGear head or user.")]
@@ -59,6 +70,8 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
     private readonly HashSet<Transform> registeredHitRoots = new HashSet<Transform>();
     private Transform trackedHeadTransform;
     private SphereCollider trackedHeadHitCollider;
+    private LineRenderer groundHitboxRing;
+    private GameObject groundHitboxRingObject;
 
     public int HitCount { get; private set; }
     public int MaxHits => maxHits;
@@ -89,6 +102,7 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
     private void LateUpdate()
     {
         SyncTrackedHeadHitVolume();
+        UpdateGroundHitboxRing();
     }
 
     private void SyncTrackedHeadHitVolume()
@@ -250,6 +264,171 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
         Gizmos.DrawWireSphere(center, radius);
     }
 
+    private void UpdateGroundHitboxRing()
+    {
+        if (!Application.isPlaying)
+        {
+            return;
+        }
+
+        if (!drawGroundHitboxRing)
+        {
+            DestroyGroundHitboxRing();
+            return;
+        }
+
+        EnsureGroundHitboxRing();
+        if (groundHitboxRing == null)
+        {
+            return;
+        }
+
+        if (!TryGetActiveHitVolume(out Vector3 center, out float radius))
+        {
+            center = transform.position;
+            radius = headHitVolumeRadius;
+        }
+
+        float hitX = center.x;
+        float hitZ = center.z;
+        int segments = Mathf.Max(8, groundHitboxRingSegments);
+        if (groundHitboxRing.positionCount != segments)
+        {
+            groundHitboxRing.positionCount = segments;
+        }
+
+        for (int i = 0; i < segments; i++)
+        {
+            float angle = (i / (float)segments) * Mathf.PI * 2f;
+            float x = hitX + Mathf.Cos(angle) * radius;
+            float z = hitZ + Mathf.Sin(angle) * radius;
+            float y = SampleGroundY(x, z);
+            groundHitboxRing.SetPosition(i, new Vector3(x, y, z));
+        }
+    }
+
+    private void EnsureGroundHitboxRing()
+    {
+        if (groundHitboxRing != null)
+        {
+            return;
+        }
+
+        groundHitboxRingObject = new GameObject("CommanderHitboxGroundRing");
+        groundHitboxRingObject.hideFlags = HideFlags.DontSave;
+        groundHitboxRing = groundHitboxRingObject.AddComponent<LineRenderer>();
+        groundHitboxRing.useWorldSpace = true;
+        groundHitboxRing.loop = true;
+        groundHitboxRing.positionCount = Mathf.Max(8, groundHitboxRingSegments);
+        groundHitboxRing.widthMultiplier = groundHitboxRingLineWidth;
+        groundHitboxRing.numCapVertices = 4;
+        groundHitboxRing.numCornerVertices = 4;
+        groundHitboxRing.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+        groundHitboxRing.receiveShadows = false;
+        groundHitboxRing.material = new Material(Shader.Find("Sprites/Default"));
+        groundHitboxRing.startColor = groundHitboxRingColor;
+        groundHitboxRing.endColor = groundHitboxRingColor;
+    }
+
+    private float SampleGroundY(float worldX, float worldZ)
+    {
+        Vector3 origin = new Vector3(worldX, groundHitboxRingRayStartHeight, worldZ);
+        RaycastHit[] hits = Physics.RaycastAll(
+            origin,
+            Vector3.down,
+            groundHitboxRingRayStartHeight + 64f,
+            groundHitboxRingGroundLayers,
+            QueryTriggerInteraction.Ignore);
+
+        if (hits == null || hits.Length == 0)
+        {
+            return groundHitboxRingFallbackGroundY + groundHitboxRingYOffset;
+        }
+
+        System.Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
+        for (int i = 0; i < hits.Length; i++)
+        {
+            Collider collider = hits[i].collider;
+            if (ShouldIgnoreGroundProbeCollider(collider))
+            {
+                continue;
+            }
+
+            return hits[i].point.y + groundHitboxRingYOffset;
+        }
+
+        return groundHitboxRingFallbackGroundY + groundHitboxRingYOffset;
+    }
+
+    private bool ShouldIgnoreGroundProbeCollider(Collider collider)
+    {
+        if (collider == null)
+        {
+            return true;
+        }
+
+        if (IsRegisteredHitCollider(collider))
+        {
+            return true;
+        }
+
+        if (trackedHeadHitCollider != null && collider == trackedHeadHitCollider)
+        {
+            return true;
+        }
+
+        if (groundHitboxRingObject != null
+            && (collider.gameObject == groundHitboxRingObject
+                || collider.transform.IsChildOf(groundHitboxRingObject.transform)))
+        {
+            return true;
+        }
+
+        Transform playerTransform = SiegePlayEnvironment.ResolvePlayerTransform();
+        if (playerTransform != null && collider.transform.IsChildOf(playerTransform))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private void DestroyGroundHitboxRing()
+    {
+        if (groundHitboxRingObject == null)
+        {
+            groundHitboxRing = null;
+            return;
+        }
+
+        if (Application.isPlaying)
+        {
+            Destroy(groundHitboxRingObject);
+        }
+        else
+        {
+            DestroyImmediate(groundHitboxRingObject);
+        }
+
+        groundHitboxRingObject = null;
+        groundHitboxRing = null;
+    }
+
+    public void ResetForMatchStart()
+    {
+        if (tintCoroutine != null)
+        {
+            StopCoroutine(tintCoroutine);
+            tintCoroutine = null;
+        }
+
+        HitCount = 0;
+        isDefeated = false;
+        invulnerableUntil = 0f;
+        ClearDamageTint();
+        RefreshCommanderHpUi();
+    }
+
     private void RefreshCommanderHpUi()
     {
         if (SiegeMatchUi.Instance != null)
@@ -359,6 +538,8 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
 
     private void OnDestroy()
     {
+        DestroyGroundHitboxRing();
+
         if (Instance == this)
         {
             Instance = null;
