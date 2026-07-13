@@ -48,8 +48,9 @@ public class SiegeMatchUi : MonoBehaviour
     [SerializeField, Min(0f)] private float restartDelaySeconds = 2f;
 
     [Header("Messages")]
-    [SerializeField] private string difficultySelectPrompt = "Select Demo or Full version.";
+    [SerializeField] private string difficultySelectPrompt = "Select Demo, Full, or Dodge Arrows.";
     [SerializeField] private string openingStatus = "Defend the cannons.";
+    [SerializeField] private string dodgeArrowsOpeningStatus = "Dodge the arrows until your cannons are ready!";
     [SerializeField] private bool showOpeningStatusOnStart = true;
     [SerializeField, Min(0f)] private float openingStatusDuration = 3f;
     [SerializeField] private string commanderHpFormat = "{0}";
@@ -196,12 +197,12 @@ public class SiegeMatchUi : MonoBehaviour
         RefreshCommanderHpDisplay();
         RefreshCannonCountdown();
 
-        if (!showOpeningStatusOnStart || string.IsNullOrWhiteSpace(openingStatus))
+        if (!showOpeningStatusOnStart || string.IsNullOrWhiteSpace(GetActiveOpeningStatus()))
         {
             return;
         }
 
-        SetWorldLabelText(worldStatusLabel, openingStatus, false);
+        SetWorldLabelText(worldStatusLabel, GetActiveOpeningStatus(), false);
         if (openingStatusDuration > 0f)
         {
             if (openingStatusCoroutine != null)
@@ -794,6 +795,10 @@ public class SiegeMatchUi : MonoBehaviour
             "full",
             "fullversion",
             "demoversion",
+            "dodge",
+            "dodgearrows",
+            "arrowdodge",
+            "survive",
             "2wave",
             "3wave",
             "2waves",
@@ -879,6 +884,11 @@ public class SiegeMatchUi : MonoBehaviour
         {
             text.enabled = visible;
         }
+    }
+
+    private string GetActiveOpeningStatus()
+    {
+        return SiegeMatchSettings.IsDodgeArrowsMode ? dodgeArrowsOpeningStatus : openingStatus;
     }
 
     private void ApplyPlayingLayout()

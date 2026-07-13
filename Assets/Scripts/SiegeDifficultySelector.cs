@@ -2,7 +2,7 @@ using UnityEngine;
 using Votanic.vXR.vGear;
 
 /// <summary>
-/// Lets players pick Demo or Full mode with the wand (or mouse on desktop).
+/// Lets players pick Demo, Full, or Dodge Arrows mode with the wand (or mouse on desktop).
 /// </summary>
 [DefaultExecutionOrder(10)]
 public class SiegeDifficultySelector : MonoBehaviour

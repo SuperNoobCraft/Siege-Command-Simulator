@@ -49,6 +49,12 @@ public class SiegeGameManager : MonoBehaviour
     [Tooltip("Troop movement speed multiplier while playing Demo (Full always uses 100%).")]
     [SerializeField, Range(0.1f, 1f)] private float demoMoveSpeedScale = 0.6f;
 
+    [Header("Dodge Arrows Mode")]
+    [Tooltip("Survive this many seconds while dodging castle archers to win and trigger the cannon sequence.")]
+    [SerializeField, Min(1f)] private float dodgeArrowsSurvivalSeconds = 30f;
+    [Tooltip("Hide all troop regiments and skip enemy AI while playing Dodge Arrows.")]
+    [SerializeField] private bool hideTroopsInDodgeArrowsMode = true;
+
     [Header("Debug")]
     [SerializeField] private bool logMatchEvents = true;
 
@@ -92,10 +98,15 @@ public class SiegeGameManager : MonoBehaviour
     public int MaxWaves => SiegeMatchSettings.MaxWaves;
     public SiegeGameMode GameMode => SiegeMatchSettings.GameMode;
     public float DemoMoveSpeedScale => demoMoveSpeedScale;
+    public float DodgeArrowsSurvivalSeconds => dodgeArrowsSurvivalSeconds;
     public float SecondsUntilCannonsFire =>
-        Mathf.Max(0f, GetFinalWaveStartTimeSeconds() + secondsAfterFinalWaveUntilCannonsFire - MatchElapsedSeconds);
+        SiegeMatchSettings.IsDodgeArrowsMode
+            ? Mathf.Max(0f, dodgeArrowsSurvivalSeconds - MatchElapsedSeconds)
+            : Mathf.Max(0f, GetFinalWaveStartTimeSeconds() + secondsAfterFinalWaveUntilCannonsFire - MatchElapsedSeconds);
     public float TotalSecondsUntilCannonsFire =>
-        Mathf.Max(0f, GetFinalWaveStartTimeSeconds() + secondsAfterFinalWaveUntilCannonsFire);
+        SiegeMatchSettings.IsDodgeArrowsMode
+            ? Mathf.Max(1f, dodgeArrowsSurvivalSeconds)
+            : Mathf.Max(0f, GetFinalWaveStartTimeSeconds() + secondsAfterFinalWaveUntilCannonsFire);
     public SiegePlayEnvironmentMode PlayEnvironment => SiegePlayEnvironment.ActiveMode;
     public bool UsesDesktopInput => SiegePlayEnvironment.IsDesktopInput;
     public bool UsesTrackedXr => SiegePlayEnvironment.IsTrackedXr;
@@ -167,6 +178,13 @@ public class SiegeGameManager : MonoBehaviour
         BeginNewMatch();
         ResetCannonSites();
 
+        if (SiegeMatchSettings.IsDodgeArrowsMode)
+        {
+            ApplyDodgeArrowsModeSetup();
+        }
+
+        ResetCastleArchersForMatchStart();
+
         EnemyWaveController waveController = EnemyWaveController.Instance;
         if (waveController != null)
         {
@@ -175,12 +193,16 @@ public class SiegeGameManager : MonoBehaviour
 
         if (logMatchEvents)
         {
+            string modeDetails = SiegeMatchSettings.IsDodgeArrowsMode
+                ? "survive " + dodgeArrowsSurvivalSeconds.ToString("F0") + "s"
+                : SiegeMatchSettings.MaxWaves + " waves"
+                    + (SiegeMatchSettings.IsDemoMode
+                        ? ", move speed " + (SiegeMatchSettings.DemoMoveSpeedScale * 100f).ToString("F0") + "%"
+                        : string.Empty);
+
             Debug.Log(
                 "Siege match started (" + SiegeMatchSettings.GameMode + ", "
-                + SiegeMatchSettings.MaxWaves + " waves"
-                + (SiegeMatchSettings.IsDemoMode
-                    ? ", move speed " + (SiegeMatchSettings.DemoMoveSpeedScale * 100f).ToString("F0") + "%"
-                    : string.Empty)
+                + modeDetails
                 + "). Session " + playSessionId + ". Cannons fire in "
                 + TotalSecondsUntilCannonsFire.ToString("F0") + "s.",
                 this);
@@ -305,6 +327,11 @@ public class SiegeGameManager : MonoBehaviour
 
     private float GetFinalWaveStartTimeSeconds()
     {
+        if (SiegeMatchSettings.IsDodgeArrowsMode)
+        {
+            return 0f;
+        }
+
         EnemyWaveController waveController = EnemyWaveController.Instance;
         if (waveController != null)
         {
@@ -326,10 +353,44 @@ public class SiegeGameManager : MonoBehaviour
         }
     }
 
+    private void ResetCastleArchersForMatchStart()
+    {
+        CastleArcherGuards[] archers = FindObjectsOfType<CastleArcherGuards>(includeInactive: true);
+        for (int i = 0; i < archers.Length; i++)
+        {
+            if (archers[i] != null)
+            {
+                archers[i].ResetForMatchStart();
+            }
+        }
+    }
+
     private bool HasFinalWaveStarted()
     {
+        if (SiegeMatchSettings.IsDodgeArrowsMode)
+        {
+            return true;
+        }
+
         EnemyWaveController waveController = EnemyWaveController.Instance;
         return waveController == null || waveController.HasFinalWaveStarted;
+    }
+
+    private void ApplyDodgeArrowsModeSetup()
+    {
+        if (!hideTroopsInDodgeArrowsMode)
+        {
+            return;
+        }
+
+        TroopCombat[] troops = FindObjectsOfType<TroopCombat>(includeInactive: true);
+        for (int i = 0; i < troops.Length; i++)
+        {
+            if (troops[i] != null)
+            {
+                troops[i].gameObject.SetActive(false);
+            }
+        }
     }
 
     public void NotifyCommanderDefeated()
@@ -488,14 +549,7 @@ public class SiegeGameManager : MonoBehaviour
 
         ResetCannonSites();
 
-        CastleArcherGuards[] archers = FindObjectsOfType<CastleArcherGuards>(includeInactive: true);
-        for (int i = 0; i < archers.Length; i++)
-        {
-            if (archers[i] != null)
-            {
-                archers[i].ResetForMatchStart();
-            }
-        }
+        ResetCastleArchersForMatchStart();
 
         if (SiegeMatchUi.Instance != null)
         {
@@ -513,6 +567,11 @@ public class SiegeGameManager : MonoBehaviour
                 Destroy(projectiles[i].gameObject);
             }
         }
+    }
+
+    private void OnValidate()
+    {
+        dodgeArrowsSurvivalSeconds = Mathf.Max(1f, dodgeArrowsSurvivalSeconds);
     }
 
     private void PauseMatchIfNeeded()

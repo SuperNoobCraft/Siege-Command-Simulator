@@ -2,7 +2,7 @@ using TMPro;
 using UnityEngine;
 
 /// <summary>
-/// World-space Demo / Full mode button. Place a collider in the scene and wire a label.
+/// World-space Demo / Full / Dodge Arrows mode button. Place a collider in the scene and wire a label.
 /// </summary>
 [DisallowMultipleComponent]
 public class SiegeDifficultyOption : MonoBehaviour
@@ -14,10 +14,12 @@ public class SiegeDifficultyOption : MonoBehaviour
     [SerializeField] private Color highlightedColor = new Color(0.35f, 1f, 0.45f, 1f);
 
     public SiegeGameMode GameMode => gameMode;
-    public int WaveCount =>
-        gameMode == SiegeGameMode.Demo
-            ? SiegeMatchSettings.DemoWaveCount
-            : SiegeMatchSettings.FullWaveCount;
+    public int WaveCount => gameMode switch
+    {
+        SiegeGameMode.Demo => SiegeMatchSettings.DemoWaveCount,
+        SiegeGameMode.DodgeArrows => 0,
+        _ => SiegeMatchSettings.FullWaveCount
+    };
 
     public SiegeWorldUiLabel GetPresentationLabel()
     {

@@ -389,7 +389,7 @@ public class TroopCombat : MonoBehaviour
 
     private void Update()
     {
-        if (CurrentState == State.Dead)
+        if (CurrentState == State.Dead || !SiegeMatchSettings.HasTroopCombat)
         {
             return;
         }

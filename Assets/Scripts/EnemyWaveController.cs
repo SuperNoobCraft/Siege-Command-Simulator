@@ -179,6 +179,11 @@ public class EnemyWaveController : MonoBehaviour
             return;
         }
 
+        if (SiegeMatchSettings.IsDodgeArrowsMode)
+        {
+            return;
+        }
+
         if (manager == null)
         {
             if (Time.timeScale <= 0f)

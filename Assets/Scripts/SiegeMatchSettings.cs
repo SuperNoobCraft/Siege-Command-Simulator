@@ -6,7 +6,8 @@ using UnityEngine;
 public enum SiegeGameMode
 {
     Demo = 0,
-    Full = 1
+    Full = 1,
+    DodgeArrows = 2
 }
 
 public static class SiegeMatchSettings
@@ -22,13 +23,20 @@ public static class SiegeMatchSettings
     public static bool IsConfigured { get; private set; }
 
     public static bool IsDemoMode => GameMode == SiegeGameMode.Demo;
+    public static bool IsDodgeArrowsMode => GameMode == SiegeGameMode.DodgeArrows;
+    public static bool HasTroopCombat => !IsDodgeArrowsMode;
     public static float ActiveMoveSpeedScale => IsDemoMode ? DemoMoveSpeedScale : 1f;
 
     public static void Configure(SiegeGameMode gameMode, float demoMoveSpeedScale)
     {
         GameMode = gameMode;
         DemoMoveSpeedScale = Mathf.Clamp(demoMoveSpeedScale, 0.1f, 1f);
-        MaxWaves = gameMode == SiegeGameMode.Demo ? DemoWaveCount : FullWaveCount;
+        MaxWaves = gameMode switch
+        {
+            SiegeGameMode.Demo => DemoWaveCount,
+            SiegeGameMode.DodgeArrows => 0,
+            _ => FullWaveCount
+        };
         IsConfigured = true;
     }
 

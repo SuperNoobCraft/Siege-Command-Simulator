@@ -157,7 +157,8 @@ public class VotanicWandRtsCommander : MonoBehaviour
         SiegeGameManager manager = SiegeGameManager.Instance;
         if (manager != null
             && (manager.CurrentState == SiegeGameManager.MatchState.SelectingDifficulty
-                || !manager.IsPlaying))
+                || !manager.IsPlaying
+                || SiegeMatchSettings.IsDodgeArrowsMode))
         {
             if (SiegePlayEnvironment.IsTrackedXr)
             {

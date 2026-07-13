@@ -8,13 +8,12 @@ ModelImporter:
       type: UnityEngine:Material
       assembly: UnityEngine.CoreModule
       name: Ferro01_Mat
-    second: {fileID: 4919743509677022673, guid: b31bfe75ba0cc7643a0679ef2006a5fd,
-      type: 3}
+    second: {fileID: 2100000, guid: 1c2a26a21f06da442af2bac9de5da815, type: 2}
   - first:
       type: UnityEngine:Material
       assembly: UnityEngine.CoreModule
       name: Ferro03_Mat
-    second: {fileID: 2100000, guid: 0a72c6b03c9d902459d47c81be84c601, type: 2}
+    second: {fileID: 2100000, guid: 1c2a26a21f06da442af2bac9de5da815, type: 2}
   - first:
       type: UnityEngine:Material
       assembly: UnityEngine.CoreModule
@@ -34,7 +33,7 @@ ModelImporter:
       type: UnityEngine:Material
       assembly: UnityEngine.CoreModule
       name: PG_Mat07
-    second: {fileID: 2100000, guid: fcd610e860ce3854da974a1c3ef56957, type: 2}
+    second: {fileID: 2100000, guid: 1c2a26a21f06da442af2bac9de5da815, type: 2}
   - first:
       type: UnityEngine:Material
       assembly: UnityEngine.CoreModule
@@ -44,7 +43,7 @@ ModelImporter:
       type: UnityEngine:Material
       assembly: UnityEngine.CoreModule
       name: lambert1
-    second: {fileID: 2100000, guid: 4ff2efbdbf5f27c42828157e206ad2a5, type: 2}
+    second: {fileID: 2100000, guid: 1c2a26a21f06da442af2bac9de5da815, type: 2}
   materials:
     materialImportMode: 2
     materialName: 0

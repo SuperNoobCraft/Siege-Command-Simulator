@@ -53,7 +53,7 @@ public class SiegeCannonSite : MonoBehaviour
         }
 
         SiegeGameManager manager = SiegeGameManager.Instance;
-        if (manager == null || !manager.IsPlaying)
+        if (manager == null || !manager.IsPlaying || SiegeMatchSettings.IsDodgeArrowsMode)
         {
             return;
         }

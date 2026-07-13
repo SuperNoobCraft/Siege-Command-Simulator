@@ -181,6 +181,11 @@ public class EnemyRegimentAI : MonoBehaviour
 
     private void Update()
     {
+        if (SiegeMatchSettings.IsDodgeArrowsMode)
+        {
+            return;
+        }
+
         if (combat == null || combat.TroopFaction != TroopCombat.Faction.Enemy)
         {
             return;
