@@ -161,6 +161,6 @@ public class SiegePlayEnvironment : MonoBehaviour
             return;
         }
 
-        commanderHealth.RegisterHitRoot(headTransform);
+        commanderHealth.RegisterHitRoot(headTransform, includeChildColliders: false);
     }
 }

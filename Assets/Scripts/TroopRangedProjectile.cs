@@ -168,6 +168,17 @@ public class TroopRangedProjectile : MonoBehaviour
             return;
         }
 
+        SiegeCommanderArrowHealth commanderHealth = SiegeCommanderArrowHealth.Instance;
+        if (commanderHealth != null
+            && commanderHealth.UsesCylinderDodgeHitTest
+            && commanderHealth.TryEvaluateArrowSegmentHit(from, to, playerHazardHitRadius, out Vector3 hitPoint))
+        {
+            hasRegisteredHit = true;
+            commanderHealth.RegisterArrowHit(hitPoint);
+            Destroy(gameObject);
+            return;
+        }
+
         Vector3 delta = to - from;
         float distance = delta.magnitude;
         if (distance <= 0.0001f)
@@ -192,6 +203,17 @@ public class TroopRangedProjectile : MonoBehaviour
     {
         if (hasRegisteredHit)
         {
+            return;
+        }
+
+        SiegeCommanderArrowHealth commanderHealth = SiegeCommanderArrowHealth.Instance;
+        if (commanderHealth != null
+            && commanderHealth.UsesCylinderDodgeHitTest
+            && commanderHealth.TryEvaluateArrowProximityHit(position, playerHazardHitRadius, out Vector3 hitPoint))
+        {
+            hasRegisteredHit = true;
+            commanderHealth.RegisterArrowHit(hitPoint);
+            Destroy(gameObject);
             return;
         }
 
@@ -233,6 +255,12 @@ public class TroopRangedProjectile : MonoBehaviour
         }
 
         if (commanderHealth.IsDefeated)
+        {
+            return false;
+        }
+
+        if (commanderHealth.UsesCylinderDodgeHitTest
+            && !commanderHealth.TryEvaluateArrowProximityHit(transform.position, playerHazardHitRadius, out _))
         {
             return false;
         }

@@ -90,7 +90,7 @@ public class CastleArcherGuards : MonoBehaviour
 
         if (health != null)
         {
-            health.RegisterHitRoot(player);
+            health.RegisterHitRoot(player, includeChildColliders: false);
             return;
         }
 

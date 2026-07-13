@@ -27,6 +27,12 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
     [SerializeField] private bool autoCreateHeadHitVolume = false;
     [SerializeField] private bool autoRegisterChildColliders = true;
     [SerializeField, Min(0.05f)] private float headHitVolumeRadius = 0.22f;
+    [Tooltip("Use horizontal dodge distance (matches the red ground ring) instead of 3D physics on the whole rig.")]
+    [SerializeField] private bool useCylinderDodgeHitTest = true;
+    [Tooltip("How far below the tracked head the dodge cylinder extends (roughly down to the feet).")]
+    [SerializeField, Min(0.1f)] private float dodgeHitHeightBelowHead = 1.75f;
+    [Tooltip("Extra height above the tracked head that still counts as a hit.")]
+    [SerializeField, Min(0f)] private float dodgeHitHeightAboveHead = 0.35f;
     [Tooltip("Create and follow a sphere trigger on the tracked head/camera for arrow hits.")]
     [SerializeField] private bool useTrackedHeadHitVolume = true;
 
@@ -77,6 +83,7 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
     public int MaxHits => maxHits;
     public int HitsRemaining => Mathf.Max(0, maxHits - HitCount);
     public bool IsDefeated => isDefeated;
+    public bool UsesCylinderDodgeHitTest => useCylinderDodgeHitTest;
 
     private void Awake()
     {
@@ -122,7 +129,7 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
         {
             trackedHeadTransform = headTransform;
             trackedHeadHitCollider = null;
-            RegisterHitRoot(headTransform);
+            RegisterHitRoot(headTransform, includeChildColliders: false);
         }
 
         EnsureTrackedHeadHitCollider(headTransform);
@@ -444,7 +451,105 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
         }
     }
 
+    public bool TryEvaluateArrowProximityHit(Vector3 arrowPosition, float arrowRadius, out Vector3 hitPoint)
+    {
+        hitPoint = arrowPosition;
+
+        if (!useCylinderDodgeHitTest || isDefeated || Time.time < invulnerableUntil)
+        {
+            return false;
+        }
+
+        if (!TryGetDodgeCylinder(out Vector3 axisPoint, out float horizontalRadius, out float minY, out float maxY))
+        {
+            return false;
+        }
+
+        float combinedRadius = horizontalRadius + Mathf.Max(0f, arrowRadius);
+        Vector2 arrowXZ = new Vector2(arrowPosition.x, arrowPosition.z);
+        Vector2 axisXZ = new Vector2(axisPoint.x, axisPoint.z);
+        if ((arrowXZ - axisXZ).sqrMagnitude > combinedRadius * combinedRadius)
+        {
+            return false;
+        }
+
+        if (arrowPosition.y < minY || arrowPosition.y > maxY)
+        {
+            return false;
+        }
+
+        hitPoint = arrowPosition;
+        return true;
+    }
+
+    public bool TryEvaluateArrowSegmentHit(
+        Vector3 segmentStart,
+        Vector3 segmentEnd,
+        float arrowRadius,
+        out Vector3 hitPoint)
+    {
+        hitPoint = segmentEnd;
+
+        if (!useCylinderDodgeHitTest)
+        {
+            return false;
+        }
+
+        Vector3 delta = segmentEnd - segmentStart;
+        float distance = delta.magnitude;
+        if (distance <= 0.0001f)
+        {
+            return TryEvaluateArrowProximityHit(segmentEnd, arrowRadius, out hitPoint);
+        }
+
+        int steps = Mathf.Max(1, Mathf.CeilToInt(distance / 0.2f));
+        for (int i = 0; i <= steps; i++)
+        {
+            float t = i / (float)steps;
+            Vector3 sample = Vector3.Lerp(segmentStart, segmentEnd, t);
+            if (TryEvaluateArrowProximityHit(sample, arrowRadius, out hitPoint))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private bool TryGetDodgeCylinder(out Vector3 axisPoint, out float horizontalRadius, out float minY, out float maxY)
+    {
+        axisPoint = transform.position;
+        horizontalRadius = headHitVolumeRadius;
+        minY = axisPoint.y - dodgeHitHeightBelowHead;
+        maxY = axisPoint.y + dodgeHitHeightAboveHead;
+
+        Transform headTransform = ResolveTrackedHeadTransform();
+        if (headTransform != null)
+        {
+            axisPoint = headTransform.position;
+            minY = axisPoint.y - dodgeHitHeightBelowHead;
+            maxY = axisPoint.y + dodgeHitHeightAboveHead;
+            return true;
+        }
+
+        if (TryGetActiveHitVolume(out Vector3 center, out float radius))
+        {
+            axisPoint = center;
+            horizontalRadius = radius;
+            minY = axisPoint.y - dodgeHitHeightBelowHead;
+            maxY = axisPoint.y + dodgeHitHeightAboveHead;
+            return true;
+        }
+
+        return false;
+    }
+
     public void RegisterHitRoot(Transform root)
+    {
+        RegisterHitRoot(root, autoRegisterChildColliders);
+    }
+
+    public void RegisterHitRoot(Transform root, bool includeChildColliders)
     {
         if (root == null)
         {
@@ -452,7 +557,7 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
         }
 
         registeredHitRoots.Add(root);
-        if (!autoRegisterChildColliders)
+        if (!includeChildColliders)
         {
             return;
         }
@@ -484,11 +589,14 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
             return true;
         }
 
-        foreach (Transform root in registeredHitRoots)
+        if (!useCylinderDodgeHitTest)
         {
-            if (root != null && collider.transform.IsChildOf(root))
+            foreach (Transform root in registeredHitRoots)
             {
-                return true;
+                if (root != null && collider.transform.IsChildOf(root))
+                {
+                    return true;
+                }
             }
         }
 
@@ -527,7 +635,9 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
             return true;
         }
 
-        if (Instance != null && Instance.IsRegisteredHitCollider(collider))
+        if (Instance != null
+            && !Instance.UsesCylinderDodgeHitTest
+            && Instance.IsRegisteredHitCollider(collider))
         {
             health = Instance;
             return true;
