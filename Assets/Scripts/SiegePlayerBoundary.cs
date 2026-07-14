@@ -19,6 +19,8 @@ public class SiegePlayerBoundary : MonoBehaviour
 
     [Header("Response")]
     [SerializeField] private bool clampUserEveryFrame = false;
+    [Tooltip("When enabled, walking off the platform kills the commander (SiegeCommandTowerFallDeath) instead of clamping/respawning.")]
+    [SerializeField] private bool allowFallOffTowerDeath = true;
     [SerializeField] private bool onlyInTrackedXr = true;
     [Tooltip("Wait until Votanic user exists and this many seconds have passed before enforcing.")]
     [SerializeField, Min(0f)] private float enforcementDelaySeconds = 2f;
@@ -135,6 +137,16 @@ public class SiegePlayerBoundary : MonoBehaviour
 
     private bool ShouldEnforceBoundary()
     {
+        if (allowFallOffTowerDeath)
+        {
+            SiegeGameManager manager = SiegeGameManager.Instance;
+            if (manager != null && manager.IsPlaying)
+            {
+                // Let SiegeCommandTowerFallDeath handle leaving the tower during play.
+                return false;
+            }
+        }
+
         if (onlyInTrackedXr && !SiegePlayEnvironment.IsTrackedXr)
         {
             return false;
@@ -244,9 +256,10 @@ public class SiegePlayerBoundary : MonoBehaviour
 
     private static Transform ResolveUserTransform()
     {
-        if (Votanic.vXR.vGear.vGear.user != null)
+        Transform user = SiegePlayEnvironment.ResolveUserTransform();
+        if (user != null)
         {
-            return Votanic.vXR.vGear.vGear.user.transform;
+            return user;
         }
 
         return SiegePlayEnvironment.ResolvePlayerTransform();

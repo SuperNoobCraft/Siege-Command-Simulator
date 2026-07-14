@@ -296,6 +296,12 @@ public class SiegeGameManager : MonoBehaviour
 
         if (SecondsUntilCannonsFire <= 0f && HasFinalWaveStarted())
         {
+            SiegeCommanderArrowHealth commander = SiegeCommanderArrowHealth.Instance;
+            if (commander != null && commander.IsDefeated)
+            {
+                return;
+            }
+
             FireCannonsAndWin();
         }
     }
@@ -396,6 +402,11 @@ public class SiegeGameManager : MonoBehaviour
     public void NotifyCommanderDefeated()
     {
         TriggerDefeat("The commander was struck down by enemy arrows.");
+    }
+
+    public void NotifyCommanderFellFromTower()
+    {
+        TriggerDefeat("The commander fell from the command tower.");
     }
 
     public void NotifyCannonOccupied(SiegeCannonSite cannonSite)

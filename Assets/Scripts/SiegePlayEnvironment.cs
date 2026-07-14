@@ -25,8 +25,10 @@ public class SiegePlayEnvironment : MonoBehaviour
     [Tooltip("Auto reads the active Votanic config (ConfigCAVE.vxrc, ConfigPC.vxrc, ConfigHMD.vxrc, etc.). "
              + "Force Desktop PC for mouse testing in the editor. Force Cave/Hmd when testing tracked input.")]
     [SerializeField] private SiegePlayEnvironmentMode playEnvironment = SiegePlayEnvironmentMode.Auto;
-    [Tooltip("When in CAVE/HMD, register the Votanic head transform with SiegeCommanderArrowHealth for arrow hits.")]
+    [Tooltip("When in CAVE/HMD, register the Votanic player transform with SiegeCommanderArrowHealth for arrow hits.")]
     [SerializeField] private bool autoBindCommanderToVotanicHead = true;
+    [Tooltip("Fallback eye height when aiming from the CAVE user root because no head transform is available.")]
+    [SerializeField, Min(0.5f)] private float caveFallbackEyeHeight = 1.6f;
 
     private SiegePlayEnvironmentMode resolvedMode = SiegePlayEnvironmentMode.DesktopPc;
 
@@ -38,6 +40,7 @@ public class SiegePlayEnvironment : MonoBehaviour
     public static bool IsDesktopInput => ActiveMode == SiegePlayEnvironmentMode.DesktopPc;
     public static bool IsTrackedXr =>
         ActiveMode == SiegePlayEnvironmentMode.Cave || ActiveMode == SiegePlayEnvironmentMode.Hmd;
+    public static bool IsCaveMode => ActiveMode == SiegePlayEnvironmentMode.Cave;
 
     private void Awake()
     {
@@ -58,7 +61,63 @@ public class SiegePlayEnvironment : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// Transform used for player identity/tracking.
+    /// In CAVE this prefers <c>vGear.user</c> (room walking root). Head can sit at the spawn origin.
+    /// In HMD/desktop this prefers the tracked head / main camera.
+    /// </summary>
     public static Transform ResolvePlayerTransform()
+    {
+        if (IsCaveMode)
+        {
+            Transform user = ResolveUserTransform();
+            if (user != null)
+            {
+                return user;
+            }
+        }
+
+        Transform head = ResolveHeadTransform();
+        if (head != null)
+        {
+            return head;
+        }
+
+        return ResolveUserTransform();
+    }
+
+    /// <summary>
+    /// World aim/hit position for arrows. In CAVE, uses walking-user XZ with tracked-head Y
+    /// so projectiles lead the player across the room at eye height.
+    /// </summary>
+    public static Vector3 ResolvePlayerAimPosition()
+    {
+        Transform head = ResolveHeadTransform();
+        Transform user = ResolveUserTransform();
+
+        if (IsCaveMode && user != null)
+        {
+            float eyeY = head != null
+                ? head.position.y
+                : user.position.y + GetCaveFallbackEyeHeight();
+            return new Vector3(user.position.x, eyeY, user.position.z);
+        }
+
+        if (head != null)
+        {
+            return head.position;
+        }
+
+        if (user != null)
+        {
+            return user.position;
+        }
+
+        UnityEngine.Camera mainCamera = UnityEngine.Camera.main;
+        return mainCamera != null ? mainCamera.transform.position : Vector3.zero;
+    }
+
+    public static Transform ResolveHeadTransform()
     {
         if (Votanic.vXR.vGear.vGear.head != null)
         {
@@ -74,15 +133,36 @@ public class SiegePlayEnvironment : MonoBehaviour
         return mainCamera != null ? mainCamera.transform : null;
     }
 
+    public static Transform ResolveUserTransform()
+    {
+        if (Votanic.vXR.vGear.vGear.user != null)
+        {
+            return Votanic.vXR.vGear.vGear.user.transform;
+        }
+
+        if (Votanic.vXR.vCast.vCast.user != null)
+        {
+            return Votanic.vXR.vCast.vCast.user.transform;
+        }
+
+        return null;
+    }
+
     public static UnityEngine.Camera ResolveViewCamera()
     {
-        Transform playerTransform = ResolvePlayerTransform();
-        if (playerTransform != null)
+        Transform headTransform = ResolveHeadTransform();
+        if (headTransform != null)
         {
-            UnityEngine.Camera playerCamera = playerTransform.GetComponent<UnityEngine.Camera>();
-            if (playerCamera != null)
+            UnityEngine.Camera headCamera = headTransform.GetComponent<UnityEngine.Camera>();
+            if (headCamera != null)
             {
-                return playerCamera;
+                return headCamera;
+            }
+
+            UnityEngine.Camera childCamera = headTransform.GetComponentInChildren<UnityEngine.Camera>();
+            if (childCamera != null)
+            {
+                return childCamera;
             }
         }
 
@@ -92,6 +172,11 @@ public class SiegePlayEnvironment : MonoBehaviour
     public static string GetRestartPrompt(string desktopPrompt, string trackedPrompt)
     {
         return IsDesktopInput ? desktopPrompt : trackedPrompt;
+    }
+
+    private static float GetCaveFallbackEyeHeight()
+    {
+        return Instance != null ? Mathf.Max(0.5f, Instance.caveFallbackEyeHeight) : 1.6f;
     }
 
     private static SiegePlayEnvironmentMode ResolveMode(SiegePlayEnvironmentMode mode)
@@ -144,8 +229,8 @@ public class SiegePlayEnvironment : MonoBehaviour
 
     private static void TryBindCommanderHealthToVotanicHead()
     {
-        Transform headTransform = ResolvePlayerTransform();
-        if (headTransform == null)
+        Transform playerTransform = ResolvePlayerTransform();
+        if (playerTransform == null)
         {
             return;
         }
@@ -161,6 +246,6 @@ public class SiegePlayEnvironment : MonoBehaviour
             return;
         }
 
-        commanderHealth.RegisterHitRoot(headTransform, includeChildColliders: false);
+        commanderHealth.RegisterHitRoot(playerTransform, includeChildColliders: false);
     }
 }

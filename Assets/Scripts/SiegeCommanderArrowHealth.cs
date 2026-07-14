@@ -85,6 +85,50 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
     public bool IsDefeated => isDefeated;
     public bool UsesCylinderDodgeHitTest => useCylinderDodgeHitTest;
 
+    /// <summary>
+    /// World-space point arrows and other systems should track — the live hurtbox,
+    /// not a separately resolved head/user transform (those can diverge in CAVE).
+    /// </summary>
+    public bool TryGetHurtboxAimPoint(out Vector3 aimPoint)
+    {
+        if (trackedHeadHitCollider != null)
+        {
+            aimPoint = trackedHeadHitCollider.bounds.center;
+            return IsFinitePosition(aimPoint);
+        }
+
+        if (TryGetActiveHitVolume(out aimPoint, out _))
+        {
+            return IsFinitePosition(aimPoint);
+        }
+
+        Transform tracked = ResolveTrackedHeadTransform();
+        if (tracked != null)
+        {
+            aimPoint = tracked.position;
+            return IsFinitePosition(aimPoint);
+        }
+
+        aimPoint = transform.position;
+        return IsFinitePosition(aimPoint);
+    }
+
+    public Transform GetHurtboxTransform()
+    {
+        if (trackedHeadHitCollider != null)
+        {
+            return trackedHeadHitCollider.transform;
+        }
+
+        Collider primary = GetPrimaryHitCollider();
+        if (primary != null)
+        {
+            return primary.transform;
+        }
+
+        return ResolveTrackedHeadTransform();
+    }
+
     private void Awake()
     {
         if (Instance != null && Instance != this)
@@ -133,6 +177,8 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
         }
 
         EnsureTrackedHeadHitCollider(headTransform);
+        // Do not overwrite hurtbox world position — keep whatever tracking parent
+        // is making the live ring/hurtbox follow the player correctly.
     }
 
     private Transform ResolveTrackedHeadTransform()
@@ -256,13 +302,9 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
             radius = headHitVolumeRadius;
         }
 
-        if (Application.isPlaying)
+        if (Application.isPlaying && TryGetHurtboxAimPoint(out Vector3 hurtboxPoint))
         {
-            Transform headTransform = ResolveTrackedHeadTransform();
-            if (headTransform != null)
-            {
-                center = headTransform.position;
-            }
+            center = hurtboxPoint;
         }
 
         Gizmos.color = hitVolumeGizmoFillColor;
@@ -294,6 +336,11 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
         {
             center = transform.position;
             radius = headHitVolumeRadius;
+        }
+
+        if (TryGetHurtboxAimPoint(out Vector3 hurtboxPoint))
+        {
+            center = hurtboxPoint;
         }
 
         float hitX = center.x;
@@ -523,6 +570,19 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
         minY = axisPoint.y - dodgeHitHeightBelowHead;
         maxY = axisPoint.y + dodgeHitHeightAboveHead;
 
+        if (TryGetHurtboxAimPoint(out Vector3 hurtboxPoint))
+        {
+            axisPoint = hurtboxPoint;
+            if (TryGetActiveHitVolume(out _, out float hurtboxRadius))
+            {
+                horizontalRadius = hurtboxRadius;
+            }
+
+            minY = axisPoint.y - dodgeHitHeightBelowHead;
+            maxY = axisPoint.y + dodgeHitHeightAboveHead;
+            return true;
+        }
+
         Transform headTransform = ResolveTrackedHeadTransform();
         if (headTransform != null)
         {
@@ -532,16 +592,14 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
             return true;
         }
 
-        if (TryGetActiveHitVolume(out Vector3 center, out float radius))
-        {
-            axisPoint = center;
-            horizontalRadius = radius;
-            minY = axisPoint.y - dodgeHitHeightBelowHead;
-            maxY = axisPoint.y + dodgeHitHeightAboveHead;
-            return true;
-        }
-
         return false;
+    }
+
+    private static bool IsFinitePosition(Vector3 position)
+    {
+        return float.IsFinite(position.x)
+            && float.IsFinite(position.y)
+            && float.IsFinite(position.z);
     }
 
     public void RegisterHitRoot(Transform root)
@@ -712,6 +770,41 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
         if (gameManager != null)
         {
             gameManager.NotifyCommanderDefeated();
+        }
+    }
+
+    /// <summary>
+    /// Fatal fall start: marks the commander defeated so arrows stop, but no red overlay yet.
+    /// </summary>
+    public void BeginFatalFallPresentation()
+    {
+        if (isDefeated)
+        {
+            return;
+        }
+
+        isDefeated = true;
+        onGameOver?.Invoke();
+        RefreshCommanderHpUi();
+    }
+
+    /// <summary>
+    /// Called when the fall reaches the ground — bloody overlay + fallen VO, then match defeat.
+    /// </summary>
+    public void CompleteFatalFallDefeat()
+    {
+        PlayHitTintFlash(maxHits, stayVisible: true);
+
+        SiegeAudioManager audioManager = SiegeAudioManager.Instance;
+        if (audioManager != null)
+        {
+            audioManager.PlayCommanderFallen();
+        }
+
+        SiegeGameManager gameManager = SiegeGameManager.Instance;
+        if (gameManager != null)
+        {
+            gameManager.NotifyCommanderFellFromTower();
         }
     }
 

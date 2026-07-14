@@ -57,6 +57,7 @@ public class SiegeMatchUi : MonoBehaviour
     [SerializeField] private string wave3CountdownFormat = "Cannons ready in {0:0}s";
     [SerializeField] private string victoryMessage = "The walls have fallen. Victory!";
     [SerializeField] private string arrowDefeatMessage = "The commander has fallen.";
+    [SerializeField] private string fallDefeatMessage = "The commander fell from the tower.";
     [SerializeField] private string cannonDefeatMessage = "The cannons were overrun.";
     [SerializeField] private string restartPrompt = "Click anywhere to restart.";
     [SerializeField] private string trackedRestartPrompt = "Press any wand button to restart.";
@@ -974,6 +975,12 @@ public class SiegeMatchUi : MonoBehaviour
         if (string.IsNullOrWhiteSpace(reason))
         {
             return "Defeat.";
+        }
+
+        if (reason.IndexOf("fell", System.StringComparison.OrdinalIgnoreCase) >= 0
+            || reason.IndexOf("tower", System.StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            return fallDefeatMessage;
         }
 
         if (reason.IndexOf("arrow", System.StringComparison.OrdinalIgnoreCase) >= 0)

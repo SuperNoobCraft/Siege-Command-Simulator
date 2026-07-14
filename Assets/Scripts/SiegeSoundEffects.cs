@@ -30,6 +30,15 @@ public class SiegeSoundEffects : MonoBehaviour
         maxDistance = 18f
     };
 
+    [Tooltip("Enemy castle archers firing at the commander. Keep loud/long-range so it carries across the battlefield.")]
+    [SerializeField] private SiegeSpatialSoundSettings arrowShoot = new SiegeSpatialSoundSettings
+    {
+        volume = 2.2f,
+        minDistance = 8f,
+        maxDistance = 140f,
+        spatialBlend = 0.75f
+    };
+
     [SerializeField] private SiegeSpatialSoundSettings cannonShot = new SiegeSpatialSoundSettings
     {
         volume = 1.1f,
@@ -101,6 +110,25 @@ public class SiegeSoundEffects : MonoBehaviour
     public void PlayArrowImpact(Vector3 position)
     {
         PlayAtPosition(arrowImpact, position);
+    }
+
+    public void PlayArrowShoot(Vector3 position)
+    {
+        SiegeSpatialSoundSettings settings = arrowShoot;
+        if (settings.clip == null && arrowImpact.clip != null)
+        {
+            // Fallback until a dedicated shoot clip is assigned in the Inspector.
+            settings = new SiegeSpatialSoundSettings
+            {
+                clip = arrowImpact.clip,
+                volume = Mathf.Max(1.6f, arrowShoot.volume),
+                minDistance = arrowShoot.minDistance,
+                maxDistance = arrowShoot.maxDistance,
+                spatialBlend = arrowShoot.spatialBlend
+            };
+        }
+
+        PlayAtPosition(settings, position);
     }
 
     public void PlayCannonShot(Vector3 position)

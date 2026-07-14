@@ -444,7 +444,8 @@ public class CastleArcherGuards : MonoBehaviour
         }
 
         Vector2 spreadXZ = Random.insideUnitCircle * GetActivePlayerShotSpreadRadius();
-        Vector3 aimPoint = player.position + new Vector3(spreadXZ.x, 0f, spreadXZ.y);
+        Vector3 aimOrigin = ResolvePlayerAimOrigin(player);
+        Vector3 aimPoint = aimOrigin + new Vector3(spreadXZ.x, 0f, spreadXZ.y);
 
         Vector3 launchPoint = archer.Transform.position;
         launchPoint.y += GetProjectileLaunchHeight();
@@ -474,6 +475,12 @@ public class CastleArcherGuards : MonoBehaviour
             enablePlayerShotOutline,
             playerShotOutlineColor,
             playerShotOutlineScale);
+
+        SiegeSoundEffects soundEffects = SiegeSoundEffects.Instance;
+        if (soundEffects != null)
+        {
+            soundEffects.PlayArrowShoot(launchPoint);
+        }
     }
 
     private void CacheArcherSlots()
@@ -680,6 +687,33 @@ public class CastleArcherGuards : MonoBehaviour
         }
 
         return SiegePlayEnvironment.ResolvePlayerTransform();
+    }
+
+    private Vector3 ResolvePlayerAimOrigin(Transform player)
+    {
+        SiegeCommanderArrowHealth health = SiegeCommanderArrowHealth.Instance;
+        if (health != null && health.TryGetHurtboxAimPoint(out Vector3 hurtboxPoint))
+        {
+            return hurtboxPoint;
+        }
+
+        Transform hurtbox = health != null ? health.GetHurtboxTransform() : null;
+        if (hurtbox != null)
+        {
+            return hurtbox.position;
+        }
+
+        if (playerTarget != null)
+        {
+            return playerTarget.position;
+        }
+
+        if (player != null)
+        {
+            return player.position;
+        }
+
+        return SiegePlayEnvironment.ResolvePlayerAimPosition();
     }
 
     private static void FaceArcherToward(Transform archerSlot, Vector3 targetPosition)

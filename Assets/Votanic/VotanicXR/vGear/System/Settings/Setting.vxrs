@@ -38,7 +38,7 @@
         },
         "Frame": {
             "StartPosition": [
-                175.41160583496095,
+                174.41160583496095,
                 12.812012672424317,
                 -78.75999450683594
             ],
@@ -4116,88 +4116,6 @@
                                 "Key": [
                                     "S",
                                     "W"
-                                ],
-                                "Reversed": false,
-                                "AxesDirection": "Any",
-                                "Device": "0"
-                            }
-                        ]
-                    }
-                ]
-            },
-            {
-                "Name": "Rotate",
-                "Value": [
-                    -1.0,
-                    1.0
-                ],
-                "Target": -1,
-                "Condition": [
-                    {
-                        "Type": "Traveler",
-                        "Index": 0,
-                        "Detail": []
-                    },
-                    {
-                        "Type": "Context",
-                        "Index": 0,
-                        "Detail": []
-                    }
-                ],
-                "Action": [
-                    {
-                        "Controller": 0,
-                        "Combo": false,
-                        "Count": 1,
-                        "Condition": [],
-                        "InputDetail": [
-                            {
-                                "Type": "Axis",
-                                "Key": [
-                                    "0"
-                                ],
-                                "Reversed": false,
-                                "AxesDirection": "Any",
-                                "Device": "0"
-                            }
-                        ]
-                    },
-                    {
-                        "Controller": 1,
-                        "Combo": false,
-                        "Count": 1,
-                        "Condition": [],
-                        "InputDetail": [
-                            {
-                                "Type": "Axis",
-                                "Key": [
-                                    "0"
-                                ],
-                                "Reversed": false,
-                                "AxesDirection": "Any",
-                                "Device": "0"
-                            }
-                        ]
-                    },
-                    {
-                        "Controller": -1,
-                        "Combo": false,
-                        "Count": 1,
-                        "Condition": [
-                            {
-                                "Type": "UserLevel",
-                                "Index": 0,
-                                "Detail": [
-                                    "3"
-                                ]
-                            }
-                        ],
-                        "InputDetail": [
-                            {
-                                "Type": "KeyboardPress",
-                                "Key": [
-                                    "A",
-                                    "D"
                                 ],
                                 "Reversed": false,
                                 "AxesDirection": "Any",
