@@ -178,6 +178,19 @@ public class SiegeGameManager : MonoBehaviour
         BeginNewMatch();
         ResetCannonSites();
 
+        if (SiegeCommanderArrowHealth.Instance != null)
+        {
+            SiegeCommanderArrowHealth.Instance.ResetForMatchStart();
+        }
+        else
+        {
+            SiegeCommanderArrowHealth commander = FindObjectOfType<SiegeCommanderArrowHealth>(true);
+            if (commander != null)
+            {
+                commander.ResetForMatchStart();
+            }
+        }
+
         if (SiegeMatchSettings.IsDodgeArrowsMode)
         {
             ApplyDodgeArrowsModeSetup();

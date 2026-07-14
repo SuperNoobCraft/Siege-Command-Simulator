@@ -68,9 +68,17 @@ public class CastleArcherGuards : MonoBehaviour
     [SerializeField] private DodgeArrowsProjectileProfile dodgeArrowsProjectile = new DodgeArrowsProjectileProfile
     {
         speed = 24f,
-        arcHeight = 2.5f,
+        minArcHeight = 1.75f,
+        maxArcHeight = 3.5f,
         launchHeight = 1.15f
     };
+
+    [Header("Stillness Accuracy")]
+    [Tooltip("While standing still, spread shrinks to zero over this many seconds (guaranteed hit). Applies in Dodge Arrows by default.")]
+    [SerializeField] private bool stillnessTightensSpreadInDodgeMode = true;
+    [SerializeField] private bool stillnessTightensSpreadInDemoFull = false;
+    [SerializeField, Min(0.01f)] private float stillnessMoveThreshold = 0.12f;
+    [SerializeField, Min(0.25f)] private float stillnessSecondsToGuaranteedHit = 3.5f;
 
     [Header("Projectile")]
     [SerializeField] private GameObject arrowPrefab;
@@ -88,6 +96,9 @@ public class CastleArcherGuards : MonoBehaviour
     private float nextPlayerTargetBindTime;
     private float matchStartTime;
     private TroopCombat cachedRegimentTarget;
+    private Vector3 lastStillnessSamplePosition;
+    private float stillnessSeconds;
+    private bool hasStillnessSample;
 
     private void Start()
     {
@@ -146,6 +157,8 @@ public class CastleArcherGuards : MonoBehaviour
         projectileLaunchHeight = Mathf.Max(0f, projectileLaunchHeight);
         ValidateHarassmentProfile(dodgeArrowsHarassment);
         dodgeArrowsProjectile.Validate();
+        stillnessMoveThreshold = Mathf.Max(0.01f, stillnessMoveThreshold);
+        stillnessSecondsToGuaranteedHit = Mathf.Max(0.25f, stillnessSecondsToGuaranteedHit);
     }
 
     private void Update()
@@ -156,6 +169,7 @@ public class CastleArcherGuards : MonoBehaviour
         }
 
         TryRefreshPlayerHitBinding();
+        UpdateStillnessTracking();
 
         if (IsDodgeArrowsMode())
         {
@@ -323,12 +337,16 @@ public class CastleArcherGuards : MonoBehaviour
 
     private float GetProjectileArcHeight()
     {
-        if (IsDodgeArrowsMode() && dodgeArrowsProjectile.arcHeight >= 0f && dodgeArrowsProjectile.useOverrides)
+        if (IsDodgeArrowsMode() && dodgeArrowsProjectile.useOverrides)
         {
-            return dodgeArrowsProjectile.arcHeight;
+            float minArc = Mathf.Max(0f, dodgeArrowsProjectile.minArcHeight);
+            float maxArc = Mathf.Max(minArc, dodgeArrowsProjectile.maxArcHeight);
+            return Random.Range(minArc, maxArc);
         }
 
-        return projectileArcHeight;
+        float baseArc = projectileArcHeight;
+        float variance = Mathf.Max(0f, projectileArcHeight * 0.35f);
+        return Mathf.Max(0f, Random.Range(baseArc - variance, baseArc + variance));
     }
 
     private float GetProjectileLaunchHeight()
@@ -343,12 +361,83 @@ public class CastleArcherGuards : MonoBehaviour
 
     private float GetActivePlayerShotSpreadRadius()
     {
-        if (IsDodgeArrowsMode())
+        float baseSpread = IsDodgeArrowsMode()
+            ? dodgeArrowsHarassment.shotSpreadRadius
+            : playerShotSpreadRadius;
+
+        if (!ShouldTightenSpreadFromStillness())
         {
-            return dodgeArrowsHarassment.shotSpreadRadius;
+            return baseSpread;
         }
 
-        return playerShotSpreadRadius;
+        float guaranteedProgress = Mathf.Clamp01(stillnessSeconds / Mathf.Max(0.25f, stillnessSecondsToGuaranteedHit));
+        return Mathf.Lerp(baseSpread, 0f, guaranteedProgress);
+    }
+
+    private bool ShouldTightenSpreadFromStillness()
+    {
+        if (IsDodgeArrowsMode())
+        {
+            return stillnessTightensSpreadInDodgeMode;
+        }
+
+        return stillnessTightensSpreadInDemoFull;
+    }
+
+    private void UpdateStillnessTracking()
+    {
+        if (!ShouldHarassCommander() || !ShouldTightenSpreadFromStillness())
+        {
+            stillnessSeconds = 0f;
+            hasStillnessSample = false;
+            return;
+        }
+
+        if (!TryResolveStillnessSamplePosition(out Vector3 samplePosition))
+        {
+            return;
+        }
+
+        if (!hasStillnessSample)
+        {
+            lastStillnessSamplePosition = samplePosition;
+            hasStillnessSample = true;
+            stillnessSeconds = 0f;
+            return;
+        }
+
+        float moveDistance = Vector3.Distance(
+            new Vector3(samplePosition.x, 0f, samplePosition.z),
+            new Vector3(lastStillnessSamplePosition.x, 0f, lastStillnessSamplePosition.z));
+
+        lastStillnessSamplePosition = samplePosition;
+
+        if (moveDistance >= stillnessMoveThreshold)
+        {
+            stillnessSeconds = 0f;
+            return;
+        }
+
+        stillnessSeconds += Time.deltaTime;
+    }
+
+    private bool TryResolveStillnessSamplePosition(out Vector3 position)
+    {
+        SiegeCommanderArrowHealth health = SiegeCommanderArrowHealth.Instance;
+        if (health != null && health.TryGetHurtboxAimPoint(out position))
+        {
+            return true;
+        }
+
+        Transform tracked = SiegePlayEnvironment.ResolvePlayerTransform();
+        if (tracked != null)
+        {
+            position = tracked.position;
+            return true;
+        }
+
+        position = Vector3.zero;
+        return false;
     }
 
     private PlayerHarassmentProfile regimentHarassmentProfile => new PlayerHarassmentProfile
@@ -388,6 +477,8 @@ public class CastleArcherGuards : MonoBehaviour
         nextPlayerTargetBindTime = 0f;
         nextScanTime = 0f;
         cachedRegimentTarget = null;
+        stillnessSeconds = 0f;
+        hasStillnessSample = false;
         CacheArcherSlots();
 
         if (IsDodgeArrowsMode())
@@ -810,13 +901,15 @@ public class CastleArcherGuards : MonoBehaviour
     {
         public bool useOverrides = true;
         [Min(0f)] public float speed;
-        [Min(0f)] public float arcHeight = 2.5f;
+        [Min(0f)] public float minArcHeight = 1.75f;
+        [Min(0f)] public float maxArcHeight = 3.5f;
         [Min(0f)] public float launchHeight = 1.15f;
 
         public void Validate()
         {
             speed = Mathf.Max(0f, speed);
-            arcHeight = Mathf.Max(0f, arcHeight);
+            minArcHeight = Mathf.Max(0f, minArcHeight);
+            maxArcHeight = Mathf.Max(minArcHeight, maxArcHeight);
             launchHeight = Mathf.Max(0f, launchHeight);
         }
     }

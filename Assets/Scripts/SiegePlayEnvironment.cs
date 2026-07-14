@@ -1,5 +1,7 @@
 using System;
 using UnityEngine;
+using Votanic.vXR.vCast;
+using Votanic.vXR.vGear;
 
 /// <summary>
 /// Play environment override. Attach to the same object as <see cref="SiegeGameManager"/>.
@@ -25,12 +27,14 @@ public class SiegePlayEnvironment : MonoBehaviour
     [Tooltip("Auto reads the active Votanic config (ConfigCAVE.vxrc, ConfigPC.vxrc, ConfigHMD.vxrc, etc.). "
              + "Force Desktop PC for mouse testing in the editor. Force Cave/Hmd when testing tracked input.")]
     [SerializeField] private SiegePlayEnvironmentMode playEnvironment = SiegePlayEnvironmentMode.Auto;
-    [Tooltip("When in CAVE/HMD, register the Votanic player transform with SiegeCommanderArrowHealth for arrow hits.")]
+    [Tooltip("When in CAVE/HMD, register the glasses/vision transform with SiegeCommanderArrowHealth for arrow hits.")]
     [SerializeField] private bool autoBindCommanderToVotanicHead = true;
-    [Tooltip("Fallback eye height when aiming from the CAVE user root because no head transform is available.")]
+    [Tooltip("Fallback eye height when no vision/sensor/head transform is available.")]
     [SerializeField, Min(0.5f)] private float caveFallbackEyeHeight = 1.6f;
+    [SerializeField] private bool logResolvedTrackingTransform = true;
 
     private SiegePlayEnvironmentMode resolvedMode = SiegePlayEnvironmentMode.DesktopPc;
+    private static string lastLoggedTrackingSource;
 
     public static event Action EnvironmentChanged;
 
@@ -62,87 +66,251 @@ public class SiegePlayEnvironment : MonoBehaviour
     }
 
     /// <summary>
-    /// Transform used for player identity/tracking.
-    /// In CAVE this prefers <c>vGear.user</c> (room walking root). Head can sit at the spawn origin.
-    /// In HMD/desktop this prefers the tracked head / main camera.
+    /// Transform used for commander body / hitbox tracking (physical glasses in CAVE).
+    /// Prefer <c>sensor.vision</c> — <c>vCast.head</c> is the synchronizer and often follows the wand.
     /// </summary>
     public static Transform ResolvePlayerTransform()
     {
-        if (IsCaveMode)
+        Transform vision = ResolveVisionTransform();
+        if (vision != null)
         {
-            Transform user = ResolveUserTransform();
-            if (user != null)
-            {
-                return user;
-            }
+            LogTrackingSourceOnce("vision/glasses", vision);
+            return vision;
         }
 
-        Transform head = ResolveHeadTransform();
+        Transform sensor = ResolveSensorTransform();
+        if (sensor != null)
+        {
+            LogTrackingSourceOnce("sensor", sensor);
+            return sensor;
+        }
+
+        // HMD/desktop fallbacks. Skip synchronizer head if it is the controller.
+        Transform head = ResolveHeadTransform(allowSynchronizerFallback: !IsCaveMode);
         if (head != null)
         {
+            LogTrackingSourceOnce("head", head);
             return head;
         }
 
-        return ResolveUserTransform();
+        Transform user = ResolveUserTransform();
+        if (user != null)
+        {
+            LogTrackingSourceOnce("user", user);
+            return user;
+        }
+
+        LogTrackingSourceOnce("none", null);
+        return null;
     }
 
     /// <summary>
-    /// World aim/hit position for arrows. In CAVE, uses walking-user XZ with tracked-head Y
-    /// so projectiles lead the player across the room at eye height.
+    /// World aim/hit position for arrows — glasses / vision pose when available.
     /// </summary>
     public static Vector3 ResolvePlayerAimPosition()
     {
-        Transform head = ResolveHeadTransform();
+        Transform tracking = ResolvePlayerTransform();
+        if (tracking != null)
+        {
+            return tracking.position;
+        }
+
         Transform user = ResolveUserTransform();
-
-        if (IsCaveMode && user != null)
-        {
-            float eyeY = head != null
-                ? head.position.y
-                : user.position.y + GetCaveFallbackEyeHeight();
-            return new Vector3(user.position.x, eyeY, user.position.z);
-        }
-
-        if (head != null)
-        {
-            return head.position;
-        }
-
         if (user != null)
         {
-            return user.position;
+            return user.position + Vector3.up * GetCaveFallbackEyeHeight();
         }
 
         UnityEngine.Camera mainCamera = UnityEngine.Camera.main;
         return mainCamera != null ? mainCamera.transform.position : Vector3.zero;
     }
 
+    /// <summary>
+    /// Glasses / eye tracking part of the Votanic sensor. This is what should drive the commander hurtbox in CAVE.
+    /// </summary>
+    public static Transform ResolveVisionTransform()
+    {
+        try
+        {
+            if (vGear.sensor != null && vGear.sensor.vision != null)
+            {
+                Transform vision = vGear.sensor.vision.transform;
+                if (IsUsableTrackingTransform(vision))
+                {
+                    return vision;
+                }
+            }
+        }
+        catch (Exception)
+        {
+            // Sensor may not be ready during bootstrap.
+        }
+
+        try
+        {
+            if (vCast.sensor != null && vCast.sensor.vision != null)
+            {
+                Transform vision = vCast.sensor.vision.transform;
+                if (IsUsableTrackingTransform(vision))
+                {
+                    return vision;
+                }
+            }
+        }
+        catch (Exception)
+        {
+            // Sensor may not be ready during bootstrap.
+        }
+
+        return null;
+    }
+
+    public static Transform ResolveSensorTransform()
+    {
+        try
+        {
+            if (vGear.sensor != null)
+            {
+                Transform sensor = vGear.sensor.transform;
+                if (IsUsableTrackingTransform(sensor))
+                {
+                    return sensor;
+                }
+            }
+        }
+        catch (Exception)
+        {
+        }
+
+        try
+        {
+            if (vCast.sensor != null)
+            {
+                Transform sensor = vCast.sensor.transform;
+                if (IsUsableTrackingTransform(sensor))
+                {
+                    return sensor;
+                }
+            }
+        }
+        catch (Exception)
+        {
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Legacy head / synchronizer. In CAVE this often tracks the controller wand — prefer vision instead.
+    /// </summary>
     public static Transform ResolveHeadTransform()
     {
-        if (Votanic.vXR.vGear.vGear.head != null)
+        return ResolveHeadTransform(allowSynchronizerFallback: true);
+    }
+
+    private static Transform ResolveHeadTransform(bool allowSynchronizerFallback)
+    {
+        Transform vision = ResolveVisionTransform();
+        if (vision != null)
         {
-            return Votanic.vXR.vGear.vGear.head.transform;
+            return vision;
         }
 
-        if (Votanic.vXR.vCast.vCast.head != null)
+        Transform sensor = ResolveSensorTransform();
+        if (sensor != null)
         {
-            return Votanic.vXR.vCast.vCast.head.transform;
+            return sensor;
         }
 
-        UnityEngine.Camera mainCamera = UnityEngine.Camera.main;
-        return mainCamera != null ? mainCamera.transform : null;
+        if (!allowSynchronizerFallback)
+        {
+            UnityEngine.Camera mainCamera = UnityEngine.Camera.main;
+            return mainCamera != null ? mainCamera.transform : null;
+        }
+
+        try
+        {
+            if (vGear.head != null)
+            {
+                Transform head = vGear.head.transform;
+                if (IsUsableTrackingTransform(head) && !IsControllerTransform(head))
+                {
+                    return head;
+                }
+            }
+        }
+        catch (Exception)
+        {
+        }
+
+        try
+        {
+            if (vCast.head != null)
+            {
+                Transform head = vCast.head.transform;
+                if (IsUsableTrackingTransform(head) && !IsControllerTransform(head))
+                {
+                    return head;
+                }
+            }
+        }
+        catch (Exception)
+        {
+        }
+
+        UnityEngine.Camera fallbackCamera = UnityEngine.Camera.main;
+        return fallbackCamera != null ? fallbackCamera.transform : null;
     }
 
     public static Transform ResolveUserTransform()
     {
-        if (Votanic.vXR.vGear.vGear.user != null)
+        try
         {
-            return Votanic.vXR.vGear.vGear.user.transform;
+            if (vGear.user != null)
+            {
+                return vGear.user.transform;
+            }
+        }
+        catch (Exception)
+        {
         }
 
-        if (Votanic.vXR.vCast.vCast.user != null)
+        try
         {
-            return Votanic.vXR.vCast.vCast.user.transform;
+            if (vCast.user != null)
+            {
+                return vCast.user.transform;
+            }
+        }
+        catch (Exception)
+        {
+        }
+
+        return null;
+    }
+
+    public static Transform ResolveControllerTransform()
+    {
+        try
+        {
+            if (vGear.controller != null)
+            {
+                return vGear.controller.transform;
+            }
+        }
+        catch (Exception)
+        {
+        }
+
+        try
+        {
+            if (vCast.controller != null)
+            {
+                return vCast.controller.transform;
+            }
+        }
+        catch (Exception)
+        {
         }
 
         return null;
@@ -150,6 +318,22 @@ public class SiegePlayEnvironment : MonoBehaviour
 
     public static UnityEngine.Camera ResolveViewCamera()
     {
+        Transform vision = ResolveVisionTransform();
+        if (vision != null)
+        {
+            UnityEngine.Camera visionCamera = vision.GetComponent<UnityEngine.Camera>();
+            if (visionCamera != null)
+            {
+                return visionCamera;
+            }
+
+            UnityEngine.Camera childCamera = vision.GetComponentInChildren<UnityEngine.Camera>();
+            if (childCamera != null)
+            {
+                return childCamera;
+            }
+        }
+
         Transform headTransform = ResolveHeadTransform();
         if (headTransform != null)
         {
@@ -174,6 +358,67 @@ public class SiegePlayEnvironment : MonoBehaviour
         return IsDesktopInput ? desktopPrompt : trackedPrompt;
     }
 
+    private static bool IsControllerTransform(Transform candidate)
+    {
+        if (candidate == null)
+        {
+            return false;
+        }
+
+        Transform controller = ResolveControllerTransform();
+        if (controller == null)
+        {
+            return false;
+        }
+
+        return candidate == controller
+            || candidate.IsChildOf(controller)
+            || controller.IsChildOf(candidate);
+    }
+
+    private static bool IsUsableTrackingTransform(Transform candidate)
+    {
+        return candidate != null && candidate.gameObject.activeInHierarchy;
+    }
+
+    private static void LogTrackingSourceOnce(string source, Transform transform)
+    {
+        if (Instance == null || !Instance.logResolvedTrackingTransform)
+        {
+            return;
+        }
+
+        string key = source + ":" + (transform != null ? transform.name : "null");
+        if (lastLoggedTrackingSource == key)
+        {
+            return;
+        }
+
+        lastLoggedTrackingSource = key;
+        Debug.Log(
+            "Siege tracking source: " + source
+            + (transform != null ? " ('" + GetHierarchyPath(transform) + "')" : " (null)"),
+            Instance);
+    }
+
+    private static string GetHierarchyPath(Transform transform)
+    {
+        if (transform == null)
+        {
+            return string.Empty;
+        }
+
+        string path = transform.name;
+        Transform parent = transform.parent;
+        while (parent != null)
+        {
+            path = parent.name + "/" + path;
+            parent = parent.parent;
+        }
+
+        return path;
+    }
+
     private static float GetCaveFallbackEyeHeight()
     {
         return Instance != null ? Mathf.Max(0.5f, Instance.caveFallbackEyeHeight) : 1.6f;
@@ -188,7 +433,7 @@ public class SiegePlayEnvironment : MonoBehaviour
 
         try
         {
-            switch (Votanic.vXR.vCast.vCast.environment)
+            switch (vCast.environment)
             {
                 case Votanic.vXR.vCast.Core.SystemType.CAVE:
                     return SiegePlayEnvironmentMode.Cave;

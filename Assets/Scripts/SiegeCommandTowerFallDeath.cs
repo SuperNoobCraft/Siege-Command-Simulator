@@ -122,7 +122,9 @@ public class SiegeCommandTowerFallDeath : MonoBehaviour
                 return true;
             }
 
-            Transform head = SiegePlayEnvironment.ResolveHeadTransform();
+            Transform head = SiegePlayEnvironment.ResolveVisionTransform()
+                ?? SiegePlayEnvironment.ResolveSensorTransform()
+                ?? SiegePlayEnvironment.ResolveHeadTransform();
             if (head != null)
             {
                 position = head.position;

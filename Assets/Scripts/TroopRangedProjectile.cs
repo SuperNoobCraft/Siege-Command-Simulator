@@ -419,12 +419,12 @@ public class TroopRangedProjectile : MonoBehaviour
     private void UpdateFacing(Vector3 from, Vector3 to)
     {
         Vector3 direction = to - from;
-        direction.y = 0f;
         if (!IsValidDirection(direction))
         {
             return;
         }
 
+        // Follow the full 3D arc so the tip points down on the descent.
         transform.rotation = Quaternion.LookRotation(direction.normalized, Vector3.up);
     }
 

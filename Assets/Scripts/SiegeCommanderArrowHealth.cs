@@ -23,6 +23,8 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
 
     [Header("Hits")]
     [SerializeField, Min(1)] private int maxHits = 3;
+    [Tooltip("Max arrow hits while playing Dodge Arrows mode. Demo/Full still use Max Hits.")]
+    [SerializeField, Min(1)] private int dodgeModeMaxHits = 1;
     [SerializeField, Min(0f)] private float hitInvulnerabilityDuration = 0.35f;
     [SerializeField] private bool autoCreateHeadHitVolume = false;
     [SerializeField] private bool autoRegisterChildColliders = true;
@@ -78,10 +80,11 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
     private SphereCollider trackedHeadHitCollider;
     private LineRenderer groundHitboxRing;
     private GameObject groundHitboxRingObject;
+    private int activeMaxHits;
 
     public int HitCount { get; private set; }
-    public int MaxHits => maxHits;
-    public int HitsRemaining => Mathf.Max(0, maxHits - HitCount);
+    public int MaxHits => Mathf.Max(1, activeMaxHits > 0 ? activeMaxHits : maxHits);
+    public int HitsRemaining => Mathf.Max(0, MaxHits - HitCount);
     public bool IsDefeated => isDefeated;
     public bool UsesCylinderDodgeHitTest => useCylinderDodgeHitTest;
 
@@ -137,6 +140,7 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
         }
 
         Instance = this;
+        ApplyActiveMaxHitsFromMatchMode();
         RegisterHitRoot(transform);
         EnsureCommanderHitVolumes();
         EnsureHeadHitVolume();
@@ -183,6 +187,19 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
 
     private Transform ResolveTrackedHeadTransform()
     {
+        // Prefer glasses/vision — vCast.head is often the wand synchronizer in CAVE.
+        Transform vision = SiegePlayEnvironment.ResolveVisionTransform();
+        if (vision != null)
+        {
+            return vision;
+        }
+
+        Transform sensor = SiegePlayEnvironment.ResolveSensorTransform();
+        if (sensor != null)
+        {
+            return sensor;
+        }
+
         Transform headTransform = SiegePlayEnvironment.ResolvePlayerTransform();
         if (headTransform != null)
         {
@@ -476,6 +493,7 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
             tintCoroutine = null;
         }
 
+        ApplyActiveMaxHitsFromMatchMode();
         HitCount = 0;
         isDefeated = false;
         invulnerableUntil = 0f;
@@ -483,18 +501,26 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
         RefreshCommanderHpUi();
     }
 
+    public void ApplyActiveMaxHitsFromMatchMode()
+    {
+        activeMaxHits = SiegeMatchSettings.IsDodgeArrowsMode
+            ? Mathf.Max(1, dodgeModeMaxHits)
+            : Mathf.Max(1, maxHits);
+        HitCount = Mathf.Min(HitCount, MaxHits);
+    }
+
     private void RefreshCommanderHpUi()
     {
         if (SiegeMatchUi.Instance != null)
         {
-            SiegeMatchUi.Instance.UpdateCommanderHp(HitsRemaining, maxHits);
+            SiegeMatchUi.Instance.UpdateCommanderHp(HitsRemaining, MaxHits);
             return;
         }
 
         SiegeMatchUi matchUi = FindObjectOfType<SiegeMatchUi>();
         if (matchUi != null)
         {
-            matchUi.UpdateCommanderHp(HitsRemaining, maxHits);
+            matchUi.UpdateCommanderHp(HitsRemaining, MaxHits);
         }
     }
 
@@ -721,12 +747,12 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
             return;
         }
 
-        HitCount = Mathf.Min(maxHits, HitCount + 1);
+        HitCount = Mathf.Min(MaxHits, HitCount + 1);
         invulnerableUntil = Time.time + hitInvulnerabilityDuration;
         onArrowHit?.Invoke();
         CommanderHitRegistered?.Invoke(HitCount, hitPoint);
 
-        if (HitCount >= maxHits)
+        if (HitCount >= MaxHits)
         {
             PlayHitTintFlash(HitCount, stayVisible: true);
             TriggerGameOver();
@@ -738,11 +764,11 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
         SiegeMatchUi matchUi = FindObjectOfType<SiegeMatchUi>();
         if (matchUi != null)
         {
-            matchUi.UpdateCommanderHp(HitsRemaining, maxHits);
+            matchUi.UpdateCommanderHp(HitsRemaining, MaxHits);
         }
 
         Debug.Log(
-            "Commander hit by enemy arrow (" + HitCount + "/" + maxHits + ", "
+            "Commander hit by enemy arrow (" + HitCount + "/" + MaxHits + ", "
             + HitsRemaining + " remaining) at "
             + hitPoint.ToString("F1"),
             this);
@@ -757,7 +783,7 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
 
         isDefeated = true;
 
-        Debug.Log("Commander defeated after " + maxHits + " arrow hits.", this);
+        Debug.Log("Commander defeated after " + MaxHits + " arrow hits.", this);
         onGameOver?.Invoke();
 
         SiegeAudioManager audioManager = SiegeAudioManager.Instance;
@@ -793,7 +819,7 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
     /// </summary>
     public void CompleteFatalFallDefeat()
     {
-        PlayHitTintFlash(maxHits, stayVisible: true);
+        PlayHitTintFlash(MaxHits, stayVisible: true);
 
         SiegeAudioManager audioManager = SiegeAudioManager.Instance;
         if (audioManager != null)
@@ -826,17 +852,19 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
 
     private float GetPeakTintAlpha(int hitNumber)
     {
+        int max = MaxHits;
+        if (max <= 1 || hitNumber >= max)
+        {
+            return fatalHitTintAlpha;
+        }
+
         if (hitNumber <= 1)
         {
             return firstHitTintAlpha;
         }
 
-        if (hitNumber == 2)
-        {
-            return secondHitTintAlpha;
-        }
-
-        return fatalHitTintAlpha;
+        float t = (hitNumber - 1f) / (max - 1f);
+        return Mathf.Lerp(firstHitTintAlpha, fatalHitTintAlpha, t);
     }
 
     private IEnumerator HitTintFlashRoutine(float peakAlpha, bool stayVisible)
