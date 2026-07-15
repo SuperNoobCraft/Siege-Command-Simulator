@@ -23,7 +23,7 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
 
     [Header("Hits")]
     [SerializeField, Min(1)] private int maxHits = 3;
-    [Tooltip("Max arrow hits while playing Dodge Arrows mode. Demo/Full still use Max Hits.")]
+    [Tooltip("Max arrow/cannon hits while playing Dodge Arrows or Cannon Duel. Demo/Full still use Max Hits.")]
     [SerializeField, Min(1)] private int dodgeModeMaxHits = 1;
     [SerializeField, Min(0f)] private float hitInvulnerabilityDuration = 0.35f;
     [SerializeField] private bool autoCreateHeadHitVolume = false;
@@ -503,7 +503,7 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
 
     public void ApplyActiveMaxHitsFromMatchMode()
     {
-        activeMaxHits = SiegeMatchSettings.IsDodgeArrowsMode
+        activeMaxHits = SiegeMatchSettings.IsArenaSurvivalMode
             ? Mathf.Max(1, dodgeModeMaxHits)
             : Mathf.Max(1, maxHits);
         HitCount = Mathf.Min(HitCount, MaxHits);

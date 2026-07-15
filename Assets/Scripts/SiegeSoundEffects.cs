@@ -141,6 +141,12 @@ public class SiegeSoundEffects : MonoBehaviour
         PlayAtOrigins(cannonShot, originParent);
     }
 
+    public void PlayCannonLand(Vector3 position)
+    {
+        SiegeSpatialSoundSettings settings = explosion.clip != null ? explosion : cannonShot;
+        PlayAtPosition(settings, position);
+    }
+
     public void PlayExplosion(Vector3 position)
     {
         PlayAtPosition(explosion, position);

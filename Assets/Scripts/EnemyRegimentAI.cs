@@ -26,6 +26,7 @@ public class EnemyRegimentAI : MonoBehaviour
     {
         WaitingInCamp,
         ExitingGate,
+        WaitingAtGateOutside,
         Advancing,
         Kiting,
         CampingRetreatRoute,
@@ -34,6 +35,8 @@ public class EnemyRegimentAI : MonoBehaviour
 
     [Header("Wave Assignment")]
     [SerializeField] private AssignedWave assignedWave = AssignedWave.Wave1;
+    [Tooltip("When enabled, this regiment can deploy in Siege PVP. Wave modes ignore this and use Assigned Wave.")]
+    [SerializeField] private bool includeInSiegePvp = false;
 
     [Header("Behavior")]
     [SerializeField] private AiMode aiMode = AiMode.Advanced;
@@ -99,13 +102,21 @@ public class EnemyRegimentAI : MonoBehaviour
     private Vector3 tacticalDestination;
     private readonly List<TroopCombat> visibleFriendlies = new List<TroopCombat>();
     private readonly List<TroopCombat> visibleEnemies = new List<TroopCombat>();
+    private bool siegePvpPlayerControlled;
+    private bool stagingToGateAfterRegroup;
 
     public AssignedWave WaveAssignment => assignedWave;
     public int AssignedWaveNumber => (int)assignedWave;
+    public bool IncludeInSiegePvp => includeInSiegePvp;
     public bool HasEnteredBattlefield => hasEnteredBattlefield;
     public bool IsWaitingInCamp => phase == AiPhase.WaitingInCamp;
     public bool IsExitingGate => phase == AiPhase.ExitingGate;
-    public bool IsDeployedOnField => hasEnteredBattlefield && phase != AiPhase.WaitingInCamp && phase != AiPhase.ExitingGate;
+    public bool IsWaitingAtGateOutside => phase == AiPhase.WaitingAtGateOutside;
+    public bool IsDeployedOnField => hasEnteredBattlefield
+        && phase != AiPhase.WaitingInCamp
+        && phase != AiPhase.ExitingGate
+        && phase != AiPhase.WaitingAtGateOutside;
+    public bool IsPlayerControlledInSiegePvp => siegePvpPlayerControlled;
 
     public void ResetForMatchStart()
     {
@@ -137,10 +148,40 @@ public class EnemyRegimentAI : MonoBehaviour
         phase = AiPhase.WaitingInCamp;
         visibleFriendlies.Clear();
         visibleEnemies.Clear();
+        siegePvpPlayerControlled = false;
+        stagingToGateAfterRegroup = false;
 
         if (motor != null)
         {
             motor.Stop();
+            motor.CanReceiveCommands = false;
+        }
+    }
+
+    public void ConfigureForSiegePvp()
+    {
+        siegePvpPlayerControlled = true;
+        stagingToGateAfterRegroup = false;
+        if (combat != null)
+        {
+            combat.SetHoldInCampUntilNextWave(false);
+        }
+
+        if (motor != null)
+        {
+            motor.SetIsCommandUnit(true);
+            // Enabled after staging at gate / on deploy finish; disabled while exiting gate.
+            motor.CanReceiveCommands = phase == AiPhase.WaitingAtGateOutside
+                || (hasEnteredBattlefield && phase != AiPhase.ExitingGate && phase != AiPhase.WaitingInCamp);
+        }
+    }
+
+    public void ClearSiegePvpControl()
+    {
+        siegePvpPlayerControlled = false;
+        stagingToGateAfterRegroup = false;
+        if (motor != null && !SiegeMatchSettings.IsSiegePvpMode)
+        {
             motor.CanReceiveCommands = false;
         }
     }
@@ -172,16 +213,18 @@ public class EnemyRegimentAI : MonoBehaviour
     private void OnEnable()
     {
         EnemyWaveController.Register(this);
+        TroopCombat.RegimentRegroupCompleted += HandleRegimentRegroupCompleted;
     }
 
     private void OnDisable()
     {
         EnemyWaveController.Unregister(this);
+        TroopCombat.RegimentRegroupCompleted -= HandleRegimentRegroupCompleted;
     }
 
     private void Update()
     {
-        if (SiegeMatchSettings.IsDodgeArrowsMode)
+        if (SiegeMatchSettings.IsArenaSurvivalMode)
         {
             return;
         }
@@ -193,6 +236,12 @@ public class EnemyRegimentAI : MonoBehaviour
 
         if (combat.CurrentState == TroopCombat.State.Dead)
         {
+            return;
+        }
+
+        if (siegePvpPlayerControlled || SiegeMatchSettings.IsSiegePvpMode)
+        {
+            UpdateSiegePvpPlayerControl();
             return;
         }
 
@@ -252,6 +301,76 @@ public class EnemyRegimentAI : MonoBehaviour
         UpdateObstacleRecovery();
         EnforceFriendlyCampBoundary();
         EnforceCannonObjectivePriority();
+    }
+
+    private void UpdateSiegePvpPlayerControl()
+    {
+        TrackRegroupTransitions();
+
+        if (combat.IsRetreating || combat.IsRegrouping)
+        {
+            return;
+        }
+
+        if (stagingToGateAfterRegroup || phase == AiPhase.ExitingGate)
+        {
+            UpdateGateExit();
+            return;
+        }
+
+        if (phase == AiPhase.WaitingAtGateOutside || phase == AiPhase.WaitingInCamp)
+        {
+            if (motor != null && motor.IsCommandUnit)
+            {
+                motor.CanReceiveCommands = true;
+            }
+
+            // Stay put until the city-defender player issues a path.
+            if (phase == AiPhase.WaitingAtGateOutside && motor != null && !motor.HasDestination)
+            {
+                motor.Stop();
+            }
+
+            return;
+        }
+
+        // After the player has issued orders, leave path following to the motor/combat.
+        if (motor != null && motor.IsCommandUnit)
+        {
+            motor.CanReceiveCommands = true;
+        }
+    }
+
+    private void HandleRegimentRegroupCompleted(TroopCombat regiment)
+    {
+        if (regiment != combat || !SiegeMatchSettings.IsSiegePvpMode)
+        {
+            return;
+        }
+
+        StageOutsideGateAfterRegroup();
+    }
+
+    /// <summary>
+    /// After regroup in PVP: leave camp, exit the gate, and wait at the outside waypoint for the city defender's orders.
+    /// </summary>
+    public void StageOutsideGateAfterRegroup()
+    {
+        if (combat == null || combat.CurrentState == TroopCombat.State.Dead)
+        {
+            return;
+        }
+
+        combat.SetHoldInCampUntilNextWave(false);
+        hasEnteredBattlefield = true;
+        stagingToGateAfterRegroup = true;
+        phase = AiPhase.ExitingGate;
+        if (motor != null)
+        {
+            motor.CanReceiveCommands = false;
+        }
+
+        BeginGateExit();
     }
 
     public bool ShouldEngageFriendlyForCombat(TroopCombat friendly)
@@ -379,12 +498,18 @@ public class EnemyRegimentAI : MonoBehaviour
 
         combat.SetHoldInCampUntilNextWave(false);
         hasEnteredBattlefield = true;
+        stagingToGateAfterRegroup = SiegeMatchSettings.IsSiegePvpMode;
         phase = AiPhase.ExitingGate;
         nextDecisionTime = 0f;
         nextDestinationRefreshTime = 0f;
         useAdvanceLateralSweep = Random.value < advanceLateralSweepChance;
         AssignRandomCannonObjective();
         CacheObjectiveDestination();
+        if (SiegeMatchSettings.IsSiegePvpMode && motor != null)
+        {
+            motor.CanReceiveCommands = false;
+        }
+
         BeginGateExit();
     }
 
@@ -515,8 +640,7 @@ public class EnemyRegimentAI : MonoBehaviour
 
         if (campManager.IsAtGateOutside(transform.position, TroopCombat.Faction.Enemy))
         {
-            phase = AiPhase.Advancing;
-            RefreshMovementDestination();
+            FinishGateExit();
             return;
         }
 
@@ -539,14 +663,13 @@ public class EnemyRegimentAI : MonoBehaviour
         RtsCampManager campManager = RtsCampManager.Instance;
         if (campManager == null)
         {
-            phase = AiPhase.Advancing;
+            FinishGateExit();
             return;
         }
 
         if (campManager.IsAtGateOutside(transform.position, TroopCombat.Faction.Enemy))
         {
-            phase = AiPhase.Advancing;
-            RefreshMovementDestination();
+            FinishGateExit();
             return;
         }
 
@@ -558,6 +681,28 @@ public class EnemyRegimentAI : MonoBehaviour
         {
             TryRecoverFromObstacle(campManager);
         }
+    }
+
+    private void FinishGateExit()
+    {
+        if (SiegeMatchSettings.IsSiegePvpMode || stagingToGateAfterRegroup)
+        {
+            phase = AiPhase.WaitingAtGateOutside;
+            stagingToGateAfterRegroup = false;
+            if (motor != null)
+            {
+                motor.Stop();
+                if (motor.IsCommandUnit)
+                {
+                    motor.CanReceiveCommands = true;
+                }
+            }
+
+            return;
+        }
+
+        phase = AiPhase.Advancing;
+        RefreshMovementDestination();
     }
 
     private void UpdateObstacleRecovery()

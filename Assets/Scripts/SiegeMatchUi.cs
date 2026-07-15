@@ -48,9 +48,11 @@ public class SiegeMatchUi : MonoBehaviour
     [SerializeField, Min(0f)] private float restartDelaySeconds = 2f;
 
     [Header("Messages")]
-    [SerializeField] private string difficultySelectPrompt = "Select Demo, Full, or Dodge Arrows.";
+    [SerializeField] private string difficultySelectPrompt = "Select Demo, Full, Dodge Arrows, or Siege PVP.";
     [SerializeField] private string openingStatus = "Defend the cannons.";
     [SerializeField] private string dodgeArrowsOpeningStatus = "Dodge the arrows until your cannons are ready!";
+    [SerializeField] private string siegePvpAttackerOpeningStatus = "Siege the walls — hold until the cannons are ready!";
+    [SerializeField] private string siegePvpDefenderOpeningStatus = "Stop the siege — break through and silence the cannons!";
     [SerializeField] private bool showOpeningStatusOnStart = true;
     [SerializeField, Min(0f)] private float openingStatusDuration = 3f;
     [SerializeField] private string commanderHpFormat = "{0}";
@@ -248,7 +250,22 @@ public class SiegeMatchUi : MonoBehaviour
 
         if (WasRestartClickPressed())
         {
-            manager.RestartMatch();
+            SiegePvpSession pvp = SiegePvpSession.Instance;
+            if (SiegeMatchSettings.IsSiegePvpMode || (pvp != null && pvp.BlocksModeSelect))
+            {
+                if (pvp != null)
+                {
+                    pvp.NotifyLocalReturnToMenu();
+                }
+                else
+                {
+                    manager.RestartMatch();
+                }
+            }
+            else
+            {
+                manager.RestartMatch();
+            }
         }
     }
 
@@ -408,6 +425,22 @@ public class SiegeMatchUi : MonoBehaviour
         CacheDifficultyOptions();
         ResolveDifficultyPresentationTargets();
         ApplyDifficultySelectLayout();
+    }
+
+    public void SetStatusMessage(string message)
+    {
+        SetWorldLabelText(worldStatusLabel, message ?? string.Empty, false);
+        SetLabelVisible(worldStatusLabel, true);
+    }
+
+    public void HideDifficultyOptionsForPvpLobby()
+    {
+        ResolvePresentationTargets();
+        SetDifficultyPresentationVisible(false);
+        SetGroupActive(difficultySelectGroup, false);
+        SetGroupActive(playingGroup, false);
+        SetGroupActive(endGameGroup, false);
+        HidePlayingHudTargets();
     }
 
     private void HandleMatchStateChanged(SiegeGameManager.MatchState state)
@@ -799,6 +832,8 @@ public class SiegeMatchUi : MonoBehaviour
             "dodge",
             "dodgearrows",
             "arrowdodge",
+            "siegepvp",
+            "pvp",
             "survive",
             "2wave",
             "3wave",
@@ -889,7 +924,23 @@ public class SiegeMatchUi : MonoBehaviour
 
     private string GetActiveOpeningStatus()
     {
-        return SiegeMatchSettings.IsDodgeArrowsMode ? dodgeArrowsOpeningStatus : openingStatus;
+        if (SiegeMatchSettings.IsDodgeArrowsMode)
+        {
+            return dodgeArrowsOpeningStatus;
+        }
+
+        if (SiegeMatchSettings.IsSiegePvpMode)
+        {
+            SiegePvpSession pvp = SiegePvpSession.Instance;
+            if (pvp != null && pvp.IsDefender)
+            {
+                return siegePvpDefenderOpeningStatus;
+            }
+
+            return siegePvpAttackerOpeningStatus;
+        }
+
+        return openingStatus;
     }
 
     private void ApplyPlayingLayout()

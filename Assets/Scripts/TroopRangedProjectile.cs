@@ -1,3 +1,4 @@
+using System;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -19,6 +20,10 @@ public class TroopRangedProjectile : MonoBehaviour
     private LayerMask playerHitLayers;
     private bool hasRegisteredHit;
     private bool isInitialized;
+    private bool hasReportedCompletion;
+
+    /// <summary>Args: world position, whether the projectile hit the commander.</summary>
+    public event Action<Vector3, bool> Completed;
 
     public static TroopRangedProjectile Launch(
         GameObject prefab,
@@ -128,7 +133,10 @@ public class TroopRangedProjectile : MonoBehaviour
 
         if (isPlayerHazard)
         {
-            TryDetectPlayerHit(previousPosition, currentPosition);
+            if (TryDetectPlayerHit(previousPosition, currentPosition))
+            {
+                return;
+            }
         }
 
         UpdateFacing(previousPosition, currentPosition);
@@ -140,8 +148,13 @@ public class TroopRangedProjectile : MonoBehaviour
             if (isPlayerHazard)
             {
                 TryDetectPlayerOverlap(currentPosition);
+                if (hasRegisteredHit)
+                {
+                    return;
+                }
             }
 
+            ReportCompleted(currentPosition, hitPlayer: false);
             Destroy(gameObject);
         }
     }
@@ -161,11 +174,11 @@ public class TroopRangedProjectile : MonoBehaviour
         TryRegisterPlayerHit(collision.collider);
     }
 
-    private void TryDetectPlayerHit(Vector3 from, Vector3 to)
+    private bool TryDetectPlayerHit(Vector3 from, Vector3 to)
     {
         if (hasRegisteredHit)
         {
-            return;
+            return true;
         }
 
         SiegeCommanderArrowHealth commanderHealth = SiegeCommanderArrowHealth.Instance;
@@ -175,15 +188,16 @@ public class TroopRangedProjectile : MonoBehaviour
         {
             hasRegisteredHit = true;
             commanderHealth.RegisterArrowHit(hitPoint);
+            ReportCompleted(hitPoint, hitPlayer: true);
             Destroy(gameObject);
-            return;
+            return true;
         }
 
         Vector3 delta = to - from;
         float distance = delta.magnitude;
         if (distance <= 0.0001f)
         {
-            return;
+            return false;
         }
 
         if (Physics.SphereCast(
@@ -195,8 +209,10 @@ public class TroopRangedProjectile : MonoBehaviour
                 playerHitLayers,
                 QueryTriggerInteraction.Collide))
         {
-            TryRegisterPlayerHit(hit.collider);
+            return TryRegisterPlayerHit(hit.collider);
         }
+
+        return false;
     }
 
     private void TryDetectPlayerOverlap(Vector3 position)
@@ -213,6 +229,7 @@ public class TroopRangedProjectile : MonoBehaviour
         {
             hasRegisteredHit = true;
             commanderHealth.RegisterArrowHit(hitPoint);
+            ReportCompleted(hitPoint, hitPlayer: true);
             Destroy(gameObject);
             return;
         }
@@ -267,8 +284,20 @@ public class TroopRangedProjectile : MonoBehaviour
 
         hasRegisteredHit = true;
         commanderHealth.RegisterArrowHit(transform.position);
+        ReportCompleted(transform.position, hitPlayer: true);
         Destroy(gameObject);
         return true;
+    }
+
+    private void ReportCompleted(Vector3 position, bool hitPlayer)
+    {
+        if (hasReportedCompletion)
+        {
+            return;
+        }
+
+        hasReportedCompletion = true;
+        Completed?.Invoke(position, hitPlayer);
     }
 
     private void ApplyPlayerHazardOutline(Color outlineColor, float outlineScale)

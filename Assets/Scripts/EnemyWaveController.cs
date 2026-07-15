@@ -179,7 +179,7 @@ public class EnemyWaveController : MonoBehaviour
             return;
         }
 
-        if (SiegeMatchSettings.IsDodgeArrowsMode)
+        if (SiegeMatchSettings.IsArenaSurvivalMode || SiegeMatchSettings.IsSiegePvpMode)
         {
             return;
         }
@@ -278,6 +278,48 @@ public class EnemyWaveController : MonoBehaviour
             Debug.Log(
                 "Enemy wave " + waveNumber + " deployed " + deployedCount + " regiment(s) at t="
                 + MatchElapsedSeconds.ToString("F1") + "s.",
+                this);
+        }
+    }
+
+    /// <summary>
+    /// Siege PVP: deploy every registered city-defender regiment once (no wave schedule).
+    /// </summary>
+    public void DeployAllForSiegePvp()
+    {
+        RefreshRegisteredRegiments();
+        int deployedCount = 0;
+        for (int i = 0; i < RegisteredRegiments.Count; i++)
+        {
+            EnemyRegimentAI regiment = RegisteredRegiments[i];
+            if (regiment == null || !regiment.isActiveAndEnabled)
+            {
+                continue;
+            }
+
+            if (!regiment.IncludeInSiegePvp)
+            {
+                continue;
+            }
+
+            if (regiment.HasEnteredBattlefield)
+            {
+                continue;
+            }
+
+            regiment.ConfigureForSiegePvp();
+            regiment.DeployFromCamp();
+            deployedCount++;
+        }
+
+        triggeredWaves.Add(wave1.waveNumber);
+        triggeredWaves.Add(wave2.waveNumber);
+        triggeredWaves.Add(wave3.waveNumber);
+
+        if (logWaveEvents)
+        {
+            Debug.Log(
+                "Siege PVP deployed " + deployedCount + " regiment(s) at match start.",
                 this);
         }
     }

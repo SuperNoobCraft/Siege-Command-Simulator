@@ -258,6 +258,16 @@ public class SiegeCommandTowerFallDeath : MonoBehaviour
             return false;
         }
 
+        // City defender stands off the command tower in Siege PVP — fall death is attacker-only.
+        if (SiegeMatchSettings.IsSiegePvpMode)
+        {
+            SiegePvpSession pvp = SiegePvpSession.Instance;
+            if (pvp != null && pvp.IsDefender)
+            {
+                return false;
+            }
+        }
+
         if (!onlyWhileMatchPlaying)
         {
             return true;

@@ -69,6 +69,11 @@ public class RtsUnitMotor : MonoBehaviour
 
     public bool IsCommandUnit => isCommandUnit;
     public bool CanReceiveCommands { get; set; } = true;
+
+    public void SetIsCommandUnit(bool value)
+    {
+        isCommandUnit = value;
+    }
     public float MoveSpeedMultiplier { get; set; } = 1f;
     public bool HasDestination => hasDestination;
     public bool HasActivePath => movementMode == MovementMode.Path && pathWaypoints.Count > 0;
@@ -137,6 +142,21 @@ public class RtsUnitMotor : MonoBehaviour
         IsBlockedBySolidObstacle = false;
         IsStuck = false;
         pathBlockedSinceTime = -1f;
+        pathMovementHalted = false;
+        ResetStuckTracking();
+    }
+
+    /// <summary>
+    /// Soft teleport used by Siege PVP network pose sync. Keeps an active path so remote
+    /// units continue toward the remaining waypoints after correcting drift.
+    /// </summary>
+    public void ApplyNetworkPose(Vector3 worldPosition, Quaternion worldRotation)
+    {
+        Vector3 flat = FlattenToGround(worldPosition);
+        flat.y = worldPosition.y;
+        transform.SetPositionAndRotation(flat, worldRotation);
+        IsBlockedBySolidObstacle = false;
+        IsStuck = false;
         pathMovementHalted = false;
         ResetStuckTracking();
     }

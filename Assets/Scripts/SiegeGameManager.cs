@@ -55,6 +55,12 @@ public class SiegeGameManager : MonoBehaviour
     [Tooltip("Hide all troop regiments and skip enemy AI while playing Dodge Arrows.")]
     [SerializeField] private bool hideTroopsInDodgeArrowsMode = true;
 
+    [Header("Siege PVP Mode")]
+    [Tooltip("Attacker (siege) wins by stalling this many seconds without losing a cannon.")]
+    [SerializeField, Min(30f)] private float siegePvpMatchDurationSeconds = 180f;
+    [Tooltip("Troop move speed multiplier for Siege PVP (1 = normal).")]
+    [SerializeField, Range(0.1f, 2f)] private float siegePvpMoveSpeedScale = 1f;
+
     [Header("Debug")]
     [SerializeField] private bool logMatchEvents = true;
 
@@ -99,14 +105,20 @@ public class SiegeGameManager : MonoBehaviour
     public SiegeGameMode GameMode => SiegeMatchSettings.GameMode;
     public float DemoMoveSpeedScale => demoMoveSpeedScale;
     public float DodgeArrowsSurvivalSeconds => dodgeArrowsSurvivalSeconds;
+    public float SiegePvpMatchDurationSeconds => siegePvpMatchDurationSeconds;
+    public float SiegePvpMoveSpeedScale => siegePvpMoveSpeedScale;
     public float SecondsUntilCannonsFire =>
         SiegeMatchSettings.IsDodgeArrowsMode
             ? Mathf.Max(0f, dodgeArrowsSurvivalSeconds - MatchElapsedSeconds)
-            : Mathf.Max(0f, GetFinalWaveStartTimeSeconds() + secondsAfterFinalWaveUntilCannonsFire - MatchElapsedSeconds);
+            : SiegeMatchSettings.IsSiegePvpMode
+                ? Mathf.Max(0f, SiegeMatchSettings.PvpMatchDurationSeconds - MatchElapsedSeconds)
+                : Mathf.Max(0f, GetFinalWaveStartTimeSeconds() + secondsAfterFinalWaveUntilCannonsFire - MatchElapsedSeconds);
     public float TotalSecondsUntilCannonsFire =>
         SiegeMatchSettings.IsDodgeArrowsMode
             ? Mathf.Max(1f, dodgeArrowsSurvivalSeconds)
-            : Mathf.Max(0f, GetFinalWaveStartTimeSeconds() + secondsAfterFinalWaveUntilCannonsFire);
+            : SiegeMatchSettings.IsSiegePvpMode
+                ? Mathf.Max(1f, SiegeMatchSettings.PvpMatchDurationSeconds)
+                : Mathf.Max(0f, GetFinalWaveStartTimeSeconds() + secondsAfterFinalWaveUntilCannonsFire);
     public SiegePlayEnvironmentMode PlayEnvironment => SiegePlayEnvironment.ActiveMode;
     public bool UsesDesktopInput => SiegePlayEnvironment.IsDesktopInput;
     public bool UsesTrackedXr => SiegePlayEnvironment.IsTrackedXr;
@@ -169,12 +181,20 @@ public class SiegeGameManager : MonoBehaviour
 
     public void ConfirmPlayMode(SiegeGameMode gameMode)
     {
+        ConfirmPlayMode(
+            gameMode,
+            siegePvpMatchDurationSeconds,
+            siegePvpMoveSpeedScale);
+    }
+
+    public void ConfirmPlayMode(SiegeGameMode gameMode, float pvpMatchDurationSeconds, float pvpMoveSpeedScale)
+    {
         if (currentState != MatchState.SelectingDifficulty)
         {
             return;
         }
 
-        SiegeMatchSettings.Configure(gameMode, demoMoveSpeedScale);
+        SiegeMatchSettings.Configure(gameMode, demoMoveSpeedScale, pvpMatchDurationSeconds, pvpMoveSpeedScale);
         BeginNewMatch();
         ResetCannonSites();
 
@@ -191,9 +211,9 @@ public class SiegeGameManager : MonoBehaviour
             }
         }
 
-        if (SiegeMatchSettings.IsDodgeArrowsMode)
+        if (SiegeMatchSettings.IsArenaSurvivalMode)
         {
-            ApplyDodgeArrowsModeSetup();
+            ApplyArenaSurvivalModeSetup();
         }
 
         ResetCastleArchersForMatchStart();
@@ -208,10 +228,13 @@ public class SiegeGameManager : MonoBehaviour
         {
             string modeDetails = SiegeMatchSettings.IsDodgeArrowsMode
                 ? "survive " + dodgeArrowsSurvivalSeconds.ToString("F0") + "s"
-                : SiegeMatchSettings.MaxWaves + " waves"
-                    + (SiegeMatchSettings.IsDemoMode
-                        ? ", move speed " + (SiegeMatchSettings.DemoMoveSpeedScale * 100f).ToString("F0") + "%"
-                        : string.Empty);
+                : SiegeMatchSettings.IsSiegePvpMode
+                    ? "siege PVP " + SiegeMatchSettings.PvpMatchDurationSeconds.ToString("F0") + "s"
+                        + ", move " + (SiegeMatchSettings.PvpMoveSpeedScale * 100f).ToString("F0") + "%"
+                    : SiegeMatchSettings.MaxWaves + " waves"
+                        + (SiegeMatchSettings.IsDemoMode
+                            ? ", move speed " + (SiegeMatchSettings.DemoMoveSpeedScale * 100f).ToString("F0") + "%"
+                            : string.Empty);
 
             Debug.Log(
                 "Siege match started (" + SiegeMatchSettings.GameMode + ", "
@@ -346,7 +369,7 @@ public class SiegeGameManager : MonoBehaviour
 
     private float GetFinalWaveStartTimeSeconds()
     {
-        if (SiegeMatchSettings.IsDodgeArrowsMode)
+        if (SiegeMatchSettings.IsArenaSurvivalMode)
         {
             return 0f;
         }
@@ -386,7 +409,7 @@ public class SiegeGameManager : MonoBehaviour
 
     private bool HasFinalWaveStarted()
     {
-        if (SiegeMatchSettings.IsDodgeArrowsMode)
+        if (SiegeMatchSettings.IsArenaSurvivalMode)
         {
             return true;
         }
@@ -395,7 +418,7 @@ public class SiegeGameManager : MonoBehaviour
         return waveController == null || waveController.HasFinalWaveStarted;
     }
 
-    private void ApplyDodgeArrowsModeSetup()
+    private void ApplyArenaSurvivalModeSetup()
     {
         if (!hideTroopsInDodgeArrowsMode)
         {
@@ -596,6 +619,8 @@ public class SiegeGameManager : MonoBehaviour
     private void OnValidate()
     {
         dodgeArrowsSurvivalSeconds = Mathf.Max(1f, dodgeArrowsSurvivalSeconds);
+        siegePvpMatchDurationSeconds = Mathf.Max(30f, siegePvpMatchDurationSeconds);
+        siegePvpMoveSpeedScale = Mathf.Clamp(siegePvpMoveSpeedScale, 0.1f, 2f);
     }
 
     private void PauseMatchIfNeeded()

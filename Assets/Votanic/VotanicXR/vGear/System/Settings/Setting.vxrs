@@ -7158,6 +7158,102 @@
                 "BuiltIn": [],
                 "Custom": []
             }
+        },
+        {
+            "Path": [
+                "Assets/Votanic/VotanicXR_Tutorial 2020/Tutorial07_Networking/Sample/MultiUserNetworking Sample.unity"
+            ],
+            "ApplyScene": false,
+            "ApplyDevice": false,
+            "ApplyCommand": false,
+            "Scene": {
+                "Attribute": {
+                    "Traveler": true,
+                    "Soul": false,
+                    "Debug": false,
+                    "Tracking": true,
+                    "Stereo": true,
+                    "Test3D": false
+                },
+                "Update": {
+                    "RefreshRate": 0.20000000298023225,
+                    "TargetFrameRate": 120
+                },
+                "Quality": {
+                    "ForceQuality": false,
+                    "Level": 0,
+                    "VSync": 0,
+                    "Rendering": {
+                        "LightCount": 1,
+                        "Anisotropic": "ForcedOn",
+                        "AntiAliasing": 8
+                    },
+                    "Shadows": {
+                        "Type": "Hard",
+                        "Resolution": "High",
+                        "Projection": "CloseFit",
+                        "Distance": 100.0,
+                        "NearPlaneOffset": 1.0,
+                        "Cascades": []
+                    }
+                },
+                "Frame": {
+                    "StartPosition": [
+                        0.0,
+                        0.0,
+                        0.0
+                    ],
+                    "StartRotation": [
+                        0.0,
+                        0.0,
+                        0.0
+                    ],
+                    "Transition": {
+                        "Method": "",
+                        "Parameter": "Velocity",
+                        "TransitionFactor": 1.0,
+                        "AccelerationFactor": 0.0,
+                        "DecelerationFactor": 0.0,
+                        "RotationRatio": 45.0,
+                        "FadeColor": [
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.0
+                        ],
+                        "FadedDuration": 0.10000000149011612,
+                        "UnscaledDeltaTime": false
+                    }
+                },
+                "User": []
+            },
+            "Device": {
+                "GeneralInput": {
+                    "DeadZone": 0.14000000059604646,
+                    "PressDetect": 0.699999988079071,
+                    "HoldingDuration": 1.0
+                },
+                "Buttons": {
+                    "GeneralButtons": [],
+                    "VRPNButtons": []
+                },
+                "Axes": {
+                    "GeneralAxes": [],
+                    "VRPNAxes": []
+                },
+                "Tracker": {
+                    "VRPNTracker": []
+                },
+                "Controller": [],
+                "Sensor": []
+            },
+            "Command": {
+                "ComboTimeLimit": 0.25,
+                "CountTimeLimit": 0.25,
+                "Separator": "=,_|",
+                "BuiltIn": [],
+                "Custom": []
+            }
         }
     ]
 }

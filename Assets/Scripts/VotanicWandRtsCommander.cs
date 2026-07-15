@@ -94,6 +94,15 @@ public class VotanicWandRtsCommander : MonoBehaviour
     private float nextVotanicWandRayRefreshTime;
     private Coroutine votanicWandRayInitCoroutine;
     private bool votanicWandRayConfigured;
+    private TroopCombat.Faction controllableFaction = TroopCombat.Faction.Friendly;
+
+    /// <summary>Fired after a successful local path command (used to sync PVP peers).</summary>
+    public event System.Action<RtsUnitMotor, IReadOnlyList<Vector3>> PathCommandIssued;
+
+    public void SetControllableFaction(TroopCombat.Faction faction)
+    {
+        controllableFaction = faction;
+    }
 
     private void Awake()
     {
@@ -158,7 +167,7 @@ public class VotanicWandRtsCommander : MonoBehaviour
         if (manager != null
             && (manager.CurrentState == SiegeGameManager.MatchState.SelectingDifficulty
                 || !manager.IsPlaying
-                || SiegeMatchSettings.IsDodgeArrowsMode))
+                || SiegeMatchSettings.IsArenaSurvivalMode))
         {
             if (SiegePlayEnvironment.IsTrackedXr)
             {
@@ -223,7 +232,7 @@ public class VotanicWandRtsCommander : MonoBehaviour
 
     private void BeginCommandMode(RtsUnitMotor unit)
     {
-        if (unit == null || !unit.CanReceiveCommands)
+        if (unit == null || !unit.CanReceiveCommands || !MatchesControllableFaction(unit))
         {
             return;
         }
@@ -259,6 +268,12 @@ public class VotanicWandRtsCommander : MonoBehaviour
         if (unit != null && issuedPath.Count >= 2 && RtsPathUtility.GetPathLength(issuedPath) >= pathMinIssueLength)
         {
             unit.FollowPath(issuedPath);
+            PathCommandIssued?.Invoke(unit, issuedPath);
+            if (SiegePvpSession.Instance != null)
+            {
+                SiegePvpSession.Instance.NotifyPathFromCommander(unit, issuedPath);
+            }
+
             debugStatusLine = "Issued path to " + unit.name;
             debugPathLine = "Path: issued (" + issuedPath.Count + " waypoints)";
         }
@@ -274,6 +289,27 @@ public class VotanicWandRtsCommander : MonoBehaviour
         CancelCommandMode();
         vrCommandLatched = false;
         wasCommandHeld = false;
+    }
+
+    private bool MatchesControllableFaction(RtsUnitMotor unit)
+    {
+        if (unit == null)
+        {
+            return false;
+        }
+
+        TroopCombat combat = unit.GetComponent<TroopCombat>();
+        if (combat == null)
+        {
+            combat = unit.GetComponentInParent<TroopCombat>();
+        }
+
+        if (combat == null)
+        {
+            return controllableFaction == TroopCombat.Faction.Friendly;
+        }
+
+        return combat.TroopFaction == controllableFaction;
     }
 
     private void CancelCommandMode()
@@ -432,7 +468,10 @@ public class VotanicWandRtsCommander : MonoBehaviour
         }
 
         RtsUnitMotor unit = hit.collider.GetComponentInParent<RtsUnitMotor>();
-        bool isCommandUnit = unit != null && unit.IsCommandUnit && unit.CanReceiveCommands;
+        bool isCommandUnit = unit != null
+            && unit.IsCommandUnit
+            && unit.CanReceiveCommands
+            && MatchesControllableFaction(unit);
         debugHoverLine = "Hover hit: " + hit.collider.name + " | unit=" + (unit != null ? unit.name : "none") + " | commandable=" + isCommandUnit;
 
         if (verboseDebugLogs)

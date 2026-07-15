@@ -2,22 +2,31 @@ using TMPro;
 using UnityEngine;
 
 /// <summary>
-/// World-space Demo / Full / Dodge Arrows mode button. Place a collider in the scene and wire a label.
+/// World-space Demo / Full / Dodge Arrows / Siege PVP mode button. Place a collider and wire a label.
 /// </summary>
 [DisallowMultipleComponent]
 public class SiegeDifficultyOption : MonoBehaviour
 {
     [SerializeField] private SiegeGameMode gameMode = SiegeGameMode.Demo;
+    [Header("Siege PVP tuning (Attacker stalls for cannons; Defender tries to stop them)")]
+    [Tooltip("Off: use SiegeGameManager duration/speed. On: use the values below when this button is selected.")]
+    [SerializeField] private bool useCustomPvpTuning = false;
+    [SerializeField, Min(30f)] private float pvpMatchDurationSeconds = 180f;
+    [SerializeField, Range(0.1f, 2f)] private float pvpMoveSpeedScale = 1f;
     [SerializeField] private Collider hitCollider;
     [SerializeField] private SiegeWorldUiLabel label;
     [SerializeField] private Color normalColor = Color.white;
     [SerializeField] private Color highlightedColor = new Color(0.35f, 1f, 0.45f, 1f);
 
     public SiegeGameMode GameMode => gameMode;
+    public bool UseCustomPvpTuning => useCustomPvpTuning;
+    public float PvpMatchDurationSeconds => pvpMatchDurationSeconds;
+    public float PvpMoveSpeedScale => pvpMoveSpeedScale;
     public int WaveCount => gameMode switch
     {
         SiegeGameMode.Demo => SiegeMatchSettings.DemoWaveCount,
         SiegeGameMode.DodgeArrows => 0,
+        SiegeGameMode.SiegePvp => 0,
         _ => SiegeMatchSettings.FullWaveCount
     };
 
@@ -58,6 +67,9 @@ public class SiegeDifficultyOption : MonoBehaviour
         {
             label = GetComponentInChildren<SiegeWorldUiLabel>();
         }
+
+        pvpMatchDurationSeconds = Mathf.Max(30f, pvpMatchDurationSeconds);
+        pvpMoveSpeedScale = Mathf.Clamp(pvpMoveSpeedScale, 0.1f, 2f);
     }
 
     public bool TryGetHitCollider(out Collider collider)

@@ -1062,13 +1062,24 @@ public class TroopCombat : MonoBehaviour
 
         if (motor != null)
         {
-            motor.CanReceiveCommands = faction == Faction.Friendly && motor.IsCommandUnit;
+            bool canCommand = motor.IsCommandUnit && (
+                faction == Faction.Friendly
+                || (faction == Faction.Enemy && SiegeMatchSettings.IsSiegePvpMode));
+            motor.CanReceiveCommands = canCommand;
             motor.MoveSpeedMultiplier = 1f;
         }
 
         if (faction == Faction.Enemy)
         {
-            SetHoldInCampUntilNextWave(true);
+            // In PVP the city defender stages outside the gate after regroup instead of sitting behind walls.
+            if (!SiegeMatchSettings.IsSiegePvpMode)
+            {
+                SetHoldInCampUntilNextWave(true);
+            }
+            else
+            {
+                SetHoldInCampUntilNextWave(false);
+            }
         }
 
         RegimentRegroupCompleted?.Invoke(this);

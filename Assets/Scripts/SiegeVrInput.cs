@@ -54,6 +54,32 @@ public static class SiegeVrInput
         return WasAnyVrButtonPressedThisFrame();
     }
 
+    public static bool IsPointerHeld()
+    {
+        if (!IsGameplayInputAllowed())
+        {
+            return false;
+        }
+
+        if (SiegePlayEnvironment.IsDesktopInput)
+        {
+            if (Input.GetMouseButton(0))
+            {
+                return true;
+            }
+
+            if (Input.touchCount > 0)
+            {
+                TouchPhase phase = Input.GetTouch(0).phase;
+                return phase != TouchPhase.Ended && phase != TouchPhase.Canceled;
+            }
+
+            return false;
+        }
+
+        return IsAnyVrButtonHeld();
+    }
+
     public static bool WasAnyVrButtonPressedThisFrame()
     {
         for (int i = 0; i < VirtualButtonCount; i++)

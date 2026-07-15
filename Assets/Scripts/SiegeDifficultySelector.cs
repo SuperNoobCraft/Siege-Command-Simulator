@@ -2,7 +2,8 @@ using UnityEngine;
 using Votanic.vXR.vGear;
 
 /// <summary>
-/// Lets players pick Demo, Full, or Dodge Arrows mode with the wand (or mouse on desktop).
+/// Lets players pick Demo, Full, Dodge Arrows, or Siege PVP with the wand (or mouse on desktop).
+/// Siege PVP is handled by <see cref="SiegePvpSession"/> (select → ready → countdown).
 /// </summary>
 [DefaultExecutionOrder(10)]
 public class SiegeDifficultySelector : MonoBehaviour
@@ -33,6 +34,14 @@ public class SiegeDifficultySelector : MonoBehaviour
             return;
         }
 
+        SiegePvpSession pvp = SiegePvpSession.Instance;
+        if (pvp != null && pvp.BlocksModeSelect)
+        {
+            ClearHighlight();
+            hoveredOption = null;
+            return;
+        }
+
         if (!SiegeVrInput.IsGameplayInputAllowed())
         {
             ClearHighlight();
@@ -43,10 +52,35 @@ public class SiegeDifficultySelector : MonoBehaviour
         Ray ray = BuildSelectionRay();
         UpdateHoveredOption(ray);
 
-        if (SiegeVrInput.WasPointerPressedThisFrame() && hoveredOption != null)
+        if (!SiegeVrInput.WasPointerPressedThisFrame() || hoveredOption == null)
         {
-            manager.ConfirmPlayMode(hoveredOption.GameMode);
+            return;
         }
+
+        if (hoveredOption.GameMode == SiegeGameMode.SiegePvp)
+        {
+            if (pvp != null)
+            {
+                if (hoveredOption.UseCustomPvpTuning)
+                {
+                    pvp.NotifyLocalSelectedPvp(
+                        hoveredOption.PvpMatchDurationSeconds,
+                        hoveredOption.PvpMoveSpeedScale);
+                }
+                else
+                {
+                    pvp.NotifyLocalSelectedPvp();
+                }
+            }
+            else
+            {
+                Debug.LogWarning("Siege PVP selected but SiegePvpSession is missing from the scene.");
+            }
+
+            return;
+        }
+
+        manager.ConfirmPlayMode(hoveredOption.GameMode);
     }
 
     private Ray BuildSelectionRay()

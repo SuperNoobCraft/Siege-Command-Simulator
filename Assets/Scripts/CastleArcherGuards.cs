@@ -296,7 +296,23 @@ public class CastleArcherGuards : MonoBehaviour
     private bool ShouldHarassCommander()
     {
         SiegeGameManager manager = SiegeGameManager.Instance;
-        return manager != null && manager.IsPlaying;
+        if (manager == null || !manager.IsPlaying)
+        {
+            return false;
+        }
+
+        // In Siege PVP only the Attacker (command tower) is harassed.
+        // The Defender is teleported away — never shoot the local peer as "commander".
+        if (SiegeMatchSettings.IsSiegePvpMode)
+        {
+            SiegePvpSession pvp = SiegePvpSession.Instance;
+            if (pvp == null || !pvp.IsMatchRunning || pvp.IsDefender)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private void TryRefreshPlayerHitBinding()
