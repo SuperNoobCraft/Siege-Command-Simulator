@@ -56,7 +56,7 @@ public class VotanicWandRtsCommander : MonoBehaviour
     [SerializeField, Min(0f)] private float trackedPathSimplifyEpsilon = 1.1f;
     [SerializeField, Range(0, 4)] private int trackedPathSmoothIterations = 2;
     [SerializeField, Min(0.25f)] private float trackedPathMaxWaypointSpacing = 2.75f;
-    [SerializeField, Range(1, 8)] private int trackedPathStabilizeWindow = 5;
+    [SerializeField, Range(1, 8)] private int trackedPathStabilizeWindow = 3;
     [SerializeField, Range(0.02f, 1f)] private float trackedAimSmoothingStrength = 0.18f;
     [SerializeField, Min(0f)] private float trackedPathStartJitterRadius = 0.6f;
 
@@ -240,6 +240,10 @@ public class VotanicWandRtsCommander : MonoBehaviour
         if (unit.HasActivePath || unit.IsBlockedBySolidObstacle || unit.IsStuck)
         {
             unit.Stop();
+            if (SiegePvpSession.Instance != null)
+            {
+                SiegePvpSession.Instance.NotifyStopFromCommander(unit);
+            }
         }
 
         commandingUnit = unit;
@@ -267,18 +271,44 @@ public class VotanicWandRtsCommander : MonoBehaviour
 
         if (unit != null && issuedPath.Count >= 2 && RtsPathUtility.GetPathLength(issuedPath) >= pathMinIssueLength)
         {
-            unit.FollowPath(issuedPath);
-            PathCommandIssued?.Invoke(unit, issuedPath);
-            if (SiegePvpSession.Instance != null)
+            if (SiegePvpSession.Instance != null && SiegePvpSession.Instance.IsMatchRunning)
             {
-                SiegePvpSession.Instance.NotifyPathFromCommander(unit, issuedPath);
+                issuedPath = SiegePvpSession.Instance.CanonicalizePathForMatch(issuedPath);
             }
 
-            debugStatusLine = "Issued path to " + unit.name;
-            debugPathLine = "Path: issued (" + issuedPath.Count + " waypoints)";
+            if (issuedPath.Count >= 2 && RtsPathUtility.GetPathLength(issuedPath) >= pathMinIssueLength)
+            {
+                unit.FollowPath(issuedPath);
+                PathCommandIssued?.Invoke(unit, issuedPath);
+                if (SiegePvpSession.Instance != null)
+                {
+                    SiegePvpSession.Instance.NotifyPathFromCommander(unit, issuedPath);
+                }
+
+                debugStatusLine = "Issued path to " + unit.name;
+                debugPathLine = "Path: issued (" + issuedPath.Count + " waypoints)";
+            }
+            else
+            {
+                unit.Stop();
+                if (SiegePvpSession.Instance != null)
+                {
+                    SiegePvpSession.Instance.NotifyStopFromCommander(unit);
+                }
+
+                debugStatusLine = "Command cancelled";
+                debugPathLine = "Path: collapsed after sanitize";
+            }
         }
         else
         {
+            // Click-to-stop / cancelled short path: ensure peer also stops.
+            if (unit != null && SiegePvpSession.Instance != null)
+            {
+                unit.Stop();
+                SiegePvpSession.Instance.NotifyStopFromCommander(unit);
+            }
+
             debugStatusLine = "Command cancelled";
             debugPathLine = "Path: too short";
         }
@@ -697,7 +727,7 @@ public class VotanicWandRtsCommander : MonoBehaviour
         RtsUnitHighlight highlight = unit.GetComponent<RtsUnitHighlight>();
         if (highlight == null)
         {
-            return;
+            highlight = unit.gameObject.AddComponent<RtsUnitHighlight>();
         }
 
         highlight.SetHovered(isHovered);

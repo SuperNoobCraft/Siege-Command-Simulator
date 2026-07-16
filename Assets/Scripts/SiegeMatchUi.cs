@@ -18,7 +18,7 @@ public class SiegeMatchUi : MonoBehaviour
         Defeat
     }
 
-    [Header("World Labels")]
+    [Header("World Labels (Attacker / default)")]
     [FormerlySerializedAs("canvasRoot")]
     [SerializeField] private GameObject legacyCanvasRoot;
     [SerializeField] private GameObject worldUiRoot;
@@ -28,6 +28,16 @@ public class SiegeMatchUi : MonoBehaviour
     [SerializeField] private SiegeWorldUiLabel worldVictoryLabel;
     [SerializeField] private SiegeWorldUiLabel worldDefeatLabel;
     [SerializeField] private SiegeWorldUiLabel worldRestartLabel;
+
+    [Header("World Labels (Defender PVP duplicate — assign a second set at the defender viewpoint)")]
+    [Tooltip("Optional root toggled on for the defender during Siege PVP. Leave empty to reuse attacker labels.")]
+    [SerializeField] private GameObject defenderWorldUiRoot;
+    [SerializeField] private SiegeWorldUiLabel defenderStatusLabel;
+    [SerializeField] private SiegeWorldUiLabel defenderCountdownLabel;
+    [SerializeField] private SiegeWorldUiLabel defenderCommanderHpLabel;
+    [SerializeField] private SiegeWorldUiLabel defenderVictoryLabel;
+    [SerializeField] private SiegeWorldUiLabel defenderDefeatLabel;
+    [SerializeField] private SiegeWorldUiLabel defenderRestartLabel;
 
     [Header("Difficulty Select Labels")]
     [Tooltip("Drag the Demo / Full world-space signs here. Also auto-found by name if left empty.")]
@@ -58,6 +68,14 @@ public class SiegeMatchUi : MonoBehaviour
     [SerializeField] private string commanderHpFormat = "{0}";
     [SerializeField] private string wave3CountdownFormat = "Cannons ready in {0:0}s";
     [SerializeField] private string victoryMessage = "The walls have fallen. Victory!";
+    [Tooltip("Defender HUD when attacker wins (GM Won / walls fallen).")]
+    [SerializeField] private string defenderDefeatWhenAttackerWinsMessage = "The walls have fallen. Defeat.";
+    [Tooltip("Defender HUD when cannons are silenced (GM Lost / overrun).")]
+    [SerializeField] private string defenderVictoryWhenCannonsSilencedMessage = "The cannons are silenced. Victory!";
+    [Tooltip("Defender HUD when the attacking commander is killed by arrows.")]
+    [SerializeField] private string defenderVictoryWhenCommanderArrowedMessage = "The commander has fallen. Victory!";
+    [Tooltip("Defender HUD when the attacking commander falls from the tower.")]
+    [SerializeField] private string defenderVictoryWhenCommanderFellMessage = "The commander fell from the tower. Victory!";
     [SerializeField] private string arrowDefeatMessage = "The commander has fallen.";
     [SerializeField] private string fallDefeatMessage = "The commander fell from the tower.";
     [SerializeField] private string cannonDefeatMessage = "The cannons were overrun.";
@@ -78,8 +96,35 @@ public class SiegeMatchUi : MonoBehaviour
     private readonly List<GameObject> resolvedDifficultyRoots = new List<GameObject>();
     private readonly List<SiegeWorldUiLabel> resolvedPlayingLabels = new List<SiegeWorldUiLabel>();
     private readonly List<GameObject> resolvedPlayingRoots = new List<GameObject>();
+    private bool pvpHudForDefender;
 
     public static SiegeMatchUi Instance { get; private set; }
+
+    private bool HasDefenderHudAssigned =>
+        defenderWorldUiRoot != null
+        || defenderStatusLabel != null
+        || defenderVictoryLabel != null
+        || defenderDefeatLabel != null;
+
+    private bool UseDefenderHud => pvpHudForDefender && HasDefenderHudAssigned;
+
+    private SiegeWorldUiLabel ActiveStatusLabel =>
+        UseDefenderHud && defenderStatusLabel != null ? defenderStatusLabel : worldStatusLabel;
+
+    private SiegeWorldUiLabel ActiveCountdownLabel =>
+        UseDefenderHud && defenderCountdownLabel != null ? defenderCountdownLabel : worldCountdownLabel;
+
+    private SiegeWorldUiLabel ActiveCommanderHpLabel =>
+        UseDefenderHud && defenderCommanderHpLabel != null ? defenderCommanderHpLabel : worldCommanderHpLabel;
+
+    private SiegeWorldUiLabel ActiveVictoryLabel =>
+        UseDefenderHud && defenderVictoryLabel != null ? defenderVictoryLabel : worldVictoryLabel;
+
+    private SiegeWorldUiLabel ActiveDefeatLabel =>
+        UseDefenderHud && defenderDefeatLabel != null ? defenderDefeatLabel : worldDefeatLabel;
+
+    private SiegeWorldUiLabel ActiveRestartLabel =>
+        UseDefenderHud && defenderRestartLabel != null ? defenderRestartLabel : worldRestartLabel;
 
     private void Awake()
     {
@@ -205,7 +250,7 @@ public class SiegeMatchUi : MonoBehaviour
             return;
         }
 
-        SetWorldLabelText(worldStatusLabel, GetActiveOpeningStatus(), false);
+        SetWorldLabelText(ActiveStatusLabel, GetActiveOpeningStatus(), false);
         if (openingStatusDuration > 0f)
         {
             if (openingStatusCoroutine != null)
@@ -217,14 +262,14 @@ public class SiegeMatchUi : MonoBehaviour
         }
         else
         {
-            SetWorldLabelText(worldStatusLabel, string.Empty, false);
+            SetWorldLabelText(ActiveStatusLabel, string.Empty, false);
         }
     }
 
     private IEnumerator ClearOpeningStatusAfterDelay()
     {
         yield return new WaitForSeconds(openingStatusDuration);
-        SetWorldLabelText(worldStatusLabel, string.Empty, false);
+        SetWorldLabelText(ActiveStatusLabel, string.Empty, false);
         openingStatusCoroutine = null;
     }
 
@@ -336,14 +381,14 @@ public class SiegeMatchUi : MonoBehaviour
         SiegeGameManager manager = SiegeGameManager.Instance;
         if (manager != null && manager.CurrentState != SiegeGameManager.MatchState.Playing)
         {
-            SetLabelVisible(worldCommanderHpLabel, false);
+            SetLabelVisible(ActiveCommanderHpLabel, false);
             HidePlayingHudTargets();
             return;
         }
 
         string message = string.Format(commanderHpFormat, hitsRemaining);
-        SetWorldLabelText(worldCommanderHpLabel, message, true);
-        SetLabelVisible(worldCommanderHpLabel, true);
+        SetWorldLabelText(ActiveCommanderHpLabel, message, true);
+        SetLabelVisible(ActiveCommanderHpLabel, true);
     }
 
     private void ResolveMissingWorldLabels()
@@ -429,8 +474,64 @@ public class SiegeMatchUi : MonoBehaviour
 
     public void SetStatusMessage(string message)
     {
-        SetWorldLabelText(worldStatusLabel, message ?? string.Empty, false);
-        SetLabelVisible(worldStatusLabel, true);
+        SiegeWorldUiLabel status = ActiveStatusLabel;
+        SetWorldLabelText(status, message ?? string.Empty, false);
+        SetLabelVisible(status, true);
+    }
+
+    /// <summary>
+    /// Show attacker or defender world HUD for Siege PVP. Assign defender labels in the inspector.
+    /// </summary>
+    public void ApplyPvpRoleHud(bool forDefender)
+    {
+        pvpHudForDefender = forDefender && HasDefenderHudAssigned;
+        ApplyRoleHudVisibility();
+    }
+
+    /// <summary>Legacy no-op kept so older callers compile; prefer <see cref="ApplyPvpRoleHud"/>.</summary>
+    public void AnchorPlayingHudToViewpoint(Transform viewpoint, float forwardOffset = 3.5f, float upOffset = 1.5f)
+    {
+        ApplyPvpRoleHud(true);
+    }
+
+    /// <summary>Legacy alias — returns to attacker/default HUD.</summary>
+    public void RestorePlayingHudAnchors()
+    {
+        ApplyPvpRoleHud(false);
+    }
+
+    private void ApplyRoleHudVisibility()
+    {
+        bool defender = UseDefenderHud;
+        if (worldUiRoot != null && defenderWorldUiRoot != null)
+        {
+            worldUiRoot.SetActive(!defender);
+            defenderWorldUiRoot.SetActive(defender);
+        }
+        else if (defenderWorldUiRoot != null)
+        {
+            defenderWorldUiRoot.SetActive(defender);
+        }
+
+        // End-game labels stay hidden until ApplyVictory/DefeatLayout. Activating the
+        // defender root must not reveal scene-default victory/defeat text mid-match.
+        SetLabelVisible(worldVictoryLabel, false);
+        SetLabelVisible(worldDefeatLabel, false);
+        SetLabelVisible(defenderVictoryLabel, false);
+        SetLabelVisible(defenderDefeatLabel, false);
+
+        if (defender)
+        {
+            SetLabelVisible(ActiveRestartLabel, false);
+            SetLabelVisible(ActiveCountdownLabel, false);
+            SetLabelVisible(ActiveCommanderHpLabel, false);
+        }
+        else
+        {
+            SetLabelVisible(defenderRestartLabel, false);
+            SetLabelVisible(defenderCountdownLabel, false);
+            SetLabelVisible(defenderCommanderHpLabel, false);
+        }
     }
 
     public void HideDifficultyOptionsForPvpLobby()
@@ -440,6 +541,11 @@ public class SiegeMatchUi : MonoBehaviour
         SetGroupActive(difficultySelectGroup, false);
         SetGroupActive(playingGroup, false);
         SetGroupActive(endGameGroup, false);
+        if (defenderWorldUiRoot != null)
+        {
+            defenderWorldUiRoot.SetActive(false);
+        }
+
         HidePlayingHudTargets();
     }
 
@@ -451,6 +557,7 @@ public class SiegeMatchUi : MonoBehaviour
         {
             case SiegeGameManager.MatchState.SelectingDifficulty:
                 awaitingRestart = false;
+                RestorePlayingHudAnchors();
                 ApplyDifficultySelectLayout();
                 break;
             case SiegeGameManager.MatchState.Won:
@@ -485,7 +592,7 @@ public class SiegeMatchUi : MonoBehaviour
 
     private IEnumerator EnableRestartAfterDelay()
     {
-        SetWorldLabelText(worldRestartLabel, string.Empty, false);
+        SetWorldLabelText(ActiveRestartLabel, string.Empty, false);
         yield return new WaitForSecondsRealtime(restartDelaySeconds);
         restartDelayCoroutine = null;
         awaitingRestart = enableClickToRestart;
@@ -505,11 +612,11 @@ public class SiegeMatchUi : MonoBehaviour
     {
         if (!awaitingRestart || !enableClickToRestart)
         {
-            SetWorldLabelText(worldRestartLabel, string.Empty, false);
+            SetWorldLabelText(ActiveRestartLabel, string.Empty, false);
             return;
         }
 
-        SetWorldLabelText(worldRestartLabel, GetActiveRestartPrompt(), false);
+        SetWorldLabelText(ActiveRestartLabel, GetActiveRestartPrompt(), false);
     }
 
     private void HandleCannonCountdownUpdated(float secondsRemaining)
@@ -520,10 +627,10 @@ public class SiegeMatchUi : MonoBehaviour
             return;
         }
 
-        SetWorldLabelText(worldCountdownLabel, string.Format(wave3CountdownFormat, secondsRemaining), true);
-        if (worldCountdownLabel != null)
+        SetWorldLabelText(ActiveCountdownLabel, string.Format(wave3CountdownFormat, secondsRemaining), true);
+        if (ActiveCountdownLabel != null)
         {
-            worldCountdownLabel.SetVisible(true);
+            ActiveCountdownLabel.SetVisible(true);
         }
     }
 
@@ -536,7 +643,7 @@ public class SiegeMatchUi : MonoBehaviour
         }
 
         float secondsRemaining = manager != null ? manager.SecondsUntilCannonsFire : 0f;
-        SetWorldLabelText(worldCountdownLabel, string.Format(wave3CountdownFormat, secondsRemaining), true);
+        SetWorldLabelText(ActiveCountdownLabel, string.Format(wave3CountdownFormat, secondsRemaining), true);
     }
 
     private void RefreshCommanderHpDisplay()
@@ -550,6 +657,8 @@ public class SiegeMatchUi : MonoBehaviour
     private void ApplyDifficultySelectLayout()
     {
         ResolvePresentationTargets();
+        pvpHudForDefender = false;
+        ApplyRoleHudVisibility();
 
         SetGroupActive(difficultySelectGroup, true);
         SetGroupActive(playingGroup, false);
@@ -558,11 +667,17 @@ public class SiegeMatchUi : MonoBehaviour
         SetDifficultyPresentationVisible(true);
         HidePlayingHudTargets();
 
-        SetWorldLabelText(worldStatusLabel, difficultySelectPrompt, false);
-        SetLabelVisible(worldStatusLabel, true);
+        SetWorldLabelText(ActiveStatusLabel, difficultySelectPrompt, false);
+        SetLabelVisible(ActiveStatusLabel, true);
         SetWorldLabelText(worldVictoryLabel, string.Empty, false);
         SetWorldLabelText(worldDefeatLabel, string.Empty, false);
-        SetWorldLabelText(worldRestartLabel, string.Empty, false);
+        SetWorldLabelText(defenderVictoryLabel, string.Empty, false);
+        SetWorldLabelText(defenderDefeatLabel, string.Empty, false);
+        SetWorldLabelText(ActiveRestartLabel, string.Empty, false);
+        SetLabelVisible(worldVictoryLabel, false);
+        SetLabelVisible(worldDefeatLabel, false);
+        SetLabelVisible(defenderVictoryLabel, false);
+        SetLabelVisible(defenderDefeatLabel, false);
     }
 
     private void HidePlayingHudTargets()
@@ -572,9 +687,20 @@ public class SiegeMatchUi : MonoBehaviour
         SetLabelVisible(worldVictoryLabel, false);
         SetLabelVisible(worldDefeatLabel, false);
         SetLabelVisible(worldRestartLabel, false);
+        SetLabelVisible(defenderCountdownLabel, false);
+        SetLabelVisible(defenderCommanderHpLabel, false);
+        SetLabelVisible(defenderVictoryLabel, false);
+        SetLabelVisible(defenderDefeatLabel, false);
+        SetLabelVisible(defenderRestartLabel, false);
 
         SetWorldLabelText(worldCountdownLabel, string.Empty, false);
         SetWorldLabelText(worldCommanderHpLabel, string.Empty, false);
+        SetWorldLabelText(worldVictoryLabel, string.Empty, false);
+        SetWorldLabelText(worldDefeatLabel, string.Empty, false);
+        SetWorldLabelText(defenderCountdownLabel, string.Empty, false);
+        SetWorldLabelText(defenderCommanderHpLabel, string.Empty, false);
+        SetWorldLabelText(defenderVictoryLabel, string.Empty, false);
+        SetWorldLabelText(defenderDefeatLabel, string.Empty, false);
 
         for (int i = 0; i < resolvedPlayingLabels.Count; i++)
         {
@@ -601,13 +727,17 @@ public class SiegeMatchUi : MonoBehaviour
 
     private void ShowPlayingHudTargets()
     {
-        SetLabelVisible(worldCountdownLabel, true);
-        SetLabelVisible(worldCommanderHpLabel, true);
+        ApplyRoleHudVisibility();
+        SetLabelVisible(ActiveCountdownLabel, true);
+        SetLabelVisible(ActiveCommanderHpLabel, true);
 
         for (int i = 0; i < resolvedPlayingLabels.Count; i++)
         {
             SiegeWorldUiLabel label = resolvedPlayingLabels[i];
-            if (label == null || label == worldStatusLabel || IsDifficultyLabel(label))
+            if (label == null
+                || label == worldStatusLabel
+                || IsDifficultyLabel(label)
+                || IsEndGameHudLabel(label))
             {
                 continue;
             }
@@ -618,7 +748,7 @@ public class SiegeMatchUi : MonoBehaviour
         for (int i = 0; i < resolvedPlayingRoots.Count; i++)
         {
             GameObject root = resolvedPlayingRoots[i];
-            if (root == null || IsDifficultyRoot(root))
+            if (root == null || IsDifficultyRoot(root) || IsEndGameHudObjectName(root.name))
             {
                 continue;
             }
@@ -735,9 +865,7 @@ public class SiegeMatchUi : MonoBehaviour
 
         AddPlayingLabel(worldCountdownLabel);
         AddPlayingLabel(worldCommanderHpLabel);
-        AddPlayingLabel(worldVictoryLabel);
-        AddPlayingLabel(worldDefeatLabel);
-        AddPlayingLabel(worldRestartLabel);
+        // Victory / defeat / restart are end-game only — never auto-shown during play.
 
         SiegeWorldUiLabel[] sceneLabels = FindObjectsOfType<SiegeWorldUiLabel>(true);
         for (int i = 0; i < sceneLabels.Length; i++)
@@ -855,10 +983,36 @@ public class SiegeMatchUi : MonoBehaviour
         return label != null && IsPlayingHudObjectName(label.gameObject.name);
     }
 
+    private static bool IsEndGameHudLabel(SiegeWorldUiLabel label)
+    {
+        if (label == null)
+        {
+            return false;
+        }
+
+        return IsEndGameHudObjectName(label.gameObject.name);
+    }
+
+    private static bool IsEndGameHudObjectName(string objectName)
+    {
+        string normalized = NormalizeObjectName(objectName);
+        if (string.IsNullOrEmpty(normalized))
+        {
+            return false;
+        }
+
+        return ContainsAny(normalized, "victory", "defeat", "restart", "win", "lose");
+    }
+
     private static bool IsPlayingHudObjectName(string objectName)
     {
         string normalized = NormalizeObjectName(objectName);
         if (string.IsNullOrEmpty(normalized))
+        {
+            return false;
+        }
+
+        if (IsEndGameHudObjectName(objectName))
         {
             return false;
         }
@@ -870,9 +1024,6 @@ public class SiegeMatchUi : MonoBehaviour
             "commander",
             "arrowhit",
             "hp",
-            "victory",
-            "defeat",
-            "restart",
             "opening",
             "status");
     }
@@ -953,45 +1104,79 @@ public class SiegeMatchUi : MonoBehaviour
 
         if (!showOpeningStatusOnStart)
         {
-            SetWorldLabelText(worldStatusLabel, string.Empty, false);
+            SetWorldLabelText(ActiveStatusLabel, string.Empty, false);
         }
 
         SetWorldLabelText(worldVictoryLabel, string.Empty, false);
         SetWorldLabelText(worldDefeatLabel, string.Empty, false);
-        SetWorldLabelText(worldRestartLabel, string.Empty, false);
+        SetWorldLabelText(defenderVictoryLabel, string.Empty, false);
+        SetWorldLabelText(defenderDefeatLabel, string.Empty, false);
+        SetWorldLabelText(ActiveRestartLabel, string.Empty, false);
+        SetLabelVisible(worldVictoryLabel, false);
+        SetLabelVisible(worldDefeatLabel, false);
+        SetLabelVisible(defenderVictoryLabel, false);
+        SetLabelVisible(defenderDefeatLabel, false);
         RefreshCommanderHpDisplay();
     }
 
     private void ApplyVictoryLayout()
     {
+        // GM Won = attacker victory / defender defeat.
         SetGroupActive(difficultySelectGroup, false);
         SetGroupActive(playingGroup, false);
         SetGroupActive(endGameGroup, true);
         SetDifficultyPresentationVisible(false);
         HidePlayingHudTargets();
+        ApplyRoleHudVisibility();
 
-        SetWorldLabelText(worldStatusLabel, string.Empty, false);
-        SetWorldLabelText(worldCommanderHpLabel, string.Empty, false);
-        SetWorldLabelText(worldVictoryLabel, victoryMessage, false);
-        SetLabelVisible(worldVictoryLabel, true);
-        SetWorldLabelText(worldDefeatLabel, string.Empty, false);
-        SetWorldLabelText(worldRestartLabel, string.Empty, false);
+        SetWorldLabelText(ActiveStatusLabel, string.Empty, false);
+        SetWorldLabelText(ActiveCommanderHpLabel, string.Empty, false);
+        SetWorldLabelText(ActiveRestartLabel, string.Empty, false);
+
+        if (UseDefenderHud)
+        {
+            SetWorldLabelText(ActiveVictoryLabel, string.Empty, false);
+            SetLabelVisible(ActiveVictoryLabel, false);
+            SetWorldLabelText(ActiveDefeatLabel, defenderDefeatWhenAttackerWinsMessage, false);
+            SetLabelVisible(ActiveDefeatLabel, true);
+        }
+        else
+        {
+            SetWorldLabelText(ActiveDefeatLabel, string.Empty, false);
+            SetLabelVisible(ActiveDefeatLabel, false);
+            SetWorldLabelText(ActiveVictoryLabel, victoryMessage, false);
+            SetLabelVisible(ActiveVictoryLabel, true);
+        }
     }
 
     private void ApplyDefeatLayout(string reason)
     {
+        // GM Lost = attacker defeat / defender victory.
         SetGroupActive(difficultySelectGroup, false);
         SetGroupActive(playingGroup, false);
         SetGroupActive(endGameGroup, true);
         SetDifficultyPresentationVisible(false);
         HidePlayingHudTargets();
+        ApplyRoleHudVisibility();
 
-        SetWorldLabelText(worldStatusLabel, string.Empty, false);
-        SetWorldLabelText(worldCommanderHpLabel, string.Empty, false);
-        SetWorldLabelText(worldVictoryLabel, string.Empty, false);
-        SetWorldLabelText(worldDefeatLabel, ResolveDefeatMessage(reason), false);
-        SetLabelVisible(worldDefeatLabel, true);
-        SetWorldLabelText(worldRestartLabel, string.Empty, false);
+        SetWorldLabelText(ActiveStatusLabel, string.Empty, false);
+        SetWorldLabelText(ActiveCommanderHpLabel, string.Empty, false);
+        SetWorldLabelText(ActiveRestartLabel, string.Empty, false);
+
+        if (UseDefenderHud)
+        {
+            SetWorldLabelText(ActiveDefeatLabel, string.Empty, false);
+            SetLabelVisible(ActiveDefeatLabel, false);
+            SetWorldLabelText(ActiveVictoryLabel, ResolveDefenderVictoryMessage(reason), false);
+            SetLabelVisible(ActiveVictoryLabel, true);
+        }
+        else
+        {
+            SetWorldLabelText(ActiveVictoryLabel, string.Empty, false);
+            SetLabelVisible(ActiveVictoryLabel, false);
+            SetWorldLabelText(ActiveDefeatLabel, ResolveDefeatMessage(reason), false);
+            SetLabelVisible(ActiveDefeatLabel, true);
+        }
     }
 
     private void ApplyEditorPreview()
@@ -1014,9 +1199,9 @@ public class SiegeMatchUi : MonoBehaviour
                 break;
             default:
                 ApplyPlayingLayout();
-                SetWorldLabelText(worldStatusLabel, openingStatus, false);
-                SetWorldLabelText(worldCommanderHpLabel, string.Format(commanderHpFormat, 3), true);
-                SetWorldLabelText(worldCountdownLabel, string.Format(wave3CountdownFormat, 42f), true);
+                SetWorldLabelText(ActiveStatusLabel, openingStatus, false);
+                SetWorldLabelText(ActiveCommanderHpLabel, string.Format(commanderHpFormat, 3), true);
+                SetWorldLabelText(ActiveCountdownLabel, string.Format(wave3CountdownFormat, 42f), true);
                 break;
         }
     }
@@ -1046,6 +1231,28 @@ public class SiegeMatchUi : MonoBehaviour
         }
 
         return reason;
+    }
+
+    private string ResolveDefenderVictoryMessage(string reason)
+    {
+        if (string.IsNullOrWhiteSpace(reason))
+        {
+            return defenderVictoryWhenCannonsSilencedMessage;
+        }
+
+        if (reason.IndexOf("fell", System.StringComparison.OrdinalIgnoreCase) >= 0
+            || reason.IndexOf("tower", System.StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            return defenderVictoryWhenCommanderFellMessage;
+        }
+
+        if (reason.IndexOf("arrow", System.StringComparison.OrdinalIgnoreCase) >= 0
+            || reason.IndexOf("struck", System.StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            return defenderVictoryWhenCommanderArrowedMessage;
+        }
+
+        return defenderVictoryWhenCannonsSilencedMessage;
     }
 
     private static void SetWorldLabelText(SiegeWorldUiLabel label, string message, bool keepVisible)

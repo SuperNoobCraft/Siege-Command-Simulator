@@ -33,13 +33,138 @@ public static class RtsPathUtility
             return filtered;
         }
 
-        List<Vector3> simplified = SimplifyPolyline(filtered, simplifyEpsilon);
+        List<Vector3> sanitized = SanitizeDrawnPath(filtered);
+        if (sanitized.Count <= 1)
+        {
+            return sanitized;
+        }
+
+        List<Vector3> simplified = SimplifyPolyline(sanitized, simplifyEpsilon);
         int effectiveSmoothIterations = simplified.Count <= 3
             ? Mathf.Min(smoothIterations, 1)
             : smoothIterations;
-        List<Vector3> cornerSafe = BevelSharpCorners(simplified, 90f, 2f);
+        float adaptiveBevel = GetAdaptiveBevelDistance(simplified, 2f);
+        List<Vector3> cornerSafe = BevelSharpCorners(simplified, 90f, adaptiveBevel);
         List<Vector3> smoothed = SmoothPolylineSegmented(cornerSafe, effectiveSmoothIterations, 90f);
         return ResamplePolyline(smoothed, maxWaypointSpacing);
+    }
+
+    /// <summary>
+    /// Removes backtracking zig-zags and collapses in-place scribbles before smoothing/beveling.
+    /// </summary>
+    public static List<Vector3> SanitizeDrawnPath(IReadOnlyList<Vector3> points)
+    {
+        if (points == null || points.Count <= 2)
+        {
+            return points == null ? new List<Vector3>() : new List<Vector3>(points);
+        }
+
+        List<Vector3> deduped = RemoveBacktrackingWaypoints(points);
+        return CollapseInPlaceScribble(deduped);
+    }
+
+    /// <summary>
+    /// Drops waypoints that reverse direction sharply (common with CAVE wand noise / tight loops).
+    /// </summary>
+    public static List<Vector3> RemoveBacktrackingWaypoints(
+        IReadOnlyList<Vector3> points,
+        float reverseAngleDegrees = 125f)
+    {
+        if (points == null || points.Count <= 2)
+        {
+            return points == null ? new List<Vector3>() : new List<Vector3>(points);
+        }
+
+        List<Vector3> result = new List<Vector3>(points.Count);
+        result.Add(points[0]);
+
+        for (int i = 1; i < points.Count; i++)
+        {
+            Vector3 candidate = points[i];
+            if (result.Count == 1)
+            {
+                result.Add(candidate);
+                continue;
+            }
+
+            while (result.Count >= 2)
+            {
+                Vector3 a = result[result.Count - 2];
+                Vector3 b = result[result.Count - 1];
+                float turnAngle = GetTurnAngleDegrees(a, b, candidate);
+                if (turnAngle < reverseAngleDegrees)
+                {
+                    break;
+                }
+
+                result.RemoveAt(result.Count - 1);
+            }
+
+            if (result.Count == 0)
+            {
+                result.Add(candidate);
+                continue;
+            }
+
+            Vector3 last = result[result.Count - 1];
+            if (HorizontalDistanceSqr(last, candidate) >= 0.0004f)
+            {
+                result.Add(candidate);
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// When net displacement is tiny but path length is long, replace scribbles with a direct segment.
+    /// </summary>
+    public static List<Vector3> CollapseInPlaceScribble(
+        IReadOnlyList<Vector3> points,
+        float minNetDisplacement = 0.85f,
+        float maxPathToNetRatio = 2.25f)
+    {
+        if (points == null || points.Count <= 2)
+        {
+            return points == null ? new List<Vector3>() : new List<Vector3>(points);
+        }
+
+        Vector3 start = points[0];
+        Vector3 end = points[points.Count - 1];
+        float net = HorizontalDistance(start, end);
+        float pathLength = GetPathLength(points);
+        if (net >= minNetDisplacement || pathLength <= net * maxPathToNetRatio)
+        {
+            return new List<Vector3>(points);
+        }
+
+        if (net < 0.05f)
+        {
+            return new List<Vector3> { start };
+        }
+
+        return new List<Vector3> { start, end };
+    }
+
+    private static float GetAdaptiveBevelDistance(IReadOnlyList<Vector3> points, float maxBevelDistance)
+    {
+        if (points == null || points.Count < 2)
+        {
+            return maxBevelDistance;
+        }
+
+        float shortestSegment = float.MaxValue;
+        for (int i = 1; i < points.Count; i++)
+        {
+            shortestSegment = Mathf.Min(shortestSegment, HorizontalDistance(points[i - 1], points[i]));
+        }
+
+        if (shortestSegment >= float.MaxValue * 0.5f)
+        {
+            return maxBevelDistance;
+        }
+
+        return Mathf.Min(maxBevelDistance, Mathf.Max(0.35f, shortestSegment * 0.4f));
     }
 
     public static List<Vector3> BuildTrackedCommandPath(
@@ -56,17 +181,29 @@ public static class RtsPathUtility
             return new List<Vector3>();
         }
 
-        List<Vector3> stabilized = StabilizeRawPoints(rawPoints, groundY, stabilizeWindow);
-        List<Vector3> filtered = FilterByMinDistance(
-            stabilized,
-            minSampleDistance);
-        if (filtered.Count <= 1)
+        List<Vector3> flattened = new List<Vector3>(rawPoints.Count);
+        for (int i = 0; i < rawPoints.Count; i++)
         {
-            return filtered.Count == 0 ? new List<Vector3>() : filtered;
+            flattened.Add(FlattenToGround(rawPoints[i], groundY));
         }
 
-        List<Vector3> simplified = SimplifyPolyline(filtered, simplifyEpsilon);
-        List<Vector3> cornerSafe = BevelSharpCorners(simplified, 90f, 2.5f);
+        List<Vector3> prefiltered = FilterByMinDistance(flattened, minSampleDistance);
+        if (prefiltered.Count <= 1)
+        {
+            return prefiltered.Count == 0 ? new List<Vector3>() : prefiltered;
+        }
+
+        List<Vector3> deduped = RemoveBacktrackingWaypoints(prefiltered);
+        List<Vector3> stabilized = StabilizeRawPoints(deduped, groundY, stabilizeWindow);
+        List<Vector3> sanitized = SanitizeDrawnPath(stabilized);
+        if (sanitized.Count <= 1)
+        {
+            return sanitized;
+        }
+
+        List<Vector3> simplified = SimplifyPolyline(sanitized, simplifyEpsilon);
+        float adaptiveBevel = GetAdaptiveBevelDistance(simplified, 2.5f);
+        List<Vector3> cornerSafe = BevelSharpCorners(simplified, 90f, adaptiveBevel);
         List<Vector3> smoothed = SmoothPolylineSegmented(cornerSafe, smoothIterations, 90f);
         return ResamplePolyline(smoothed, maxWaypointSpacing);
     }
@@ -189,6 +326,72 @@ public static class RtsPathUtility
         }
 
         return length;
+    }
+
+    /// <summary>
+    /// Preserves corners (Douglas-Peucker) before any count cap so complex drawn paths
+    /// do not collapse into uniform samples that cut through walls on the peer.
+    /// </summary>
+    public static List<Vector3> PreparePathForNetworkSync(
+        IReadOnlyList<Vector3> path,
+        int maxPoints,
+        float simplifyEpsilon = 0.35f)
+    {
+        if (path == null || path.Count == 0)
+        {
+            return new List<Vector3>();
+        }
+
+        if (path.Count <= maxPoints)
+        {
+            return new List<Vector3>(path);
+        }
+
+        List<Vector3> simplified = SimplifyPolyline(path, Mathf.Max(0.05f, simplifyEpsilon));
+        if (simplified.Count > maxPoints)
+        {
+            simplified = TrimPolylineToMaxPoints(simplified, maxPoints);
+        }
+
+        return simplified;
+    }
+
+    private static List<Vector3> TrimPolylineToMaxPoints(IReadOnlyList<Vector3> points, int maxPoints)
+    {
+        if (points == null || points.Count == 0)
+        {
+            return new List<Vector3>();
+        }
+
+        if (points.Count <= maxPoints)
+        {
+            return new List<Vector3>(points);
+        }
+
+        float epsilon = 0.5f;
+        List<Vector3> current = new List<Vector3>(points);
+        for (int iter = 0; iter < 12 && current.Count > maxPoints; iter++)
+        {
+            current = SimplifyPolyline(current, epsilon);
+            epsilon *= 1.45f;
+        }
+
+        if (current.Count <= maxPoints)
+        {
+            return current;
+        }
+
+        List<Vector3> fallback = new List<Vector3>(maxPoints);
+        fallback.Add(points[0]);
+        for (int i = 1; i < maxPoints - 1; i++)
+        {
+            float t = i / (float)(maxPoints - 1);
+            int idx = Mathf.Clamp(Mathf.RoundToInt(t * (points.Count - 1)), 1, points.Count - 2);
+            fallback.Add(points[idx]);
+        }
+
+        fallback.Add(points[points.Count - 1]);
+        return fallback;
     }
 
     public static Vector3 FlattenToGround(Vector3 point, float groundY)

@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -78,9 +79,13 @@ public class RtsUnitMotor : MonoBehaviour
     public bool HasDestination => hasDestination;
     public bool HasActivePath => movementMode == MovementMode.Path && pathWaypoints.Count > 0;
     public bool HasActivePathForDisplay => HasActivePath && !pathMovementHalted;
+    public bool IsPathMovementHalted => pathMovementHalted;
     public Vector3 MoveDirection { get; private set; } = Vector3.forward;
     public bool IsBlockedBySolidObstacle { get; private set; }
     public bool IsStuck { get; private set; }
+
+    /// <summary>Fired when a drawn path is halted on a wall (PVP peers must be notified).</summary>
+    public event Action<RtsUnitMotor> PathMovementHalted;
 
     private void Awake()
     {
@@ -147,14 +152,58 @@ public class RtsUnitMotor : MonoBehaviour
     }
 
     /// <summary>
-    /// Soft teleport used by Siege PVP network pose sync. Keeps an active path so remote
-    /// units continue toward the remaining waypoints after correcting drift.
+    /// Unused (compat). Both PVP peers simulate paths locally; do not gate Update on this.
     /// </summary>
-    public void ApplyNetworkPose(Vector3 worldPosition, Quaternion worldRotation)
+    public bool SuppressLocalSimulation { get; set; }
+
+    /// <summary>
+    /// Soft XZ correction toward the owning client's pose. Never applies rotation — regiment
+    /// roots stay upright and TroopCombat owns facing. Does not clear an active path.
+    /// </summary>
+    public void ApplyNetworkPose(
+        Vector3 worldPosition,
+        Quaternion worldRotation,
+        bool forceAuthority = false,
+        float authoritySnapDistance = 1.5f)
     {
         Vector3 flat = FlattenToGround(worldPosition);
-        flat.y = worldPosition.y;
-        transform.SetPositionAndRotation(flat, worldRotation);
+        Vector3 current = transform.position;
+        float horizontalDeltaSqr = HorizontalDistanceSqr(current, flat);
+        float deadzoneSqr = 0.09f; // ~0.3m
+        if (horizontalDeltaSqr < deadzoneSqr)
+        {
+            return;
+        }
+
+        float snapSqr = Mathf.Max(0.25f, authoritySnapDistance * authoritySnapDistance);
+        Vector3 next = current;
+        if (forceAuthority && horizontalDeltaSqr >= snapSqr)
+        {
+            next.x = flat.x;
+            next.z = flat.z;
+        }
+        else
+        {
+            float blend = forceAuthority ? 0.55f : 0.35f;
+            next.x = Mathf.Lerp(current.x, flat.x, blend);
+            next.z = Mathf.Lerp(current.z, flat.z, blend);
+        }
+
+        next.y = flat.y;
+        transform.position = next;
+
+        // Unstick peer motors that halted on a different obstacle sample than the owner.
+        IsBlockedBySolidObstacle = false;
+        IsStuck = false;
+        pathMovementHalted = false;
+        ResetStuckTracking();
+    }
+
+    /// <summary>Hard snap to owner position (used when authority reports dead / large error).</summary>
+    public void SnapNetworkPosition(Vector3 worldPosition)
+    {
+        Vector3 flat = FlattenToGround(worldPosition);
+        transform.position = flat;
         IsBlockedBySolidObstacle = false;
         IsStuck = false;
         pathMovementHalted = false;
@@ -520,7 +569,11 @@ public class RtsUnitMotor : MonoBehaviour
             return true;
         }
 
-        if (IsStuck && Time.time >= nextDetourAttemptTime && TryInsertDetourWaypoint(goalDirection))
+        // Detours are local-only and diverge from the synced drawn path — skip during path follow.
+        if (!IsFollowingPath()
+            && IsStuck
+            && Time.time >= nextDetourAttemptTime
+            && TryInsertDetourWaypoint(goalDirection))
         {
             nextDetourAttemptTime = Time.time + stuckDetectionTime;
             IsBlockedBySolidObstacle = false;
@@ -775,16 +828,15 @@ public class RtsUnitMotor : MonoBehaviour
 
     private void HaltBlockedPath()
     {
-        movementMode = MovementMode.None;
         hasDestination = false;
         usingDetour = false;
-        ClearPath();
         wallEscapeGraceEndTime = 0f;
         pathBlockedSinceTime = -1f;
         pathMovementHalted = true;
         IsBlockedBySolidObstacle = true;
         IsStuck = true;
         ResetStuckTracking();
+        PathMovementHalted?.Invoke(this);
     }
 
     private void StopOnWall()

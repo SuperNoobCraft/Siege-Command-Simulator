@@ -173,6 +173,7 @@ public class TroopCombat : MonoBehaviour
     public int MinimumUnitCountAtDefeat => Mathf.RoundToInt(maxUnitCount * defeatedUnitPercentage);
     public bool IsCommandable => motor == null || motor.CanReceiveCommands;
     public bool IsRetreating => CurrentState == State.Retreat;
+    public bool IsRetreatInvulnerable => CurrentState == State.Retreat && Time.time < invulnerableUntil;
     public bool IsTraversingGate =>
         CurrentState == State.Retreat
         && retreatPhase != RetreatPhase.ToCamp
@@ -402,15 +403,23 @@ public class TroopCombat : MonoBehaviour
                 UpdateRetreat();
                 break;
             case State.Regroup:
-                UpdateRegroup();
+                if (!UsesRemoteCombatAuthority())
+                {
+                    UpdateRegroup();
+                }
+
                 break;
             default:
-                UpdateRecovery();
-                UpdateCombat();
+                if (!UsesRemoteCombatAuthority())
+                {
+                    UpdateRecovery();
+                    UpdateCombat();
+                }
+
                 break;
         }
 
-        if (CurrentState == State.Retreat || CurrentState == State.Regroup)
+        if ((CurrentState == State.Retreat || CurrentState == State.Regroup) && !UsesRemoteCombatAuthority())
         {
             UpdateRecovery();
         }
@@ -648,6 +657,17 @@ public class TroopCombat : MonoBehaviour
             return;
         }
 
+        if (currentTarget != null
+            && (currentTarget.IsRetreating
+                || currentTarget.CurrentState == State.Dead
+                || currentTarget.CurrentState == State.Regroup))
+        {
+            currentTarget = null;
+            CurrentState = State.Idle;
+            smoothedCombatOverlap = 0f;
+            return;
+        }
+
         if (currentTarget != null && !ShouldMaintainCombatTarget(currentTarget))
         {
             currentTarget = null;
@@ -702,7 +722,26 @@ public class TroopCombat : MonoBehaviour
             MeleeAttackPerformed?.Invoke(this, transform.position);
         }
 
-        currentTarget.TakeDamage(attackProfile.Damage, this, attackProfile.IsRanged);
+        TryApplyCombatDamage(currentTarget, attackProfile.Damage, attackProfile.IsRanged);
+    }
+
+    private void TryApplyCombatDamage(TroopCombat target, float amount, bool isRangedAttack)
+    {
+        if (target == null || amount <= 0f)
+        {
+            return;
+        }
+
+        SiegePvpSession session = SiegePvpSession.Instance;
+        if (session != null
+            && session.IsMatchRunning
+            && !session.IsLocallyOwnedTroop(target))
+        {
+            session.NotifyInflictedDamage(this, target, amount, isRangedAttack);
+            return;
+        }
+
+        target.TakeDamage(amount, this, isRangedAttack);
     }
 
     private void SpawnRangedAttackVolley(TroopCombat target)
@@ -780,9 +819,13 @@ public class TroopCombat : MonoBehaviour
 
     private void UpdateRetreat()
     {
+        bool peerVisualOnly = UsesRemoteCombatAuthority();
         RtsCampManager campManager = RtsCampManager.Instance;
 
-        if (campManager != null && retreatPhase == RetreatPhase.ToCamp && campManager.HasReachedCampCenter(transform.position, faction))
+        if (!peerVisualOnly
+            && campManager != null
+            && retreatPhase == RetreatPhase.ToCamp
+            && campManager.HasReachedCampCenter(transform.position, faction))
         {
             EnterRegroup();
             return;
@@ -829,7 +872,7 @@ public class TroopCombat : MonoBehaviour
             UpdateRetreatDestination();
         }
 
-        if (Time.time >= invulnerableUntil && IsInterceptedByEnemy())
+        if (!peerVisualOnly && Time.time >= invulnerableUntil && IsInterceptedByEnemy())
         {
             PermanentDestroy();
         }
@@ -1032,6 +1075,77 @@ public class TroopCombat : MonoBehaviour
         SyncTroopVisualsToHealth(forceMinimum: true);
         SetFlagHolderDefeatedVisual();
         RegimentEnteredRetreat?.Invoke(this);
+        NotifyOwnedCombatAuthorityChanged();
+        ClearLocalAggressorsTargetingMe();
+    }
+
+    internal bool TryPerformImmediateMeleeCounter(TroopCombat attacker, bool suppressCounterReply)
+    {
+        if (attacker == null
+            || CurrentState == State.Dead
+            || CurrentState == State.Retreat
+            || CurrentState == State.Regroup
+            || attacker.CurrentState == State.Dead
+            || !IsEngagedForImmediateMeleeCounter(attacker))
+        {
+            return false;
+        }
+
+        if (!TryGetAttackProfileForTarget(attacker, out AttackProfile attackProfile) || attackProfile.IsRanged)
+        {
+            return false;
+        }
+
+        SiegePvpSession session = SiegePvpSession.Instance;
+        if (session == null || !session.IsMatchRunning)
+        {
+            return false;
+        }
+
+        nextAttackTime = Time.time + Mathf.Max(0.05f, attackProfile.Cooldown);
+        session.NotifyInflictedDamage(this, attacker, attackProfile.Damage, isRangedAttack: false, suppressCounterReply);
+        return true;
+    }
+
+    private void ClearLocalAggressorsTargetingMe()
+    {
+        if (!SiegeMatchSettings.IsSiegePvpMode)
+        {
+            return;
+        }
+
+        SiegePvpSession session = SiegePvpSession.Instance;
+        if (session == null || !session.IsMatchRunning)
+        {
+            return;
+        }
+
+        session.ClearLocalAggressorsTargeting(this);
+    }
+
+    private bool IsEngagedForImmediateMeleeCounter(TroopCombat attacker)
+    {
+        if (attacker == null)
+        {
+            return false;
+        }
+
+        if (currentTarget == attacker)
+        {
+            return true;
+        }
+
+        if (currentTarget != null)
+        {
+            return false;
+        }
+
+        if (!TryGetAttackProfileForTarget(attacker, out AttackProfile attackProfile) || attackProfile.IsRanged)
+        {
+            return false;
+        }
+
+        return IsWithinMeleeAttackRange(GetHorizontalDistance(transform.position, attacker.transform.position));
     }
 
     private void EnterRegroup()
@@ -1046,6 +1160,19 @@ public class TroopCombat : MonoBehaviour
             motor.CanReceiveCommands = false;
             motor.MoveSpeedMultiplier = 1f;
         }
+
+        NotifyOwnedCombatAuthorityChanged();
+    }
+
+    private void EnterRegroupFromNetworkAuthority()
+    {
+        if (CurrentState == State.Regroup)
+        {
+            invulnerableUntil = float.PositiveInfinity;
+            return;
+        }
+
+        EnterRegroup();
     }
 
     private void CompleteRegroup()
@@ -1083,11 +1210,63 @@ public class TroopCombat : MonoBehaviour
         }
 
         RegimentRegroupCompleted?.Invoke(this);
+        NotifyOwnedCombatAuthorityChanged();
+    }
+
+    private void CompleteRegroupFromNetworkAuthority(float authorityHealth)
+    {
+        if (CurrentState == State.Regroup && authorityHealth >= maxHealth - 0.5f)
+        {
+            CompleteRegroup();
+            return;
+        }
+
+        if (CurrentState != State.Regroup)
+        {
+            EnterRegroupFromNetworkAuthority();
+        }
+
+        currentHealth = Mathf.Max(0f, authorityHealth);
+        SyncTroopVisualsToHealth();
+    }
+
+    private void ApplyActiveStateFromNetworkAuthority(float authorityHealth)
+    {
+        if (CurrentState == State.Regroup || CurrentState == State.Retreat || isPermanentlyEliminated)
+        {
+            isPermanentlyEliminated = false;
+            if (retreatDeathDisappearCoroutine != null)
+            {
+                StopCoroutine(retreatDeathDisappearCoroutine);
+                retreatDeathDisappearCoroutine = null;
+            }
+
+            if (!gameObject.activeSelf)
+            {
+                gameObject.SetActive(true);
+            }
+
+            CurrentState = State.Idle;
+            currentTarget = null;
+            invulnerableUntil = 0f;
+            RestoreFlagHolderVisual();
+        }
+
+        if (Mathf.Abs(currentHealth - authorityHealth) > 0.25f)
+        {
+            currentHealth = Mathf.Max(0f, authorityHealth);
+            SyncTroopVisualsToHealth();
+        }
     }
 
     public void TakeDamage(float amount, TroopCombat attacker = null, bool isRangedAttack = false)
     {
         if (CurrentState == State.Dead)
+        {
+            return;
+        }
+
+        if (ShouldIgnoreLocalCombatDamage())
         {
             return;
         }
@@ -1129,6 +1308,202 @@ public class TroopCombat : MonoBehaviour
         {
             EnterRetreat();
         }
+
+        NotifyOwnedCombatAuthorityChanged();
+    }
+
+    /// <summary>
+    /// Siege PVP: non-owner applies owner authority for HP, retreat, and elimination.
+    /// </summary>
+    public void ApplyNetworkCombatAuthority(
+        float authorityHealth,
+        int authorityStateCode,
+        Vector3 worldPosition,
+        float authoritySnapDistance = 2.5f,
+        bool authorityRetreatInvulnerable = false)
+    {
+        // Retreat uses HP=0 while still alive — only state code 2 means eliminated.
+        bool authorityDead = authorityStateCode >= 2;
+        bool authorityRegrouping = authorityStateCode == 3;
+        bool authorityRetreating = authorityStateCode == 1;
+
+        if (authorityDead)
+        {
+            if (!isPermanentlyEliminated && CurrentState != State.Dead)
+            {
+                PermanentDestroy(null);
+            }
+
+            ApplyNetworkAuthorityPosition(worldPosition, authoritySnapDistance, hardSnap: true);
+            return;
+        }
+
+        RestoreFromNetworkAuthorityIfAlive(authorityStateCode);
+
+        if (authorityRegrouping)
+        {
+            CompleteRegroupFromNetworkAuthority(authorityHealth);
+            ApplyNetworkAuthorityPosition(worldPosition, authoritySnapDistance, hardSnap: false);
+            return;
+        }
+
+        if (authorityRetreating)
+        {
+            if (CurrentState != State.Retreat && CurrentState != State.Dead && CurrentState != State.Regroup)
+            {
+                EnterRetreatFromNetworkAuthority();
+            }
+
+            currentHealth = 0f;
+            SyncTroopVisualsToHealth(forceMinimum: true);
+            SetFlagHolderDefeatedVisual();
+            ClearLocalAggressorsTargetingMe();
+
+            if (authorityRetreatInvulnerable)
+            {
+                invulnerableUntil = Time.time + retreatInvulnerabilityDuration;
+            }
+
+            ApplyNetworkAuthorityPosition(worldPosition, authoritySnapDistance, hardSnap: false);
+            return;
+        }
+
+        ApplyActiveStateFromNetworkAuthority(authorityHealth);
+        ApplyNetworkAuthorityPosition(worldPosition, authoritySnapDistance, hardSnap: false);
+    }
+
+    private void RestoreFromNetworkAuthorityIfAlive(int authorityStateCode)
+    {
+        if (authorityStateCode >= 2)
+        {
+            return;
+        }
+
+        if (!isPermanentlyEliminated && CurrentState != State.Dead)
+        {
+            return;
+        }
+
+        isPermanentlyEliminated = false;
+        if (retreatDeathDisappearCoroutine != null)
+        {
+            StopCoroutine(retreatDeathDisappearCoroutine);
+            retreatDeathDisappearCoroutine = null;
+        }
+
+        if (!gameObject.activeSelf)
+        {
+            gameObject.SetActive(true);
+        }
+
+        for (int i = 0; i < troopVisuals.Count; i++)
+        {
+            TroopVisualInstance troopVisual = troopVisuals[i];
+            if (troopVisual.Instance != null && !troopVisual.Instance.activeSelf)
+            {
+                troopVisual.Instance.SetActive(true);
+            }
+        }
+
+        activeTroopVisualCount = 0;
+        for (int i = 0; i < troopVisuals.Count; i++)
+        {
+            TroopVisualInstance troopVisual = troopVisuals[i];
+            if (troopVisual.Instance != null && troopVisual.Instance.activeSelf)
+            {
+                activeTroopVisualCount++;
+            }
+        }
+
+        CurrentState = State.Idle;
+        currentTarget = null;
+        invulnerableUntil = 0f;
+    }
+
+    private void EnterRetreatFromNetworkAuthority()
+    {
+        if (UsesRemoteCombatAuthority())
+        {
+            CurrentState = State.Retreat;
+            currentHealth = 0f;
+            currentTarget = null;
+            invulnerableUntil = Time.time + retreatInvulnerabilityDuration;
+            nextRetreatDestinationRefreshTime = 0f;
+
+            RtsCampManager campManager = RtsCampManager.Instance;
+            retreatPhase = campManager != null && campManager.HasGate(faction)
+                ? RetreatPhase.ToGateOutside
+                : RetreatPhase.ToCamp;
+
+            if (motor != null)
+            {
+                motor.CanReceiveCommands = false;
+                motor.MoveSpeedMultiplier = retreatMoveSpeedMultiplier;
+                UpdateRetreatDestination();
+            }
+
+            SyncTroopVisualsToHealth(forceMinimum: true);
+            SetFlagHolderDefeatedVisual();
+            ClearLocalAggressorsTargetingMe();
+            return;
+        }
+
+        EnterRetreat();
+    }
+
+    private void NotifyOwnedCombatAuthorityChanged()
+    {
+        if (!SiegeMatchSettings.IsSiegePvpMode || UsesRemoteCombatAuthority())
+        {
+            return;
+        }
+
+        SiegePvpSession session = SiegePvpSession.Instance;
+        if (session != null && session.IsMatchRunning)
+        {
+            session.NotifyOwnedTroopCombatChanged(this);
+        }
+    }
+
+    private bool UsesRemoteCombatAuthority()
+    {
+        return ShouldIgnoreLocalCombatDamage();
+    }
+
+    private void ApplyNetworkAuthorityPosition(Vector3 worldPosition, float authoritySnapDistance, bool hardSnap)
+    {
+        if (motor != null)
+        {
+            if (hardSnap)
+            {
+                motor.SnapNetworkPosition(worldPosition);
+            }
+            else
+            {
+                motor.ApplyNetworkPose(
+                    worldPosition,
+                    transform.rotation,
+                    forceAuthority: true,
+                    authoritySnapDistance: authoritySnapDistance);
+            }
+
+            return;
+        }
+
+        Vector3 flat = worldPosition;
+        flat.y = transform.position.y;
+        transform.position = flat;
+    }
+
+    private bool ShouldIgnoreLocalCombatDamage()
+    {
+        if (!SiegeMatchSettings.IsSiegePvpMode)
+        {
+            return false;
+        }
+
+        SiegePvpSession session = SiegePvpSession.Instance;
+        return session != null && session.IsMatchRunning && !session.IsLocallyOwnedTroop(this);
     }
 
     private bool CanBeFinishedByAttackerWhileRetreating(TroopCombat attacker, bool isRangedAttack)
@@ -1355,11 +1730,13 @@ public class TroopCombat : MonoBehaviour
 
         if (HasActiveTroopVisuals())
         {
+            NotifyOwnedCombatAuthorityChanged();
             retreatDeathDisappearCoroutine = StartCoroutine(PlayRetreatDeathDisappearSequence());
             return;
         }
 
         CompletePermanentDestroy();
+        NotifyOwnedCombatAuthorityChanged();
     }
 
     private bool HasActiveTroopVisuals()
@@ -1409,6 +1786,7 @@ public class TroopCombat : MonoBehaviour
 
         retreatDeathDisappearCoroutine = null;
         CompletePermanentDestroy();
+        NotifyOwnedCombatAuthorityChanged();
     }
 
     private List<int> BuildRandomRetreatDeathDisappearOrder()

@@ -35,7 +35,12 @@ public class SiegePlayerBoundary : MonoBehaviour
     [SerializeField, Min(0.05f)] private float blockingWallThickness = 0.5f;
     [SerializeField] private string blockingWallLayerName = "Default";
 
+    [Header("Siege PVP")]
+    [Tooltip("When enabled, this volume is treated as the attacker command-tower play space and is released for the city defender during Siege PVP.")]
+    [SerializeField] private bool attackerCommandTowerVolume = false;
+
     private float lastRespawnTime = -999f;
+    private bool blockingWallsEnabled = true;
     private float enforcementStartTime = -999f;
     private bool enforcementStartTimeInitialized;
     private Bounds allowedBounds;
@@ -56,6 +61,34 @@ public class SiegePlayerBoundary : MonoBehaviour
         }
 
         return collider.GetComponentInParent<SiegePlayerBoundary>() != null;
+    }
+
+    /// <summary>
+    /// Immediately disable command-tower blocking walls before a defender teleport in tracked XR.
+    /// </summary>
+    public void ForceReleaseForPvpDefender()
+    {
+        if (!IsAttackerCommandTowerVolume())
+        {
+            return;
+        }
+
+        blockingWallsEnabled = false;
+        SetBlockingWallsEnabled(false);
+    }
+
+    /// <summary>
+    /// Re-enable tower walls after the defender returns to the menu spawn.
+    /// </summary>
+    public void RestoreAfterPvpDefender()
+    {
+        if (!IsAttackerCommandTowerVolume())
+        {
+            return;
+        }
+
+        blockingWallsEnabled = true;
+        SetBlockingWallsEnabled(true);
     }
 
     private void Awake()
@@ -85,6 +118,8 @@ public class SiegePlayerBoundary : MonoBehaviour
 
     private void LateUpdate()
     {
+        SyncBlockingWallsForPvpDefender();
+
         if (!clampUserEveryFrame || !ShouldEnforceBoundary())
         {
             return;
@@ -137,6 +172,11 @@ public class SiegePlayerBoundary : MonoBehaviour
 
     private bool ShouldEnforceBoundary()
     {
+        if (ShouldIgnoreForPvpDefender())
+        {
+            return false;
+        }
+
         if (allowFallOffTowerDeath)
         {
             SiegeGameManager manager = SiegeGameManager.Instance;
@@ -164,6 +204,60 @@ public class SiegePlayerBoundary : MonoBehaviour
         }
 
         return ResolveUserTransform() != null;
+    }
+
+    private bool ShouldIgnoreForPvpDefender()
+    {
+        if (!IsAttackerCommandTowerVolume() || !SiegeMatchSettings.IsSiegePvpMode)
+        {
+            return false;
+        }
+
+        SiegePvpSession pvp = SiegePvpSession.Instance;
+        return pvp != null && pvp.ShouldKeepDefenderOffCommandTower();
+    }
+
+    private bool IsAttackerCommandTowerVolume()
+    {
+        if (attackerCommandTowerVolume)
+        {
+            return true;
+        }
+
+        return GetComponent<SiegeCommandTowerFallDeath>() != null
+            || GetComponentInParent<SiegeCommandTowerFallDeath>() != null;
+    }
+
+    private void SyncBlockingWallsForPvpDefender()
+    {
+        bool shouldEnable = !ShouldIgnoreForPvpDefender();
+        if (shouldEnable == blockingWallsEnabled)
+        {
+            return;
+        }
+
+        blockingWallsEnabled = shouldEnable;
+        SetBlockingWallsEnabled(shouldEnable);
+    }
+
+    private void SetBlockingWallsEnabled(bool enabled)
+    {
+        if (blockingWallsRoot != null)
+        {
+            Collider[] wallColliders = blockingWallsRoot.GetComponentsInChildren<Collider>(true);
+            for (int i = 0; i < wallColliders.Length; i++)
+            {
+                if (wallColliders[i] != null)
+                {
+                    wallColliders[i].enabled = enabled;
+                }
+            }
+        }
+
+        if (boundaryCollider != null && !boundaryCollider.isTrigger)
+        {
+            boundaryCollider.enabled = enabled;
+        }
     }
 
     private void ApplyClampedPosition(Transform userTransform, Vector3 clampedPosition)

@@ -191,6 +191,11 @@ public class SiegeAudioManager : MonoBehaviour
 
     private void HandleWaveDeployed(int waveNumber)
     {
+        if (!ShouldPlaySiegeVoicelines())
+        {
+            return;
+        }
+
         PlayVoiceClip(ResolveWaveClip(waveNumber), waveOverlapMode);
     }
 
@@ -216,6 +221,11 @@ public class SiegeAudioManager : MonoBehaviour
 
     private void HandleCannonCountdownUpdated(float secondsRemaining)
     {
+        if (!ShouldPlaySiegeVoicelines())
+        {
+            return;
+        }
+
         if (cannonCountdownAnnounced || secondsRemaining > cannonCountdownTriggerSeconds)
         {
             return;
@@ -242,6 +252,11 @@ public class SiegeAudioManager : MonoBehaviour
 
     private void HandleCommanderHit(int hitCount, Vector3 hitPoint)
     {
+        if (!ShouldPlaySiegeVoicelines())
+        {
+            return;
+        }
+
         SiegeCommanderArrowHealth commander = SiegeCommanderArrowHealth.Instance;
         if (commander != null && hitCount >= commander.MaxHits)
         {
@@ -260,7 +275,7 @@ public class SiegeAudioManager : MonoBehaviour
 
     private void HandleRegimentEnteredRetreat(TroopCombat regiment)
     {
-        if (regiment == null)
+        if (regiment == null || !ShouldPlaySiegeVoicelines())
         {
             return;
         }
@@ -282,7 +297,7 @@ public class SiegeAudioManager : MonoBehaviour
 
     private void HandleRegimentRegroupCompleted(TroopCombat regiment)
     {
-        if (regiment == null || regiment.TroopFaction != TroopCombat.Faction.Friendly)
+        if (regiment == null || regiment.TroopFaction != TroopCombat.Faction.Friendly || !ShouldPlaySiegeVoicelines())
         {
             return;
         }
@@ -292,7 +307,7 @@ public class SiegeAudioManager : MonoBehaviour
 
     private void HandleRegimentPermanentlyDestroyed(TroopCombat regiment)
     {
-        if (regiment == null || regiment.TroopFaction != TroopCombat.Faction.Friendly)
+        if (regiment == null || regiment.TroopFaction != TroopCombat.Faction.Friendly || !ShouldPlaySiegeVoicelines())
         {
             return;
         }
@@ -324,9 +339,14 @@ public class SiegeAudioManager : MonoBehaviour
         return false;
     }
 
+    private static bool ShouldPlaySiegeVoicelines()
+    {
+        return !SiegeMatchSettings.IsSiegePvpMode;
+    }
+
     private void PlayGameEndingClip(AudioClip clip)
     {
-        if (clip == null)
+        if (clip == null || !ShouldPlaySiegeVoicelines())
         {
             return;
         }
@@ -339,7 +359,7 @@ public class SiegeAudioManager : MonoBehaviour
 
     private void PlayVoiceClip(AudioClip clip, SiegeAudioOverlapMode overlapMode)
     {
-        if (clip == null)
+        if (clip == null || !ShouldPlaySiegeVoicelines())
         {
             return;
         }
@@ -349,7 +369,7 @@ public class SiegeAudioManager : MonoBehaviour
 
     private void PlayEventClip(AudioClip clip, SiegeAudioOverlapMode overlapMode)
     {
-        if (clip == null)
+        if (clip == null || !ShouldPlaySiegeVoicelines())
         {
             return;
         }

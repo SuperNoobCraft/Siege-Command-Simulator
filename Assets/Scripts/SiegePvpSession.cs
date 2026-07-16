@@ -5,6 +5,7 @@ using System.Globalization;
 using System.Text;
 using UnityEngine;
 using Votanic.vNet.Networking;
+using Votanic.vXR.vCast;
 using Votanic.vXR.vGear;
 using Votanic.vXR.vGear.Networking;
 
@@ -19,6 +20,18 @@ using Votanic.vXR.vGear.Networking;
 public class SiegePvpSession : MonoBehaviour
 {
     private const string MessagePrefix = "SP|";
+
+    private const int PoseSyncFlagHasPath = 1;
+    private const int PoseSyncFlagPathHalted = 2;
+    private const int PoseSyncFlagAdvancing = 4;
+    private const int PoseSyncFlagRetreatInvulnerable = 8;
+
+    private const int CombatStateActive = 0;
+    private const int CombatStateRetreat = 1;
+    private const int CombatStateDead = 2;
+    private const int CombatStateRegroup = 3;
+
+    private const int DamageSyncFlagSuppressCounter = 1;
 
     public enum RoleMode
     {
@@ -64,14 +77,21 @@ public class SiegePvpSession : MonoBehaviour
     [SerializeField, Min(0f)] private float preMatchCountdownSeconds = 5f;
     [SerializeField, Min(30f)] private float matchDurationSeconds = 180f;
     [SerializeField, Range(0.1f, 2f)] private float moveSpeedScale = 1f;
-    [Tooltip("Path commands are always synced on issue. Pose is a low-rate safety net for drift.")]
+    [Tooltip("Owner is canon for their faction. Peer follows the same PATH locally; POSE only soft-corrects XZ drift.")]
     [SerializeField] private bool enablePoseCorrection = true;
-    [SerializeField, Min(0.1f)] private float poseSyncIntervalSeconds = 0.35f;
-    [SerializeField, Range(2, 16)] private int maxSyncedPathPoints = 10;
+    [SerializeField, Min(0.05f)] private float poseSyncIntervalSeconds = 0.12f;
+    [SerializeField, Range(8, 48)] private int maxSyncedPathPoints = 28;
+    [Tooltip("Douglas-Peucker epsilon (m) when a drawn path must be shortened for the network.")]
+    [SerializeField, Min(0.05f)] private float pathNetworkSimplifyEpsilon = 0.35f;
+    [Tooltip("Hard-snap peer XZ when horizontal error exceeds this (meters).")]
+    [SerializeField, Min(0.25f)] private float authoritySnapDistance = 2.5f;
+    [Tooltip("When the owner stops on a drawn path, snap the peer if drift exceeds this (meters).")]
+    [SerializeField, Min(0.25f)] private float pathHaltResyncDistance = 0.8f;
+    [SerializeField, Range(4, 20)] private int maxPoseUnitsPerPacket = 12;
 
     [Header("Prompts")]
     [SerializeField] private string selectedPrompt = "Siege PVP selected. Press Ready when both players are connected.";
-    [SerializeField] private string readyWaitingPrompt = "Ready — waiting for the other player... Press again to cancel.";
+    [SerializeField] private string readyWaitingPrompt = "Ready — waiting for the other player... (press again after a moment to cancel)";
     [SerializeField] private string peerSelectedPrompt = "Opponent selected Siege PVP. Press Ready.";
     [SerializeField] private string countdownFormat = "Siege PVP starts in {0:0}...";
 
@@ -79,6 +99,7 @@ public class SiegePvpSession : MonoBehaviour
     [SerializeField] private bool logNetworkMessages = true;
     [Tooltip("When enabled, pressing Ready starts PVP without a second machine (for editor/host-only tests). Off by default.")]
     [SerializeField] private bool allowSoloTesting = false;
+    [SerializeField] private bool logDefenderTeleport = true;
 
     private LocalRole resolvedRole = LocalRole.Attacker;
     private LobbyPhase lobbyPhase = LobbyPhase.Idle;
@@ -88,6 +109,7 @@ public class SiegePvpSession : MonoBehaviour
     private bool peerReady;
     private bool matchRunning;
     private Coroutine countdownCoroutine;
+    private Coroutine defenderTeleportCoroutine;
     private NetworkManager.OnReceived previousReceivedHandler;
     private bool suppressMenuBroadcast;
     private bool applyingRemotePath;
@@ -99,8 +121,12 @@ public class SiegePvpSession : MonoBehaviour
     private readonly Dictionary<string, RtsUnitMotor> motorBySyncKey = new Dictionary<string, RtsUnitMotor>();
     private readonly List<RtsUnitMotor> syncMotorsByIndex = new List<RtsUnitMotor>();
     private readonly Dictionary<RtsUnitMotor, int> syncIndexByMotor = new Dictionary<RtsUnitMotor, int>();
+    private float readyGraceUntil;
     private float lastPathNotifyTime = -1f;
     private int lastPathNotifyMotorId = int.MinValue;
+    private readonly Dictionary<int, Vector3> lastBroadcastPoseByIndex = new Dictionary<int, Vector3>();
+    private readonly Dictionary<int, Vector3> lastRemotePoseByIndex = new Dictionary<int, Vector3>();
+    private readonly Dictionary<int, int> remotePoseStableCountByIndex = new Dictionary<int, int>();
 
     public static SiegePvpSession Instance { get; private set; }
     public LocalRole Role => resolvedRole;
@@ -110,6 +136,43 @@ public class SiegePvpSession : MonoBehaviour
     public bool IsInPvpLobby => lobbyPhase == LobbyPhase.SelectedWaitingReady
         || lobbyPhase == LobbyPhase.ReadyWaitingPeer
         || lobbyPhase == LobbyPhase.Countdown;
+    /// <summary>
+    /// City defender should stay off the command-tower volume during PVP and through the end-game UI
+    /// until they explicitly return to the menu spawn.
+    /// </summary>
+    public bool ShouldKeepDefenderOffCommandTower()
+    {
+        if (!IsDefender)
+        {
+            return false;
+        }
+
+        if (IsInPvpLobby || IsMatchRunning)
+        {
+            return true;
+        }
+
+        return IsDefenderViewingPostMatchResults();
+    }
+
+    private bool IsDefenderViewingPostMatchResults()
+    {
+        if (lobbyPhase != LobbyPhase.Playing || matchRunning)
+        {
+            return false;
+        }
+
+        SiegeGameManager manager = SiegeGameManager.Instance;
+        if (manager == null)
+        {
+            return false;
+        }
+
+        SiegeGameManager.MatchState state = manager.CurrentState;
+        return state == SiegeGameManager.MatchState.Won
+            || state == SiegeGameManager.MatchState.Lost;
+    }
+
     public bool BlocksModeSelect => IsInPvpLobby
         || matchRunning
         || pendingShowModeSelectAfterRelease
@@ -241,8 +304,9 @@ public class SiegePvpSession : MonoBehaviour
             return;
         }
 
-        // Escape softlock: cancel lobby while waiting for the other player.
-        if (lobbyPhase == LobbyPhase.ReadyWaitingPeer)
+        // Cancel only after a short grace — accidental click right after Ready was
+        // kicking the ready player back to mode select (and broadcasting CANCEL).
+        if (lobbyPhase == LobbyPhase.ReadyWaitingPeer && Time.unscaledTime >= readyGraceUntil)
         {
             CancelPvpLobbyToMenu(broadcast: true);
         }
@@ -316,6 +380,7 @@ public class SiegePvpSession : MonoBehaviour
 
         localReady = true;
         lobbyPhase = LobbyPhase.ReadyWaitingPeer;
+        readyGraceUntil = Time.unscaledTime + 1.25f;
         nextLobbyAnnounceTime = 0f;
         BroadcastReady();
         RefreshLobbyStatus();
@@ -386,24 +451,48 @@ public class SiegePvpSession : MonoBehaviour
             return;
         }
 
-        if (!IsAttacker || !matchRunning)
+        if (!matchRunning)
         {
             return;
         }
 
-        // Attacker (host / siege side) owns outcome broadcast.
+        // Won (cannons fired) is attacker-timer driven — only attacker broadcasts.
+        // Lost (cannon overrun) is often detected first on the defender's machine where
+        // their units actually stand on the site — that side MUST broadcast or the peer
+        // keeps playing for seconds.
         if (state == SiegeGameManager.MatchState.Won)
         {
+            if (!IsAttacker)
+            {
+                return;
+            }
+
             matchRunning = false;
+            SendCommand("FX", "FIRE");
             SendCommand("WIN", "attacker");
+            PlayLocalFx("FIRE");
         }
         else if (state == SiegeGameManager.MatchState.Lost)
         {
             matchRunning = false;
+            if (IsDefender)
+            {
+                ReleaseCommandTowerBoundaryForDefender();
+            }
+
             string reason = SiegeGameManager.Instance != null
                 ? SiegeGameManager.Instance.DefeatReason
                 : "The cannons were overrun.";
-            SendCommand("LOSE", "attacker|" + Sanitize(reason));
+            // Fall / arrow deaths are not cannon overrun — skip OVERRUN FX for those.
+            bool isOverrun = reason.IndexOf("occupied", StringComparison.OrdinalIgnoreCase) >= 0
+                || reason.IndexOf("cannon", StringComparison.OrdinalIgnoreCase) >= 0;
+            if (isOverrun)
+            {
+                SendCommand("FX", "OVERRUN");
+                PlayLocalFx("OVERRUN");
+            }
+
+            SendCommand("LOSE", Sanitize(reason));
         }
     }
 
@@ -521,6 +610,7 @@ public class SiegePvpSession : MonoBehaviour
         {
             case "SELECT":
                 peerSelected = true;
+                // Never treat a late peer SELECT as a reason to leave Ready — only CANCEL does.
                 if (parts.Length >= p + 2
                     && TryParseFloat(parts[p], out float peerDuration)
                     && TryParseFloat(parts[p + 1], out float peerSpeed))
@@ -569,16 +659,23 @@ public class SiegePvpSession : MonoBehaviour
             case "PATH":
                 HandleRemotePath(parts, p);
                 break;
+            case "STOP":
+                HandleRemoteStop(parts, p);
+                break;
             case "POSE":
                 HandleRemotePose(parts, p);
+                break;
+            case "DMG":
+                HandleRemoteDamage(parts, p);
+                break;
+            case "FX":
+                HandleRemoteFx(parts, p);
                 break;
             case "WIN":
                 ApplyRemoteOutcome(attackerWon: true, reason: string.Empty);
                 break;
             case "LOSE":
-                ApplyRemoteOutcome(
-                    attackerWon: false,
-                    reason: parts.Length > p + 1 ? parts[p + 1] : "The cannons were overrun.");
+                ApplyRemoteOutcome(attackerWon: false, reason: JoinLoseReason(parts, p));
                 break;
             case "MENU":
                 ReturnToMenuLocal(broadcast: false);
@@ -724,13 +821,18 @@ public class SiegePvpSession : MonoBehaviour
 
         if (IsDefender && defenderSpawnPoint != null)
         {
-            TeleportUser(defenderSpawnPoint);
+            StopDefenderTeleportRoutine();
+            defenderTeleportCoroutine = StartCoroutine(TeleportDefenderToSpawnWhenReady());
         }
 
         if (SiegeMatchUi.Instance != null)
         {
             SiegeMatchUi.Instance.HideDifficultyOptionsForPvpLobby();
+            SiegeMatchUi.Instance.ApplyPvpRoleHud(IsDefender);
         }
+
+        PreparePvpModeForCountdown();
+        BeginDefenderGateExitDuringCountdown();
 
         StopCountdown();
         if (IsAttacker || networking == null)
@@ -763,12 +865,44 @@ public class SiegePvpSession : MonoBehaviour
         BeginGameplay();
     }
 
+    private void PreparePvpModeForCountdown()
+    {
+        SiegeGameManager manager = SiegeGameManager.Instance;
+        matchDurationSeconds = Mathf.Max(30f, matchDurationSeconds);
+        moveSpeedScale = Mathf.Clamp(moveSpeedScale, 0.1f, 2f);
+        SiegeMatchSettings.Configure(
+            SiegeGameMode.SiegePvp,
+            manager != null ? manager.DemoMoveSpeedScale : 0.6f,
+            matchDurationSeconds,
+            moveSpeedScale);
+        ApplyMoveSpeedToAllTroops();
+        ConfigureCityDefenderRegimentsForPvp();
+    }
+
+    private void BeginDefenderGateExitDuringCountdown()
+    {
+        if (EnemyWaveController.Instance == null)
+        {
+            return;
+        }
+
+        EnemyWaveController.Instance.DeployAllForSiegePvp();
+
+        if (logNetworkMessages)
+        {
+            Debug.Log("SiegePvp defender regiments exiting gate during countdown.", this);
+        }
+    }
+
     private void BeginGameplay()
     {
         StopCountdown();
         lobbyPhase = LobbyPhase.Playing;
         matchRunning = true;
         nextPoseSyncTime = 0f;
+        lastBroadcastPoseByIndex.Clear();
+        lastRemotePoseByIndex.Clear();
+        remotePoseStableCountByIndex.Clear();
         motorBySyncKey.Clear();
         EnsureWandBound();
 
@@ -814,7 +948,9 @@ public class SiegePvpSession : MonoBehaviour
 
         ApplyMoveSpeedToAllTroops();
         RebuildUnitSyncTable();
+        ApplyNetworkAuthorityRoles();
         EnsureWandBound();
+        ApplyLocalHudViewpoint();
 
         if (logNetworkMessages)
         {
@@ -823,6 +959,53 @@ public class SiegePvpSession : MonoBehaviour
                 + " with " + syncMotorsByIndex.Count + " sync units.",
                 this);
         }
+    }
+
+    private void ApplyNetworkAuthorityRoles()
+    {
+        // Both peers simulate FollowPath locally. POSE only nudges XZ — never suppress motors.
+        for (int i = 0; i < syncMotorsByIndex.Count; i++)
+        {
+            if (syncMotorsByIndex[i] != null)
+            {
+                syncMotorsByIndex[i].SuppressLocalSimulation = false;
+            }
+        }
+    }
+
+    private void ClearNetworkAuthorityRoles()
+    {
+        UnbindMotorSyncEvents();
+        lastBroadcastPoseByIndex.Clear();
+        lastRemotePoseByIndex.Clear();
+        remotePoseStableCountByIndex.Clear();
+
+        for (int i = 0; i < syncMotorsByIndex.Count; i++)
+        {
+            if (syncMotorsByIndex[i] != null)
+            {
+                syncMotorsByIndex[i].SuppressLocalSimulation = false;
+            }
+        }
+
+        RtsUnitMotor[] all = FindObjectsOfType<RtsUnitMotor>(true);
+        for (int i = 0; i < all.Length; i++)
+        {
+            if (all[i] != null)
+            {
+                all[i].SuppressLocalSimulation = false;
+            }
+        }
+    }
+
+    private void ApplyLocalHudViewpoint()
+    {
+        if (SiegeMatchUi.Instance == null)
+        {
+            return;
+        }
+
+        SiegeMatchUi.Instance.ApplyPvpRoleHud(IsDefender);
     }
 
     private static void ApplyMoveSpeedToAllTroops()
@@ -876,8 +1059,38 @@ public class SiegePvpSession : MonoBehaviour
         HandleLocalPathCommand(motor, path);
     }
 
+    /// <summary>
+    /// Click-to-stop (no path drawn) — peer must stop the same unit.
+    /// </summary>
+    public void NotifyStopFromCommander(RtsUnitMotor motor)
+    {
+        if (!matchRunning || applyingRemotePath || motor == null)
+        {
+            return;
+        }
+
+        int syncIndex = ResolveSyncIndex(motor);
+        if (syncIndex < 0)
+        {
+            return;
+        }
+
+        string token = string.IsNullOrEmpty(localInstanceToken) ? "local" : localInstanceToken;
+        Send(string.Format(
+            CultureInfo.InvariantCulture,
+            "SP|STOP|{0}|{1}",
+            token,
+            syncIndex));
+
+        if (logNetworkMessages)
+        {
+            Debug.Log("SiegePvp STOP send unit#" + syncIndex + " '" + motor.name + "'", this);
+        }
+    }
+
     private void RebuildUnitSyncTable()
     {
+        UnbindMotorSyncEvents();
         syncMotorsByIndex.Clear();
         syncIndexByMotor.Clear();
         motorBySyncKey.Clear();
@@ -905,6 +1118,134 @@ public class SiegePvpSession : MonoBehaviour
             motorBySyncKey[SanitizeSyncKey(GetUnitSyncKey(motor.transform))] = motor;
             motorBySyncKey[motor.gameObject.name] = motor;
         }
+
+        BindMotorSyncEvents();
+    }
+
+    private void BindMotorSyncEvents()
+    {
+        for (int i = 0; i < syncMotorsByIndex.Count; i++)
+        {
+            RtsUnitMotor motor = syncMotorsByIndex[i];
+            if (motor == null)
+            {
+                continue;
+            }
+
+            motor.PathMovementHalted -= HandleOwnedPathMovementHalted;
+            motor.PathMovementHalted += HandleOwnedPathMovementHalted;
+        }
+    }
+
+    private void UnbindMotorSyncEvents()
+    {
+        for (int i = 0; i < syncMotorsByIndex.Count; i++)
+        {
+            RtsUnitMotor motor = syncMotorsByIndex[i];
+            if (motor != null)
+            {
+                motor.PathMovementHalted -= HandleOwnedPathMovementHalted;
+            }
+        }
+    }
+
+    private void HandleOwnedPathMovementHalted(RtsUnitMotor motor)
+    {
+        if (!matchRunning || applyingRemotePath || motor == null || !IsLocallyOwnedMotor(motor))
+        {
+            return;
+        }
+
+        int syncIndex = ResolveSyncIndex(motor);
+        if (syncIndex < 0)
+        {
+            return;
+        }
+
+        BroadcastOwnedStop(syncIndex, motor, reason: "path-halted");
+        BroadcastOwnedMotorPoseImmediate(motor, syncIndex, forceHaltedFlag: true);
+    }
+
+    private void BroadcastOwnedStop(int syncIndex, RtsUnitMotor motor, string reason)
+    {
+        string token = string.IsNullOrEmpty(localInstanceToken) ? "local" : localInstanceToken;
+        Send(string.Format(
+            CultureInfo.InvariantCulture,
+            "SP|STOP|{0}|{1}",
+            token,
+            syncIndex));
+
+        if (logNetworkMessages)
+        {
+            Debug.Log(
+                "SiegePvp STOP send (" + reason + ") unit#" + syncIndex + " '" + motor.name + "'",
+                this);
+        }
+    }
+
+    private void BroadcastOwnedMotorPoseImmediate(RtsUnitMotor motor, int syncIndex, bool forceHaltedFlag)
+    {
+        if (motor == null)
+        {
+            return;
+        }
+
+        TroopCombat troop = motor.GetComponent<TroopCombat>();
+        Vector3 position = motor.transform.position;
+        int syncFlags = BuildPoseSyncFlags(motor, syncIndex, position, forceHaltedFlag);
+        int stateCode = EncodeCombatStateCode(troop);
+        float hp = troop != null ? troop.CurrentHealth : 0f;
+        string token = string.IsNullOrEmpty(localInstanceToken) ? "local" : localInstanceToken;
+
+        Send(string.Format(
+            CultureInfo.InvariantCulture,
+            "SP|POSE|{0}|{1},{2:0.###},{3:0.###},{4:0.###},{5:0.##},{6},{7}",
+            token,
+            syncIndex,
+            position.x,
+            position.y,
+            position.z,
+            hp,
+            stateCode,
+            syncFlags));
+
+        lastBroadcastPoseByIndex[syncIndex] = position;
+    }
+
+    private int BuildPoseSyncFlags(RtsUnitMotor motor, int syncIndex, Vector3 position, bool forceHaltedFlag)
+    {
+        int flags = 0;
+        if (motor.HasActivePath || motor.HasDestination)
+        {
+            flags |= PoseSyncFlagHasPath;
+        }
+
+        if (forceHaltedFlag || motor.IsPathMovementHalted)
+        {
+            flags |= PoseSyncFlagPathHalted;
+        }
+
+        TroopCombat troop = motor.GetComponent<TroopCombat>();
+        if (troop != null && troop.IsRetreatInvulnerable)
+        {
+            flags |= PoseSyncFlagRetreatInvulnerable;
+        }
+
+        if (lastBroadcastPoseByIndex.TryGetValue(syncIndex, out Vector3 previous))
+        {
+            Vector3 delta = position - previous;
+            delta.y = 0f;
+            if (delta.sqrMagnitude >= 0.0225f) // ~0.15m
+            {
+                flags |= PoseSyncFlagAdvancing;
+            }
+        }
+        else
+        {
+            flags |= PoseSyncFlagAdvancing;
+        }
+
+        return flags;
     }
 
     private int ResolveSyncIndex(RtsUnitMotor motor)
@@ -953,17 +1294,24 @@ public class SiegePvpSession : MonoBehaviour
             return;
         }
 
-        List<Vector3> compressed = CompressPath(path, Mathf.Max(2, maxSyncedPathPoints));
-        StringBuilder builder = new StringBuilder(64 + compressed.Count * 20);
+        List<Vector3> compressed = path as List<Vector3> ?? new List<Vector3>(path);
+        if (compressed.Count > maxSyncedPathPoints)
+        {
+            compressed = RtsPathUtility.PreparePathForNetworkSync(
+                compressed,
+                Mathf.Max(2, maxSyncedPathPoints),
+                pathNetworkSimplifyEpsilon);
+        }
+        StringBuilder builder = new StringBuilder(64 + compressed.Count * 24);
         string token = string.IsNullOrEmpty(localInstanceToken) ? "local" : localInstanceToken;
         builder.Append("SP|PATH|").Append(token).Append('|').Append(syncIndex);
         for (int i = 0; i < compressed.Count; i++)
         {
             Vector3 point = compressed[i];
             builder.Append('|')
-                .Append(point.x.ToString("0.##", CultureInfo.InvariantCulture)).Append(',')
-                .Append(point.y.ToString("0.##", CultureInfo.InvariantCulture)).Append(',')
-                .Append(point.z.ToString("0.##", CultureInfo.InvariantCulture));
+                .Append(point.x.ToString("0.###", CultureInfo.InvariantCulture)).Append(',')
+                .Append(point.y.ToString("0.###", CultureInfo.InvariantCulture)).Append(',')
+                .Append(point.z.ToString("0.###", CultureInfo.InvariantCulture));
         }
 
         if (logNetworkMessages)
@@ -975,36 +1323,6 @@ public class SiegePvpSession : MonoBehaviour
         }
 
         Send(builder.ToString());
-    }
-
-    private static List<Vector3> CompressPath(IReadOnlyList<Vector3> path, int maxPoints)
-    {
-        List<Vector3> result = new List<Vector3>(maxPoints);
-        if (path == null || path.Count == 0)
-        {
-            return result;
-        }
-
-        if (path.Count <= maxPoints)
-        {
-            for (int i = 0; i < path.Count; i++)
-            {
-                result.Add(path[i]);
-            }
-
-            return result;
-        }
-
-        result.Add(path[0]);
-        for (int i = 1; i < maxPoints - 1; i++)
-        {
-            float t = i / (float)(maxPoints - 1);
-            int idx = Mathf.Clamp(Mathf.RoundToInt(t * (path.Count - 1)), 0, path.Count - 1);
-            result.Add(path[idx]);
-        }
-
-        result.Add(path[path.Count - 1]);
-        return result;
     }
 
     private void TryBroadcastOwnedUnitPoses()
@@ -1026,14 +1344,58 @@ public class SiegePvpSession : MonoBehaviour
         }
 
         string token = string.IsNullOrEmpty(localInstanceToken) ? "local" : localInstanceToken;
-        StringBuilder builder = new StringBuilder(128);
-        builder.Append("SP|POSE|").Append(token);
-        int count = 0;
+        int packetCap = Mathf.Max(4, maxPoseUnitsPerPacket);
 
+        // Collect owned motors: in combat first, then movers, then idle.
+        List<int> ordered = new List<int>(syncMotorsByIndex.Count);
+        for (int pass = 0; pass < 3; pass++)
+        {
+            for (int i = 0; i < syncMotorsByIndex.Count; i++)
+            {
+                RtsUnitMotor motor = syncMotorsByIndex[i];
+                if (motor == null || !motor.gameObject.activeInHierarchy)
+                {
+                    continue;
+                }
+
+                TroopCombat troop = motor.GetComponent<TroopCombat>();
+                if (troop == null || troop.TroopFaction != ownedFaction)
+                {
+                    continue;
+                }
+
+                bool inCombat = troop.CurrentState == TroopCombat.State.Fight
+                    || troop.IsRetreating
+                    || troop.CurrentState == TroopCombat.State.Regroup
+                    || troop.CurrentState == TroopCombat.State.Dead;
+                bool moving = motor.HasActivePath || motor.HasDestination;
+
+                bool include = pass switch
+                {
+                    0 => inCombat,
+                    1 => !inCombat && moving,
+                    _ => !inCombat && !moving
+                };
+
+                if (!include || ordered.Contains(i))
+                {
+                    continue;
+                }
+
+                ordered.Add(i);
+            }
+        }
+
+        // Halted drawn-path units still need priority correction even though hasDestination is false.
         for (int i = 0; i < syncMotorsByIndex.Count; i++)
         {
+            if (ordered.Contains(i))
+            {
+                continue;
+            }
+
             RtsUnitMotor motor = syncMotorsByIndex[i];
-            if (motor == null || !motor.gameObject.activeInHierarchy)
+            if (motor == null || !motor.gameObject.activeInHierarchy || !motor.IsPathMovementHalted)
             {
                 continue;
             }
@@ -1044,21 +1406,34 @@ public class SiegePvpSession : MonoBehaviour
                 continue;
             }
 
-            if (!motor.HasActivePath && count > 8)
-            {
-                continue;
-            }
-
-            Vector3 p = motor.transform.position;
-            builder.Append('|').Append(i).Append(',')
-                .Append(p.x.ToString("0.##", CultureInfo.InvariantCulture)).Append(',')
-                .Append(p.y.ToString("0.##", CultureInfo.InvariantCulture)).Append(',')
-                .Append(p.z.ToString("0.##", CultureInfo.InvariantCulture));
-            count++;
+            ordered.Insert(0, i);
         }
 
-        if (count > 0)
+        // Multiple packets so every owned unit is corrected every interval (no silent drop).
+        for (int start = 0; start < ordered.Count; start += packetCap)
         {
+            StringBuilder builder = new StringBuilder(128 + packetCap * 28);
+            builder.Append("SP|POSE|").Append(token);
+            int end = Mathf.Min(start + packetCap, ordered.Count);
+            for (int n = start; n < end; n++)
+            {
+                int i = ordered[n];
+                RtsUnitMotor motor = syncMotorsByIndex[i];
+                TroopCombat troop = motor != null ? motor.GetComponent<TroopCombat>() : null;
+                Vector3 p = motor.transform.position;
+                int stateCode = EncodeCombatStateCode(troop);
+                float hp = troop != null ? troop.CurrentHealth : 0f;
+                int syncFlags = BuildPoseSyncFlags(motor, i, p, forceHaltedFlag: false);
+                builder.Append('|').Append(i).Append(',')
+                    .Append(p.x.ToString("0.###", CultureInfo.InvariantCulture)).Append(',')
+                    .Append(p.y.ToString("0.###", CultureInfo.InvariantCulture)).Append(',')
+                    .Append(p.z.ToString("0.###", CultureInfo.InvariantCulture)).Append(',')
+                    .Append(hp.ToString("0.##", CultureInfo.InvariantCulture)).Append(',')
+                    .Append(stateCode.ToString(CultureInfo.InvariantCulture)).Append(',')
+                    .Append(syncFlags.ToString(CultureInfo.InvariantCulture));
+                lastBroadcastPoseByIndex[i] = p;
+            }
+
             Send(builder.ToString());
         }
     }
@@ -1089,6 +1464,11 @@ public class SiegePvpSession : MonoBehaviour
             return;
         }
 
+        if (IsLocallyOwnedMotor(motor))
+        {
+            return;
+        }
+
         List<Vector3> path = new List<Vector3>(parts.Length - payloadStart - 1);
         for (int i = payloadStart + 1; i < parts.Length; i++)
         {
@@ -1114,12 +1494,19 @@ public class SiegePvpSession : MonoBehaviour
         applyingRemotePath = true;
         try
         {
+            motor.SuppressLocalSimulation = false;
+            motor.ApplyNetworkPose(
+                path[0],
+                motor.transform.rotation,
+                forceAuthority: true,
+                authoritySnapDistance: Mathf.Min(authoritySnapDistance, 1.25f));
             motor.FollowPath(path);
+
             if (logNetworkMessages)
             {
                 Debug.Log(
-                    "SiegePvp applied remote PATH '" + idPart + "' -> " + motor.name
-                    + " (" + path.Count + " pts).",
+                    "SiegePvp remote PATH '" + idPart + "' -> " + motor.name
+                    + " (pts=" + path.Count + ").",
                     this);
             }
         }
@@ -1131,7 +1518,7 @@ public class SiegePvpSession : MonoBehaviour
 
     private void HandleRemotePose(string[] parts, int payloadStart)
     {
-        // Compact: SP|POSE|token|index,x,y,z|index,x,y,z|...
+        // SP|POSE|token|index,x,y,z[,hp,state[,syncFlags]]|...
         if (parts.Length <= payloadStart)
         {
             return;
@@ -1162,12 +1549,206 @@ public class SiegePvpSession : MonoBehaviour
                     continue;
                 }
 
-                motor.ApplyNetworkPose(new Vector3(x, y, z), motor.transform.rotation);
+                motor.SuppressLocalSimulation = false;
+                Vector3 remotePos = new Vector3(x, y, z);
+                TroopCombat troop = motor.GetComponent<TroopCombat>();
+
+                float authorityHealth = 0f;
+                int authorityState = 0;
+                int syncFlags = 0;
+
+                bool hasAuthority = packed.Length >= 6
+                    && TryParseFloat(packed[4], out authorityHealth)
+                    && int.TryParse(packed[5], NumberStyles.Integer, CultureInfo.InvariantCulture, out authorityState);
+
+                if (packed.Length >= 7)
+                {
+                    int.TryParse(packed[6], NumberStyles.Integer, CultureInfo.InvariantCulture, out syncFlags);
+                }
+
+                bool ownerPathHalted = (syncFlags & PoseSyncFlagPathHalted) != 0;
+                bool ownerHasPath = (syncFlags & PoseSyncFlagHasPath) != 0;
+                bool ownerAdvancing = (syncFlags & PoseSyncFlagAdvancing) != 0;
+                bool ownerRetreatInvulnerable = (syncFlags & PoseSyncFlagRetreatInvulnerable) != 0;
+
+                Vector3 currentPos = motor.transform.position;
+                Vector3 delta = remotePos - currentPos;
+                delta.y = 0f;
+                float horizontalErrorSqr = delta.sqrMagnitude;
+                float haltResyncSqr = pathHaltResyncDistance * pathHaltResyncDistance;
+
+                UpdateRemotePoseStability(syncIndex, remotePos, ownerAdvancing);
+
+                bool ownerStationary = !ownerAdvancing
+                    || ownerPathHalted
+                    || GetRemotePoseStableCount(syncIndex) >= 2;
+                bool peerDriftedWhileOwnerStopped = ownerStationary
+                    && (motor.HasActivePath || motor.HasDestination)
+                    && horizontalErrorSqr >= haltResyncSqr;
+                bool forcePeerResync = ownerPathHalted || peerDriftedWhileOwnerStopped;
+
+                if (forcePeerResync)
+                {
+                    if (motor.HasActivePath || motor.HasDestination)
+                    {
+                        motor.Stop();
+                    }
+
+                    motor.SnapNetworkPosition(remotePos);
+
+                    if (hasAuthority && troop != null)
+                    {
+                        troop.ApplyNetworkCombatAuthority(
+                            authorityHealth,
+                            authorityState,
+                            remotePos,
+                            authoritySnapDistance,
+                            ownerRetreatInvulnerable);
+                    }
+
+                    continue;
+                }
+
+                if (hasAuthority && troop != null)
+                {
+                    troop.ApplyNetworkCombatAuthority(
+                        authorityHealth,
+                        authorityState,
+                        remotePos,
+                        authoritySnapDistance,
+                        ownerRetreatInvulnerable);
+                    continue;
+                }
+
+                motor.ApplyNetworkPose(
+                    remotePos,
+                    motor.transform.rotation,
+                    forceAuthority: true,
+                    authoritySnapDistance: authoritySnapDistance);
             }
         }
         finally
         {
             applyingRemotePath = false;
+        }
+    }
+
+    private void UpdateRemotePoseStability(int syncIndex, Vector3 remotePos, bool ownerAdvancing)
+    {
+        if (!lastRemotePoseByIndex.TryGetValue(syncIndex, out Vector3 previous))
+        {
+            lastRemotePoseByIndex[syncIndex] = remotePos;
+            remotePoseStableCountByIndex[syncIndex] = 0;
+            return;
+        }
+
+        Vector3 delta = remotePos - previous;
+        delta.y = 0f;
+        if (!ownerAdvancing || delta.sqrMagnitude < 0.0225f)
+        {
+            remotePoseStableCountByIndex[syncIndex] = GetRemotePoseStableCount(syncIndex) + 1;
+        }
+        else
+        {
+            remotePoseStableCountByIndex[syncIndex] = 0;
+        }
+
+        lastRemotePoseByIndex[syncIndex] = remotePos;
+    }
+
+    private int GetRemotePoseStableCount(int syncIndex)
+    {
+        return remotePoseStableCountByIndex.TryGetValue(syncIndex, out int count) ? count : 0;
+    }
+
+    private static int EncodeCombatStateCode(TroopCombat troop)
+    {
+        if (troop == null)
+        {
+            return CombatStateActive;
+        }
+
+        if (troop.CurrentState == TroopCombat.State.Dead)
+        {
+            return CombatStateDead;
+        }
+
+        if (troop.CurrentState == TroopCombat.State.Regroup)
+        {
+            return CombatStateRegroup;
+        }
+
+        if (troop.IsRetreating)
+        {
+            return CombatStateRetreat;
+        }
+
+        return CombatStateActive;
+    }
+
+    private void HandleRemoteStop(string[] parts, int payloadStart)
+    {
+        if (parts.Length <= payloadStart)
+        {
+            return;
+        }
+
+        if (!int.TryParse(parts[payloadStart], NumberStyles.Integer, CultureInfo.InvariantCulture, out int syncIndex))
+        {
+            return;
+        }
+
+        RtsUnitMotor motor = FindMotorBySyncIndex(syncIndex);
+        if (motor == null || IsLocallyOwnedMotor(motor))
+        {
+            return;
+        }
+
+        applyingRemotePath = true;
+        try
+        {
+            motor.Stop();
+            if (logNetworkMessages)
+            {
+                Debug.Log("SiegePvp applied remote STOP unit#" + syncIndex + " -> " + motor.name, this);
+            }
+        }
+        finally
+        {
+            applyingRemotePath = false;
+        }
+    }
+
+    private void HandleRemoteFx(string[] parts, int payloadStart)
+    {
+        string fx = parts.Length > payloadStart ? parts[payloadStart] : string.Empty;
+        PlayLocalFx(fx);
+    }
+
+    private static void PlayLocalFx(string fx)
+    {
+        if (string.IsNullOrEmpty(fx))
+        {
+            return;
+        }
+
+        SiegeRevealChildren[] reveals = FindObjectsOfType<SiegeRevealChildren>(true);
+        for (int i = 0; i < reveals.Length; i++)
+        {
+            SiegeRevealChildren reveal = reveals[i];
+            if (reveal == null)
+            {
+                continue;
+            }
+
+            if (string.Equals(fx, "FIRE", StringComparison.OrdinalIgnoreCase))
+            {
+                reveal.RevealCannonFireEffects();
+            }
+            else if (string.Equals(fx, "OVERRUN", StringComparison.OrdinalIgnoreCase))
+            {
+                reveal.RevealCannonOverrunEffects();
+            }
         }
     }
 
@@ -1188,6 +1769,230 @@ public class SiegePvpSession : MonoBehaviour
             ? TroopCombat.Faction.Enemy
             : TroopCombat.Faction.Friendly;
         return troop.TroopFaction == owned;
+    }
+
+    /// <summary>True when this machine is the network authority for the regiment.</summary>
+    public bool IsLocallyOwnedTroop(TroopCombat troop)
+    {
+        if (troop == null)
+        {
+            return false;
+        }
+
+        RtsUnitMotor unitMotor = troop.GetComponent<RtsUnitMotor>();
+        return unitMotor != null && IsLocallyOwnedMotor(unitMotor);
+    }
+
+    /// <summary>
+    /// PVP: owner and peer must simulate the same waypoint list (not a richer local-only path).
+    /// </summary>
+    public List<Vector3> CanonicalizePathForMatch(IReadOnlyList<Vector3> path)
+    {
+        if (path == null || path.Count == 0)
+        {
+            return new List<Vector3>();
+        }
+
+        List<Vector3> sanitized = RtsPathUtility.SanitizeDrawnPath(path);
+        return RtsPathUtility.PreparePathForNetworkSync(
+            sanitized,
+            Mathf.Max(2, maxSyncedPathPoints),
+            pathNetworkSimplifyEpsilon);
+    }
+
+    /// <summary>Push HP/retreat/death immediately after local combat resolves on the authority machine.</summary>
+    public void NotifyOwnedTroopCombatChanged(TroopCombat troop)
+    {
+        if (!matchRunning || troop == null || !IsLocallyOwnedTroop(troop))
+        {
+            return;
+        }
+
+        RtsUnitMotor motor = troop.GetComponent<RtsUnitMotor>();
+        if (motor == null)
+        {
+            return;
+        }
+
+        int syncIndex = ResolveSyncIndex(motor);
+        if (syncIndex < 0)
+        {
+            return;
+        }
+
+        BroadcastOwnedMotorPoseImmediate(motor, syncIndex, forceHaltedFlag: false);
+    }
+
+    /// <summary>
+    /// Owned attacker hit a peer-owned victim — apply damage on the victim owner's machine.
+    /// </summary>
+    public void NotifyInflictedDamage(
+        TroopCombat attacker,
+        TroopCombat victim,
+        float amount,
+        bool isRangedAttack,
+        bool suppressCounterReply = false)
+    {
+        if (!matchRunning || victim == null || amount <= 0f)
+        {
+            return;
+        }
+
+        // Counter-strikes must still send while applying remote combat/path updates.
+        if (applyingRemotePath && !suppressCounterReply)
+        {
+            return;
+        }
+
+        if (IsLocallyOwnedTroop(victim))
+        {
+            victim.TakeDamage(amount, attacker, isRangedAttack);
+            return;
+        }
+
+        RtsUnitMotor victimMotor = victim.GetComponent<RtsUnitMotor>();
+        int victimIndex = ResolveSyncIndex(victimMotor);
+        if (victimIndex < 0)
+        {
+            return;
+        }
+
+        int attackerIndex = -1;
+        if (attacker != null)
+        {
+            RtsUnitMotor attackerMotor = attacker.GetComponent<RtsUnitMotor>();
+            if (attackerMotor != null)
+            {
+                attackerIndex = ResolveSyncIndex(attackerMotor);
+            }
+        }
+
+        int dmgFlags = suppressCounterReply ? DamageSyncFlagSuppressCounter : 0;
+        string token = string.IsNullOrEmpty(localInstanceToken) ? "local" : localInstanceToken;
+        Send(string.Format(
+            CultureInfo.InvariantCulture,
+            "SP|DMG|{0}|{1}|{2:0.##}|{3}|{4}|{5}",
+            token,
+            victimIndex,
+            amount,
+            isRangedAttack ? 1 : 0,
+            attackerIndex,
+            dmgFlags));
+
+        if (logNetworkMessages)
+        {
+            Debug.Log(
+                "SiegePvp DMG send victim#" + victimIndex
+                + " amount=" + amount.ToString("0.##", CultureInfo.InvariantCulture)
+                + " ranged=" + isRangedAttack,
+                this);
+        }
+    }
+
+    public void ClearLocalAggressorsTargeting(TroopCombat target)
+    {
+        if (!matchRunning || target == null)
+        {
+            return;
+        }
+
+        TroopCombat.Faction ownedFaction = IsDefender
+            ? TroopCombat.Faction.Enemy
+            : TroopCombat.Faction.Friendly;
+
+        for (int i = 0; i < syncMotorsByIndex.Count; i++)
+        {
+            RtsUnitMotor motor = syncMotorsByIndex[i];
+            if (motor == null)
+            {
+                continue;
+            }
+
+            TroopCombat troop = motor.GetComponent<TroopCombat>();
+            if (troop == null
+                || troop.TroopFaction != ownedFaction
+                || troop.CurrentTarget != target)
+            {
+                continue;
+            }
+
+            troop.ClearCurrentTarget();
+        }
+    }
+
+    private void HandleRemoteDamage(string[] parts, int payloadStart)
+    {
+        // SP|DMG|token|victimIndex|amount|isRanged|attackerIndex|flags
+        if (parts.Length < payloadStart + 2)
+        {
+            return;
+        }
+
+        if (!int.TryParse(parts[payloadStart], NumberStyles.Integer, CultureInfo.InvariantCulture, out int victimIndex)
+            || !TryParseFloat(parts[payloadStart + 1], out float amount))
+        {
+            return;
+        }
+
+        bool isRanged = parts.Length > payloadStart + 2
+            && int.TryParse(parts[payloadStart + 2], NumberStyles.Integer, CultureInfo.InvariantCulture, out int rangedFlag)
+            && rangedFlag != 0;
+
+        TroopCombat attacker = null;
+        if (parts.Length > payloadStart + 3
+            && int.TryParse(parts[payloadStart + 3], NumberStyles.Integer, CultureInfo.InvariantCulture, out int attackerIndex)
+            && attackerIndex >= 0)
+        {
+            RtsUnitMotor attackerMotor = FindMotorBySyncIndex(attackerIndex);
+            if (attackerMotor != null)
+            {
+                attacker = attackerMotor.GetComponent<TroopCombat>();
+            }
+        }
+
+        int dmgFlags = 0;
+        if (parts.Length > payloadStart + 4)
+        {
+            int.TryParse(parts[payloadStart + 4], NumberStyles.Integer, CultureInfo.InvariantCulture, out dmgFlags);
+        }
+
+        bool suppressCounter = (dmgFlags & DamageSyncFlagSuppressCounter) != 0;
+
+        RtsUnitMotor victimMotor = FindMotorBySyncIndex(victimIndex);
+        if (victimMotor == null)
+        {
+            return;
+        }
+
+        TroopCombat victim = victimMotor.GetComponent<TroopCombat>();
+        if (victim == null || !IsLocallyOwnedTroop(victim))
+        {
+            return;
+        }
+
+        applyingRemotePath = true;
+        try
+        {
+            if (!isRanged && !suppressCounter && attacker != null)
+            {
+                victim.TryPerformImmediateMeleeCounter(attacker, suppressCounterReply: true);
+            }
+
+            victim.TakeDamage(amount, attacker, isRanged);
+
+            if (logNetworkMessages)
+            {
+                Debug.Log(
+                    "SiegePvp DMG applied victim#" + victimIndex
+                    + " '" + victim.name
+                    + "' hp=" + victim.CurrentHealth.ToString("0.##", CultureInfo.InvariantCulture),
+                    this);
+            }
+        }
+        finally
+        {
+            applyingRemotePath = false;
+        }
     }
 
     private RtsUnitMotor FindMotorBySyncKey(string syncKey)
@@ -1258,21 +2063,63 @@ public class SiegePvpSession : MonoBehaviour
     private void ApplyRemoteOutcome(bool attackerWon, string reason)
     {
         matchRunning = false;
+        if (IsDefender)
+        {
+            ReleaseCommandTowerBoundaryForDefender();
+        }
+
+        string resolvedReason = string.IsNullOrWhiteSpace(reason) ? "The cannons were overrun." : reason;
+        bool isOverrun = resolvedReason.IndexOf("occupied", StringComparison.OrdinalIgnoreCase) >= 0
+            || resolvedReason.IndexOf("cannon", StringComparison.OrdinalIgnoreCase) >= 0;
+        if (attackerWon)
+        {
+            PlayLocalFx("FIRE");
+        }
+        else if (isOverrun)
+        {
+            PlayLocalFx("OVERRUN");
+        }
+
         SiegeGameManager manager = SiegeGameManager.Instance;
         if (manager == null || !manager.IsPlaying)
         {
             return;
         }
 
-        // Attacker win = cannons ready (FireCannonsAndWin). Attacker lose = cannons stopped (TriggerDefeat).
+        // Attacker win = cannons ready (FireCannonsAndWin). Attacker lose = TriggerDefeat.
         if (attackerWon)
         {
             manager.FireCannonsAndWin();
         }
         else
         {
-            manager.TriggerDefeat(string.IsNullOrWhiteSpace(reason) ? "The cannons were overrun." : reason);
+            manager.TriggerDefeat(resolvedReason);
         }
+    }
+
+    /// <summary>
+    /// LOSE payload is the defeat reason (may be split across |). Legacy "attacker|reason" accepted.
+    /// </summary>
+    private static string JoinLoseReason(string[] parts, int payloadStart)
+    {
+        if (parts == null || parts.Length <= payloadStart)
+        {
+            return "The cannons were overrun.";
+        }
+
+        int start = payloadStart;
+        if (string.Equals(parts[start], "attacker", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(parts[start], "defender", StringComparison.OrdinalIgnoreCase))
+        {
+            start++;
+        }
+
+        if (start >= parts.Length)
+        {
+            return "The cannons were overrun.";
+        }
+
+        return string.Join("|", parts, start, parts.Length - start).Trim();
     }
 
     private void ReturnToMenuLocal(bool broadcast)
@@ -1307,6 +2154,7 @@ public class SiegePvpSession : MonoBehaviour
 
     private void CleanupPvpPresentation(bool teleportDefenderHome)
     {
+        StopDefenderTeleportRoutine();
         StopCountdown();
         matchRunning = false;
         lobbyPhase = LobbyPhase.Idle;
@@ -1323,8 +2171,16 @@ public class SiegePvpSession : MonoBehaviour
         if (teleportDefenderHome && IsDefender)
         {
             TeleportUser(menuSpawnPoint);
+            RestoreCommandTowerBoundaryAfterDefender();
         }
 
+        if (SiegeMatchUi.Instance != null)
+        {
+            SiegeMatchUi.Instance.ApplyPvpRoleHud(false);
+            SiegeMatchUi.Instance.RestorePlayingHudAnchors();
+        }
+
+        ClearNetworkAuthorityRoles();
         motorBySyncKey.Clear();
         syncMotorsByIndex.Clear();
         syncIndexByMotor.Clear();
@@ -1351,28 +2207,141 @@ public class SiegePvpSession : MonoBehaviour
 
     private void TeleportUser(Transform destination)
     {
-        if (destination == null)
+        TryTeleportUser(destination, logFailure: logDefenderTeleport);
+    }
+
+    private void StopDefenderTeleportRoutine()
+    {
+        if (defenderTeleportCoroutine == null)
         {
             return;
         }
+
+        StopCoroutine(defenderTeleportCoroutine);
+        defenderTeleportCoroutine = null;
+    }
+
+    private IEnumerator TeleportDefenderToSpawnWhenReady()
+    {
+        ReleaseCommandTowerBoundaryForDefender();
+
+        float timeoutAt = Time.unscaledTime + 20f;
+        while (!SiegeSceneBootstrap.IsWarmUpComplete && Time.unscaledTime < timeoutAt)
+        {
+            yield return null;
+        }
+
+        for (int attempt = 0; attempt < 8; attempt++)
+        {
+            if (TryTeleportUser(defenderSpawnPoint, logFailure: attempt >= 7))
+            {
+                if (logDefenderTeleport)
+                {
+                    Debug.Log(
+                        "SiegePvp defender teleported to spawn '"
+                        + defenderSpawnPoint.name
+                        + "' on attempt "
+                        + (attempt + 1).ToString(CultureInfo.InvariantCulture)
+                        + ".",
+                        this);
+                }
+
+                yield break;
+            }
+
+            yield return new WaitForSecondsRealtime(0.35f);
+        }
+
+        if (logDefenderTeleport)
+        {
+            Debug.LogWarning(
+                "SiegePvp failed to teleport defender to '"
+                + defenderSpawnPoint.name
+                + "'. Command-tower boundary was released so walking is not blocked.",
+                this);
+        }
+    }
+
+    private static void ReleaseCommandTowerBoundaryForDefender()
+    {
+        SiegePlayerBoundary[] boundaries = FindObjectsOfType<SiegePlayerBoundary>(true);
+        for (int i = 0; i < boundaries.Length; i++)
+        {
+            SiegePlayerBoundary boundary = boundaries[i];
+            if (boundary != null)
+            {
+                boundary.ForceReleaseForPvpDefender();
+            }
+        }
+    }
+
+    private static void RestoreCommandTowerBoundaryAfterDefender()
+    {
+        SiegePlayerBoundary[] boundaries = FindObjectsOfType<SiegePlayerBoundary>(true);
+        for (int i = 0; i < boundaries.Length; i++)
+        {
+            SiegePlayerBoundary boundary = boundaries[i];
+            if (boundary != null)
+            {
+                boundary.RestoreAfterPvpDefender();
+            }
+        }
+    }
+
+    private bool TryTeleportUser(Transform destination, bool logFailure)
+    {
+        if (destination == null)
+        {
+            return false;
+        }
+
+        ReleaseCommandTowerBoundaryForDefender();
 
         try
         {
             if (vGear.user != null)
             {
-                vGear.user.Transform(destination);
-                return;
+                vGear.user.Transform(destination.position, destination.eulerAngles);
+                return true;
             }
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            if (logFailure)
+            {
+                Debug.LogWarning("SiegePvp vGear.user.Transform failed: " + exception.Message, this);
+            }
+        }
+
+        try
+        {
+            if (vCast.user != null)
+            {
+                vCast.user.Transform(destination);
+                return true;
+            }
+        }
+        catch (Exception exception)
+        {
+            if (logFailure)
+            {
+                Debug.LogWarning("SiegePvp vCast.user.Transform failed: " + exception.Message, this);
+            }
         }
 
         Transform user = SiegePlayEnvironment.ResolveUserTransform();
         if (user != null)
         {
             user.SetPositionAndRotation(destination.position, destination.rotation);
+            return true;
         }
+
+        if (logFailure)
+        {
+            Debug.LogWarning("SiegePvp teleport fallback failed: no Votanic user transform available.", this);
+        }
+
+        return false;
     }
 
     private void RefreshLobbyStatus()

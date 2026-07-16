@@ -284,20 +284,23 @@ public class RtsUnitHighlight : MonoBehaviour
             return 0f;
         }
 
+        // CAVE / multi-view: distance scaling against one camera makes outlines vanish
+        // for the other player. Keep a solid world width for selection feedback.
+        float minWidth = Mathf.Max(0.08f, outlineMinWorldWidth);
         if (!scaleOutlineWithCameraDistance)
         {
-            return Mathf.Max(outlineMinWorldWidth, outlineWidth);
+            return Mathf.Max(minWidth, outlineWidth * 0.02f);
         }
 
         UnityEngine.Camera camera = SiegePlayEnvironment.ResolveViewCamera();
         if (camera == null)
         {
-            return Mathf.Max(outlineMinWorldWidth, outlineWidth);
+            return Mathf.Max(minWidth, outlineWidth * 0.02f);
         }
 
         float distance = Vector3.Distance(camera.transform.position, transform.position);
         float scaledWidth = outlineWidth * distance * outlineDistanceScale;
-        return Mathf.Max(outlineMinWorldWidth, scaledWidth);
+        return Mathf.Max(minWidth, scaledWidth);
     }
 
     private void ApplyRendererOutline(Color stateColor, float outlineWidth, bool isActive)

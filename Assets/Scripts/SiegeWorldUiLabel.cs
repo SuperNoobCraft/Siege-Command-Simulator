@@ -18,6 +18,8 @@ public class SiegeWorldUiLabel : MonoBehaviour
     [SerializeField] private bool detachFromPlayerRig = true;
     [SerializeField, Min(0f)] private float billboardLerpSpeed = 12f;
 
+    private bool forceFaceActiveView;
+
     public bool HideWhenEmpty => hideWhenEmpty;
 
     private bool subscribedToEnvironmentEvents;
@@ -165,12 +167,38 @@ public class SiegeWorldUiLabel : MonoBehaviour
 
     private bool ShouldBillboard()
     {
+        if (forceFaceActiveView)
+        {
+            return true;
+        }
+
         if (!faceActiveView)
         {
             return false;
         }
 
         return !billboardOnlyOnDesktop || !SiegePlayEnvironment.IsTrackedXr;
+    }
+
+    /// <summary>
+    /// Used when relocating HUD for the Siege PVP defender viewpoint.
+    /// </summary>
+    public void SetForceFaceActiveView(bool enabled)
+    {
+        forceFaceActiveView = enabled;
+    }
+
+    public void SetWorldPose(Vector3 worldPosition, Quaternion worldRotation)
+    {
+        Transform anchor = signRoot != null ? signRoot.transform : transform;
+        anchor.SetPositionAndRotation(worldPosition, worldRotation);
+    }
+
+    public void GetWorldPose(out Vector3 worldPosition, out Quaternion worldRotation)
+    {
+        Transform anchor = signRoot != null ? signRoot.transform : transform;
+        worldPosition = anchor.position;
+        worldRotation = anchor.rotation;
     }
 
     public void SetText(string value, bool keepVisible)

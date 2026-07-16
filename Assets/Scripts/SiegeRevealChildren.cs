@@ -236,10 +236,8 @@ public class SiegeRevealChildren : MonoBehaviour
         {
             Transform child = parent.GetChild(i);
             child.gameObject.SetActive(true);
-            if (playEffectsWithUnscaledTime)
-            {
-                PlayEffectSystems(child);
-            }
+            // Always (re)start particles/animators — needed when timescale is paused in end-game.
+            PlayEffectSystems(child);
         }
     }
 

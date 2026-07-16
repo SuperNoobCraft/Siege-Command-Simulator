@@ -325,7 +325,14 @@ public class EnemyRegimentAI : MonoBehaviour
                 motor.CanReceiveCommands = true;
             }
 
-            // Stay put until the city-defender player issues a path.
+            // Player has taken over — leave the wait-at-gate loop. Staying here and calling
+            // Stop() whenever HasDestination flickers was causing defender-side jitter.
+            if (motor != null && (motor.HasActivePath || motor.HasDestination))
+            {
+                phase = AiPhase.Advancing;
+                return;
+            }
+
             if (phase == AiPhase.WaitingAtGateOutside && motor != null && !motor.HasDestination)
             {
                 motor.Stop();
