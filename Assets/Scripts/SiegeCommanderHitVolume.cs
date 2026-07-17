@@ -26,7 +26,7 @@ public class SiegeCommanderHitVolume : MonoBehaviour
     public bool TryRegisterHit(Vector3 hitPoint)
     {
         SiegeCommanderArrowHealth resolvedHealth = Health;
-        if (resolvedHealth == null || resolvedHealth.IsDefeated)
+        if (resolvedHealth == null || !resolvedHealth.CanReceiveCommanderDamage)
         {
             return false;
         }

@@ -332,7 +332,7 @@ public class SiegePvpSession : MonoBehaviour
         }
 
         pendingShowModeSelectAfterRelease = false;
-        if (SiegeMatchUi.Instance != null)
+        if (SiegeMatchUi.Instance != null && !IsInPvpLobby)
         {
             SiegeMatchUi.Instance.ShowModeSelect();
         }
@@ -426,7 +426,7 @@ public class SiegePvpSession : MonoBehaviour
         ResetLobbyFlags();
         ApplyCommandFactionFilter();
 
-        // Defer mode-select restore until pointer release + short lockout, so the same
+        // Defer mode-select unlock until pointer release + short lockout, so the same
         // cancel click cannot immediately confirm Demo / Full / Dodge.
         modeSelectUnlockTime = Time.unscaledTime + 0.85f;
         pendingShowModeSelectAfterRelease = true;
@@ -441,10 +441,11 @@ public class SiegePvpSession : MonoBehaviour
     {
         if (state == SiegeGameManager.MatchState.SelectingDifficulty)
         {
-            if (lobbyPhase != LobbyPhase.Idle || matchRunning)
+            if (matchRunning
+                || lobbyPhase == LobbyPhase.Countdown
+                || lobbyPhase == LobbyPhase.Playing)
             {
                 CleanupPvpPresentation(teleportDefenderHome: true);
-                ResetLobbyFlags();
             }
 
             ApplyCommandFactionFilter();
@@ -627,6 +628,11 @@ public class SiegePvpSession : MonoBehaviour
                 TryBeginSharedSetup();
                 break;
             case "READY":
+                if (!IsPeerLobbyMessageAllowed())
+                {
+                    break;
+                }
+
                 peerReady = true;
                 RefreshLobbyStatus();
                 TryBeginSharedSetup();
@@ -681,6 +687,13 @@ public class SiegePvpSession : MonoBehaviour
                 ReturnToMenuLocal(broadcast: false);
                 break;
         }
+    }
+
+    private bool IsPeerLobbyMessageAllowed()
+    {
+        return localSelected
+            && (lobbyPhase == LobbyPhase.SelectedWaitingReady
+                || lobbyPhase == LobbyPhase.ReadyWaitingPeer);
     }
 
     /// <summary>
@@ -2126,11 +2139,11 @@ public class SiegePvpSession : MonoBehaviour
     {
         if (broadcast)
         {
+            SendCommand("CANCEL");
             SendCommand("MENU");
         }
 
         CleanupPvpPresentation(teleportDefenderHome: true);
-        ResetLobbyFlags();
 
         SiegeGameManager manager = SiegeGameManager.Instance;
         if (manager == null)
@@ -2154,10 +2167,11 @@ public class SiegePvpSession : MonoBehaviour
 
     private void CleanupPvpPresentation(bool teleportDefenderHome)
     {
+        ClearLobbyFlagsOnly();
+
         StopDefenderTeleportRoutine();
         StopCountdown();
         matchRunning = false;
-        lobbyPhase = LobbyPhase.Idle;
 
         EnemyRegimentAI[] enemies = FindObjectsOfType<EnemyRegimentAI>(true);
         for (int i = 0; i < enemies.Length; i++)
@@ -2193,16 +2207,31 @@ public class SiegePvpSession : MonoBehaviour
         // After cleanup / restart, still defer mode buttons until pointer is up.
         modeSelectUnlockTime = Mathf.Max(modeSelectUnlockTime, Time.unscaledTime + 0.35f);
         pendingShowModeSelectAfterRelease = true;
+
+        if (SiegeMatchUi.Instance != null)
+        {
+            SiegeMatchUi.Instance.ShowModeSelect();
+        }
     }
 
-    private void ResetLobbyFlags()
+    private void ClearLobbyFlagsOnly()
     {
         localSelected = false;
         peerSelected = false;
         localReady = false;
         peerReady = false;
         lobbyPhase = LobbyPhase.Idle;
-        nextLobbyAnnounceTime = 0f;
+        nextLobbyAnnounceTime = Time.time + 1.5f;
+    }
+
+    private void ResetLobbyFlags()
+    {
+        ClearLobbyFlagsOnly();
+
+        if (SiegeMatchUi.Instance != null)
+        {
+            SiegeMatchUi.Instance.ShowModeSelect();
+        }
     }
 
     private void TeleportUser(Transform destination)
@@ -2351,6 +2380,21 @@ public class SiegePvpSession : MonoBehaviour
             return;
         }
 
+        if (!localSelected && !localReady && lobbyPhase == LobbyPhase.Idle)
+        {
+            peerReady = false;
+            if (peerSelected)
+            {
+                ShowStatus(peerSelectedPrompt);
+            }
+            else if (SiegeMatchUi.Instance != null)
+            {
+                SiegeMatchUi.Instance.ShowModeSelect();
+            }
+
+            return;
+        }
+
         if (localReady)
         {
             if (peerReady && peerSelected)
@@ -2374,18 +2418,13 @@ public class SiegePvpSession : MonoBehaviour
             ShowStatus(peerSelected ? peerSelectedPrompt : selectedPrompt);
             return;
         }
-
-        if (peerSelected)
-        {
-            ShowStatus(peerSelectedPrompt);
-        }
     }
 
     private void ShowStatus(string message)
     {
         if (SiegeMatchUi.Instance != null)
         {
-            SiegeMatchUi.Instance.SetStatusMessage(message);
+            SiegeMatchUi.Instance.SetLobbyStatusMessage(message);
         }
     }
 

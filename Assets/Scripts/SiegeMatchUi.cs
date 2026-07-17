@@ -59,6 +59,9 @@ public class SiegeMatchUi : MonoBehaviour
 
     [Header("Messages")]
     [SerializeField] private string difficultySelectPrompt = "Select Demo, Full, Dodge Arrows, or Siege PVP.";
+    [Tooltip("Shown on the networking client / CAVE defender at mode select. PVP works here; other modes are tuned for DASE Cave.")]
+    [SerializeField] private string caveClientEnvironmentNote =
+        "Note: Demo, Full, and Dodge Arrows are designed for DASE Cave. For the intended full experience, use the other CAVE.";
     [SerializeField] private string openingStatus = "Defend the cannons.";
     [SerializeField] private string dodgeArrowsOpeningStatus = "Dodge the arrows until your cannons are ready!";
     [SerializeField] private string siegePvpAttackerOpeningStatus = "Siege the walls — hold until the cannons are ready!";
@@ -88,6 +91,8 @@ public class SiegeMatchUi : MonoBehaviour
 
     private bool awaitingRestart;
     private bool isBoundToManager;
+    private bool modeSelectLayoutApplied;
+    private bool pvpLobbyPresentationActive;
     private Coroutine openingStatusCoroutine;
     private Coroutine restartDelayCoroutine;
     private SiegeGameManager boundManager;
@@ -140,6 +145,8 @@ public class SiegeMatchUi : MonoBehaviour
             {
                 ApplyDifficultySelectLayout();
             }
+
+            StartCoroutine(RefreshModeSelectAfterWarmUp());
         }
     }
 
@@ -214,7 +221,11 @@ public class SiegeMatchUi : MonoBehaviour
         SiegeGameManager manager = SiegeGameManager.Instance;
         if (manager != null && manager.CurrentState == SiegeGameManager.MatchState.SelectingDifficulty)
         {
-            ApplyDifficultySelectLayout();
+            if (!IsPvpLobbyActive())
+            {
+                ApplyDifficultySelectLayout();
+            }
+
             return;
         }
 
@@ -237,6 +248,34 @@ public class SiegeMatchUi : MonoBehaviour
         }
 
         BeginPlayingPresentation();
+        StartCoroutine(RefreshModeSelectAfterWarmUp());
+    }
+
+    private IEnumerator RefreshModeSelectAfterWarmUp()
+    {
+        while (!SiegeSceneBootstrap.IsWarmUpComplete)
+        {
+            yield return null;
+        }
+
+        yield return null;
+
+        if (pvpLobbyPresentationActive || IsPvpLobbyActive())
+        {
+            yield break;
+        }
+
+        SiegeGameManager manager = SiegeGameManager.Instance;
+        if (manager != null && manager.CurrentState == SiegeGameManager.MatchState.SelectingDifficulty)
+        {
+            ApplyDifficultySelectLayout();
+        }
+    }
+
+    private static bool IsPvpLobbyActive()
+    {
+        SiegePvpSession pvp = SiegePvpSession.Instance;
+        return pvp != null && pvp.IsInPvpLobby;
     }
 
     private void BeginPlayingPresentation()
@@ -278,6 +317,16 @@ public class SiegeMatchUi : MonoBehaviour
         TryBindManager();
 
         SiegeGameManager manager = boundManager;
+        if (manager != null
+            && manager.CurrentState == SiegeGameManager.MatchState.SelectingDifficulty
+            && SiegeSceneBootstrap.IsWarmUpComplete
+            && !modeSelectLayoutApplied
+            && !pvpLobbyPresentationActive
+            && !IsPvpLobbyActive())
+        {
+            ApplyDifficultySelectLayout();
+        }
+
         if (manager != null && manager.IsPlaying)
         {
             RefreshCannonCountdown();
@@ -459,6 +508,7 @@ public class SiegeMatchUi : MonoBehaviour
 
     public void ShowModeSelect()
     {
+        pvpLobbyPresentationActive = false;
         CancelRestartDelay();
         if (openingStatusCoroutine != null)
         {
@@ -472,10 +522,45 @@ public class SiegeMatchUi : MonoBehaviour
         ApplyDifficultySelectLayout();
     }
 
+    /// <summary>Restore the default mode-select status line (clears stale PVP lobby text).</summary>
+    public void RestoreModeSelectStatus()
+    {
+        ResolvePresentationTargets();
+        EnsureModeSelectStatusVisible(BuildDifficultySelectPrompt());
+    }
+
     public void SetStatusMessage(string message)
     {
+        SetLobbyStatusMessage(message ?? string.Empty);
+    }
+
+    /// <summary>PVP lobby / countdown lines — does not restore the main menu layout.</summary>
+    public void SetLobbyStatusMessage(string message)
+    {
+        if (worldUiRoot != null)
+        {
+            worldUiRoot.SetActive(true);
+        }
+
         SiegeWorldUiLabel status = ActiveStatusLabel;
-        SetWorldLabelText(status, message ?? string.Empty, false);
+        SetWorldLabelText(status, message, keepVisible: true);
+        SetLabelVisible(status, true);
+    }
+
+    private void EnsureModeSelectStatusVisible(string message)
+    {
+        if (worldUiRoot != null)
+        {
+            worldUiRoot.SetActive(true);
+        }
+
+        if (defenderWorldUiRoot != null && !pvpHudForDefender)
+        {
+            defenderWorldUiRoot.SetActive(false);
+        }
+
+        SiegeWorldUiLabel status = ActiveStatusLabel;
+        SetWorldLabelText(status, message, keepVisible: true);
         SetLabelVisible(status, true);
     }
 
@@ -536,6 +621,8 @@ public class SiegeMatchUi : MonoBehaviour
 
     public void HideDifficultyOptionsForPvpLobby()
     {
+        pvpLobbyPresentationActive = true;
+        modeSelectLayoutApplied = true;
         ResolvePresentationTargets();
         SetDifficultyPresentationVisible(false);
         SetGroupActive(difficultySelectGroup, false);
@@ -557,6 +644,13 @@ public class SiegeMatchUi : MonoBehaviour
         {
             case SiegeGameManager.MatchState.SelectingDifficulty:
                 awaitingRestart = false;
+                if (IsPvpLobbyActive())
+                {
+                    break;
+                }
+
+                pvpLobbyPresentationActive = false;
+                modeSelectLayoutApplied = false;
                 RestorePlayingHudAnchors();
                 ApplyDifficultySelectLayout();
                 break;
@@ -667,8 +761,14 @@ public class SiegeMatchUi : MonoBehaviour
         SetDifficultyPresentationVisible(true);
         HidePlayingHudTargets();
 
-        SetWorldLabelText(ActiveStatusLabel, difficultySelectPrompt, false);
-        SetLabelVisible(ActiveStatusLabel, true);
+        EnsureModeSelectStatusVisible(BuildDifficultySelectPrompt());
+        if (worldStatusLabel != null)
+        {
+            SetWorldLabelText(worldStatusLabel, BuildDifficultySelectPrompt(), keepVisible: true);
+            SetLabelVisible(worldStatusLabel, true);
+        }
+
+        modeSelectLayoutApplied = true;
         SetWorldLabelText(worldVictoryLabel, string.Empty, false);
         SetWorldLabelText(worldDefeatLabel, string.Empty, false);
         SetWorldLabelText(defenderVictoryLabel, string.Empty, false);
@@ -1092,6 +1192,28 @@ public class SiegeMatchUi : MonoBehaviour
         }
 
         return openingStatus;
+    }
+
+    private string BuildDifficultySelectPrompt()
+    {
+        if (!ShouldShowCaveClientEnvironmentNote()
+            || string.IsNullOrWhiteSpace(caveClientEnvironmentNote))
+        {
+            return difficultySelectPrompt;
+        }
+
+        return difficultySelectPrompt + "\n\n" + caveClientEnvironmentNote.Trim();
+    }
+
+    private static bool ShouldShowCaveClientEnvironmentNote()
+    {
+        if (!SiegePlayEnvironment.IsCaveMode)
+        {
+            return false;
+        }
+
+        SiegePvpSession pvp = SiegePvpSession.Instance;
+        return pvp != null && pvp.IsDefender;
     }
 
     private void ApplyPlayingLayout()

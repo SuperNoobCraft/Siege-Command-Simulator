@@ -257,6 +257,12 @@ public class SiegeAudioManager : MonoBehaviour
             return;
         }
 
+        SiegeGameManager manager = SiegeGameManager.Instance;
+        if (manager != null && !manager.IsPlaying)
+        {
+            return;
+        }
+
         SiegeCommanderArrowHealth commander = SiegeCommanderArrowHealth.Instance;
         if (commander != null && hitCount >= commander.MaxHits)
         {

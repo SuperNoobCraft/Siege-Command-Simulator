@@ -73,6 +73,7 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
 
     private float invulnerableUntil;
     private bool isDefeated;
+    private bool hurtboxActive = true;
     private Coroutine tintCoroutine;
     private readonly HashSet<Collider> registeredHitColliders = new HashSet<Collider>();
     private readonly HashSet<Transform> registeredHitRoots = new HashSet<Transform>();
@@ -87,6 +88,7 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
     public int HitsRemaining => Mathf.Max(0, MaxHits - HitCount);
     public bool IsDefeated => isDefeated;
     public bool UsesCylinderDodgeHitTest => useCylinderDodgeHitTest;
+    public bool CanReceiveCommanderDamage => hurtboxActive && !isDefeated && IsMatchActivelyPlaying();
 
     /// <summary>
     /// World-space point arrows and other systems should track — the live hurtbox,
@@ -152,6 +154,90 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
     private void Start()
     {
         RefreshCommanderHpUi();
+        BindMatchManager();
+    }
+
+    private void OnEnable()
+    {
+        BindMatchManager();
+    }
+
+    private void OnDisable()
+    {
+        UnbindMatchManager();
+    }
+
+    private void BindMatchManager()
+    {
+        SiegeGameManager manager = SiegeGameManager.Instance;
+        if (manager == null)
+        {
+            return;
+        }
+
+        manager.MatchStateChanged -= HandleMatchStateChanged;
+        manager.MatchStateChanged += HandleMatchStateChanged;
+        HandleMatchStateChanged(manager.CurrentState);
+    }
+
+    private void UnbindMatchManager()
+    {
+        SiegeGameManager manager = SiegeGameManager.Instance;
+        if (manager != null)
+        {
+            manager.MatchStateChanged -= HandleMatchStateChanged;
+        }
+    }
+
+    private void HandleMatchStateChanged(SiegeGameManager.MatchState state)
+    {
+        if (state == SiegeGameManager.MatchState.Playing)
+        {
+            SetCommanderHurtboxActive(true);
+            return;
+        }
+
+        if (state == SiegeGameManager.MatchState.Won
+            || state == SiegeGameManager.MatchState.Lost
+            || state == SiegeGameManager.MatchState.SelectingDifficulty)
+        {
+            SetCommanderHurtboxActive(false);
+
+            if (state == SiegeGameManager.MatchState.Won)
+            {
+                if (tintCoroutine != null)
+                {
+                    StopCoroutine(tintCoroutine);
+                    tintCoroutine = null;
+                }
+
+                ClearDamageTint();
+            }
+        }
+    }
+
+    private static bool IsMatchActivelyPlaying()
+    {
+        SiegeGameManager manager = SiegeGameManager.Instance;
+        return manager != null && manager.IsPlaying;
+    }
+
+    private void SetCommanderHurtboxActive(bool active)
+    {
+        hurtboxActive = active;
+
+        if (trackedHeadHitCollider != null)
+        {
+            trackedHeadHitCollider.enabled = active;
+        }
+
+        foreach (Collider collider in registeredHitColliders)
+        {
+            if (collider != null)
+            {
+                collider.enabled = active;
+            }
+        }
     }
 
     private void LateUpdate()
@@ -497,6 +583,7 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
         HitCount = 0;
         isDefeated = false;
         invulnerableUntil = 0f;
+        SetCommanderHurtboxActive(true);
         ClearDamageTint();
         RefreshCommanderHpUi();
     }
@@ -528,7 +615,7 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
     {
         hitPoint = arrowPosition;
 
-        if (!useCylinderDodgeHitTest || isDefeated || Time.time < invulnerableUntil)
+        if (!useCylinderDodgeHitTest || !CanReceiveCommanderDamage || Time.time < invulnerableUntil)
         {
             return false;
         }
@@ -732,6 +819,7 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
 
     private void OnDestroy()
     {
+        UnbindMatchManager();
         DestroyGroundHitboxRing();
 
         if (Instance == this)
@@ -742,7 +830,7 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
 
     public void RegisterArrowHit(Vector3 hitPoint)
     {
-        if (isDefeated || Time.time < invulnerableUntil)
+        if (!CanReceiveCommanderDamage || Time.time < invulnerableUntil)
         {
             return;
         }
