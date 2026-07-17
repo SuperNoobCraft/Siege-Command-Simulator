@@ -42,6 +42,14 @@ public class SiegeDifficultySelector : MonoBehaviour
             return;
         }
 
+        SiegeDodgeArrowsSubmenu dodgeSubmenu = SiegeDodgeArrowsSubmenu.Instance;
+        if (dodgeSubmenu != null && dodgeSubmenu.BlocksSelection)
+        {
+            ClearHighlight();
+            hoveredOption = null;
+            return;
+        }
+
         if (!SiegeVrInput.IsGameplayInputAllowed())
         {
             ClearHighlight();
@@ -54,6 +62,32 @@ public class SiegeDifficultySelector : MonoBehaviour
 
         if (!SiegeVrInput.WasPointerPressedThisFrame() || hoveredOption == null)
         {
+            return;
+        }
+
+        if (hoveredOption.OpensDodgeArrowsSubmenu)
+        {
+            SiegeDodgeArrowsSubmenu submenu = SiegeDodgeArrowsSubmenu.Instance;
+            if (submenu != null)
+            {
+                submenu.OpenSubmenu();
+            }
+            else
+            {
+                Debug.LogWarning("Dodge Arrows submenu selected but SiegeDodgeArrowsSubmenu is missing from the scene.");
+            }
+
+            return;
+        }
+
+        if (hoveredOption.IsSubmenuBackButton)
+        {
+            SiegeDodgeArrowsSubmenu submenu = SiegeDodgeArrowsSubmenu.Instance;
+            if (submenu != null)
+            {
+                submenu.CloseSubmenu();
+            }
+
             return;
         }
 

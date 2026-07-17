@@ -86,7 +86,7 @@ public class SiegePvpSession : MonoBehaviour
     [Tooltip("Hard-snap peer XZ when horizontal error exceeds this (meters).")]
     [SerializeField, Min(0.25f)] private float authoritySnapDistance = 2.5f;
     [Tooltip("When the owner stops on a drawn path, snap the peer if drift exceeds this (meters).")]
-    [SerializeField, Min(0.25f)] private float pathHaltResyncDistance = 0.8f;
+    [SerializeField, Min(0.25f)] private float pathHaltResyncDistance = 1.25f;
     [SerializeField, Range(4, 20)] private int maxPoseUnitsPerPacket = 12;
 
     [Header("Prompts")]
@@ -1145,8 +1145,8 @@ public class SiegePvpSession : MonoBehaviour
                 continue;
             }
 
-            motor.PathMovementHalted -= HandleOwnedPathMovementHalted;
-            motor.PathMovementHalted += HandleOwnedPathMovementHalted;
+            motor.PathFollowingAborted -= HandleOwnedPathFollowingAborted;
+            motor.PathFollowingAborted += HandleOwnedPathFollowingAborted;
         }
     }
 
@@ -1157,12 +1157,12 @@ public class SiegePvpSession : MonoBehaviour
             RtsUnitMotor motor = syncMotorsByIndex[i];
             if (motor != null)
             {
-                motor.PathMovementHalted -= HandleOwnedPathMovementHalted;
+                motor.PathFollowingAborted -= HandleOwnedPathFollowingAborted;
             }
         }
     }
 
-    private void HandleOwnedPathMovementHalted(RtsUnitMotor motor)
+    private void HandleOwnedPathFollowingAborted(RtsUnitMotor motor)
     {
         if (!matchRunning || applyingRemotePath || motor == null || !IsLocallyOwnedMotor(motor))
         {
@@ -1175,8 +1175,8 @@ public class SiegePvpSession : MonoBehaviour
             return;
         }
 
-        BroadcastOwnedStop(syncIndex, motor, reason: "path-halted");
-        BroadcastOwnedMotorPoseImmediate(motor, syncIndex, forceHaltedFlag: true);
+        BroadcastOwnedStop(syncIndex, motor, reason: "path-aborted");
+        BroadcastOwnedMotorPoseImmediate(motor, syncIndex, forceHaltedFlag: false);
     }
 
     private void BroadcastOwnedStop(int syncIndex, RtsUnitMotor motor, string reason)
@@ -1231,11 +1231,6 @@ public class SiegePvpSession : MonoBehaviour
         if (motor.HasActivePath || motor.HasDestination)
         {
             flags |= PoseSyncFlagHasPath;
-        }
-
-        if (forceHaltedFlag || motor.IsPathMovementHalted)
-        {
-            flags |= PoseSyncFlagPathHalted;
         }
 
         TroopCombat troop = motor.GetComponent<TroopCombat>();
@@ -1307,13 +1302,10 @@ public class SiegePvpSession : MonoBehaviour
             return;
         }
 
-        List<Vector3> compressed = path as List<Vector3> ?? new List<Vector3>(path);
-        if (compressed.Count > maxSyncedPathPoints)
+        List<Vector3> compressed = CanonicalizePathForMatch(path);
+        if (compressed.Count < 2)
         {
-            compressed = RtsPathUtility.PreparePathForNetworkSync(
-                compressed,
-                Mathf.Max(2, maxSyncedPathPoints),
-                pathNetworkSimplifyEpsilon);
+            return;
         }
         StringBuilder builder = new StringBuilder(64 + compressed.Count * 24);
         string token = string.IsNullOrEmpty(localInstanceToken) ? "local" : localInstanceToken;
@@ -1397,29 +1389,6 @@ public class SiegePvpSession : MonoBehaviour
 
                 ordered.Add(i);
             }
-        }
-
-        // Halted drawn-path units still need priority correction even though hasDestination is false.
-        for (int i = 0; i < syncMotorsByIndex.Count; i++)
-        {
-            if (ordered.Contains(i))
-            {
-                continue;
-            }
-
-            RtsUnitMotor motor = syncMotorsByIndex[i];
-            if (motor == null || !motor.gameObject.activeInHierarchy || !motor.IsPathMovementHalted)
-            {
-                continue;
-            }
-
-            TroopCombat troop = motor.GetComponent<TroopCombat>();
-            if (troop == null || troop.TroopFaction != ownedFaction)
-            {
-                continue;
-            }
-
-            ordered.Insert(0, i);
         }
 
         // Multiple packets so every owned unit is corrected every interval (no silent drop).
@@ -1508,11 +1477,19 @@ public class SiegePvpSession : MonoBehaviour
         try
         {
             motor.SuppressLocalSimulation = false;
-            motor.ApplyNetworkPose(
-                path[0],
-                motor.transform.rotation,
-                forceAuthority: true,
-                authoritySnapDistance: Mathf.Min(authoritySnapDistance, 1.25f));
+            Vector3 pathStart = path[0];
+            Vector3 currentPos = motor.transform.position;
+            Vector3 startDelta = pathStart - currentPos;
+            startDelta.y = 0f;
+            if (startDelta.sqrMagnitude > 1f)
+            {
+                motor.ApplyNetworkPose(
+                    pathStart,
+                    motor.transform.rotation,
+                    forceAuthority: true,
+                    authoritySnapDistance: Mathf.Min(authoritySnapDistance, 1.25f));
+            }
+
             motor.FollowPath(path);
 
             if (logNetworkMessages)
@@ -1579,7 +1556,6 @@ public class SiegePvpSession : MonoBehaviour
                     int.TryParse(packed[6], NumberStyles.Integer, CultureInfo.InvariantCulture, out syncFlags);
                 }
 
-                bool ownerPathHalted = (syncFlags & PoseSyncFlagPathHalted) != 0;
                 bool ownerHasPath = (syncFlags & PoseSyncFlagHasPath) != 0;
                 bool ownerAdvancing = (syncFlags & PoseSyncFlagAdvancing) != 0;
                 bool ownerRetreatInvulnerable = (syncFlags & PoseSyncFlagRetreatInvulnerable) != 0;
@@ -1590,17 +1566,15 @@ public class SiegePvpSession : MonoBehaviour
                 float horizontalErrorSqr = delta.sqrMagnitude;
                 float haltResyncSqr = pathHaltResyncDistance * pathHaltResyncDistance;
 
-                UpdateRemotePoseStability(syncIndex, remotePos, ownerAdvancing);
+                UpdateRemotePoseStability(syncIndex, remotePos, ownerAdvancing, ownerHasPath);
 
-                bool ownerStationary = !ownerAdvancing
-                    || ownerPathHalted
-                    || GetRemotePoseStableCount(syncIndex) >= 2;
-                bool peerDriftedWhileOwnerStopped = ownerStationary
+                bool ownerStoppedFollowingPath = !ownerHasPath
+                    && (!ownerAdvancing || GetRemotePoseStableCount(syncIndex) >= 3);
+                bool peerDriftedWhileOwnerStopped = ownerStoppedFollowingPath
                     && (motor.HasActivePath || motor.HasDestination)
                     && horizontalErrorSqr >= haltResyncSqr;
-                bool forcePeerResync = ownerPathHalted || peerDriftedWhileOwnerStopped;
 
-                if (forcePeerResync)
+                if (peerDriftedWhileOwnerStopped)
                 {
                     if (motor.HasActivePath || motor.HasDestination)
                     {
@@ -1646,12 +1620,23 @@ public class SiegePvpSession : MonoBehaviour
         }
     }
 
-    private void UpdateRemotePoseStability(int syncIndex, Vector3 remotePos, bool ownerAdvancing)
+    private void UpdateRemotePoseStability(
+        int syncIndex,
+        Vector3 remotePos,
+        bool ownerAdvancing,
+        bool ownerHasPath)
     {
         if (!lastRemotePoseByIndex.TryGetValue(syncIndex, out Vector3 previous))
         {
             lastRemotePoseByIndex[syncIndex] = remotePos;
             remotePoseStableCountByIndex[syncIndex] = 0;
+            return;
+        }
+
+        if (ownerHasPath)
+        {
+            remotePoseStableCountByIndex[syncIndex] = 0;
+            lastRemotePoseByIndex[syncIndex] = remotePos;
             return;
         }
 
@@ -1765,7 +1750,7 @@ public class SiegePvpSession : MonoBehaviour
         }
     }
 
-    private bool IsLocallyOwnedMotor(RtsUnitMotor motor)
+    public bool IsLocallyOwnedMotor(RtsUnitMotor motor)
     {
         if (motor == null)
         {
@@ -1807,6 +1792,7 @@ public class SiegePvpSession : MonoBehaviour
         }
 
         List<Vector3> sanitized = RtsPathUtility.SanitizeDrawnPath(path);
+        sanitized = RtsPathUtility.RemoveShortSegments(sanitized, pathNetworkSimplifyEpsilon);
         return RtsPathUtility.PreparePathForNetworkSync(
             sanitized,
             Mathf.Max(2, maxSyncedPathPoints),

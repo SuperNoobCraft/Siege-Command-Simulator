@@ -8,7 +8,8 @@ public enum SiegeGameMode
     Demo = 0,
     Full = 1,
     DodgeArrows = 2,
-    SiegePvp = 3
+    SiegePvp = 3,
+    DodgeArrowsEndless = 4
 }
 
 public static class SiegeMatchSettings
@@ -26,7 +27,9 @@ public static class SiegeMatchSettings
     public static bool IsConfigured { get; private set; }
 
     public static bool IsDemoMode => GameMode == SiegeGameMode.Demo;
-    public static bool IsDodgeArrowsMode => GameMode == SiegeGameMode.DodgeArrows;
+    public static bool IsDodgeArrowsMode => IsDodgeArrowsTimedMode || IsDodgeArrowsEndlessMode;
+    public static bool IsDodgeArrowsTimedMode => GameMode == SiegeGameMode.DodgeArrows;
+    public static bool IsDodgeArrowsEndlessMode => GameMode == SiegeGameMode.DodgeArrowsEndless;
     public static bool IsSiegePvpMode => GameMode == SiegeGameMode.SiegePvp;
     public static bool IsArenaSurvivalMode => IsDodgeArrowsMode;
     public static bool HasTroopCombat => !IsDodgeArrowsMode;
@@ -67,6 +70,7 @@ public static class SiegeMatchSettings
         {
             SiegeGameMode.Demo => DemoWaveCount,
             SiegeGameMode.DodgeArrows => 0,
+            SiegeGameMode.DodgeArrowsEndless => 0,
             SiegeGameMode.SiegePvp => 0,
             _ => FullWaveCount
         };

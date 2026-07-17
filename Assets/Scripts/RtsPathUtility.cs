@@ -64,6 +64,41 @@ public static class RtsPathUtility
     }
 
     /// <summary>
+    /// Removes waypoints closer than minSegmentLength — prevents motors stalling on micro XR segments.
+    /// </summary>
+    public static List<Vector3> RemoveShortSegments(IReadOnlyList<Vector3> points, float minSegmentLength)
+    {
+        if (points == null || points.Count <= 1)
+        {
+            return points == null ? new List<Vector3>() : new List<Vector3>(points);
+        }
+
+        if (minSegmentLength <= 0f)
+        {
+            return new List<Vector3>(points);
+        }
+
+        float minSqr = minSegmentLength * minSegmentLength;
+        List<Vector3> result = new List<Vector3>(points.Count) { points[0] };
+        for (int i = 1; i < points.Count; i++)
+        {
+            Vector3 last = result[result.Count - 1];
+            Vector3 candidate = points[i];
+            if (HorizontalDistanceSqr(last, candidate) >= minSqr)
+            {
+                result.Add(candidate);
+            }
+        }
+
+        if (result.Count == 1)
+        {
+            result.Add(points[points.Count - 1]);
+        }
+
+        return result;
+    }
+
+    /// <summary>
     /// Drops waypoints that reverse direction sharply (common with CAVE wand noise / tight loops).
     /// </summary>
     public static List<Vector3> RemoveBacktrackingWaypoints(

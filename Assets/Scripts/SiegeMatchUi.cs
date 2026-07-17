@@ -7,7 +7,7 @@ using UnityEngine.Serialization;
 /// <summary>
 /// Drives world-space match UI labels. Place <see cref="SiegeWorldUiLabel"/> signs in the scene.
 /// </summary>
-[DefaultExecutionOrder(-20)]
+[DefaultExecutionOrder(100)]
 public class SiegeMatchUi : MonoBehaviour
 {
     public enum EditorPreviewMode
@@ -64,6 +64,10 @@ public class SiegeMatchUi : MonoBehaviour
         "Note: Demo, Full, and Dodge Arrows are designed for DASE Cave. For the intended full experience, use the other CAVE.";
     [SerializeField] private string openingStatus = "Defend the cannons.";
     [SerializeField] private string dodgeArrowsOpeningStatus = "Dodge the arrows until your cannons are ready!";
+    [SerializeField] private string dodgeArrowsSubmenuPrompt = "Dodge Arrows — choose Timed or Endless Survival.";
+    [SerializeField] private string dodgeArrowsEndlessOpeningStatus = "Endless Survival — dodge as long as you can. One hit ends the run.";
+    [SerializeField] private string dodgeArrowsEndlessHudFormat = "Time {0:0.00}s";
+    [SerializeField] private string dodgeArrowsEndlessDefeatFormat = "You survived {0:0.00} seconds";
     [SerializeField] private string siegePvpAttackerOpeningStatus = "Siege the walls — hold until the cannons are ready!";
     [SerializeField] private string siegePvpDefenderOpeningStatus = "Stop the siege — break through and silence the cannons!";
     [SerializeField] private bool showOpeningStatusOnStart = true;
@@ -134,6 +138,7 @@ public class SiegeMatchUi : MonoBehaviour
     private void Awake()
     {
         Instance = this;
+        EnsureDodgeArrowsSubmenuExists();
         ResolveMissingWorldLabels();
         ResolvePresentationTargets();
         ApplyUiPresentationMode();
@@ -517,6 +522,11 @@ public class SiegeMatchUi : MonoBehaviour
         }
 
         awaitingRestart = false;
+        if (SiegeDodgeArrowsSubmenu.Instance != null)
+        {
+            SiegeDodgeArrowsSubmenu.Instance.CloseSubmenu();
+        }
+
         CacheDifficultyOptions();
         ResolveDifficultyPresentationTargets();
         ApplyDifficultySelectLayout();
@@ -527,6 +537,12 @@ public class SiegeMatchUi : MonoBehaviour
     {
         ResolvePresentationTargets();
         EnsureModeSelectStatusVisible(BuildDifficultySelectPrompt());
+    }
+
+    public void ShowDodgeArrowsSubmenuPrompt()
+    {
+        ResolvePresentationTargets();
+        EnsureModeSelectStatusVisible(dodgeArrowsSubmenuPrompt);
     }
 
     public void SetStatusMessage(string message)
@@ -721,7 +737,7 @@ public class SiegeMatchUi : MonoBehaviour
             return;
         }
 
-        SetWorldLabelText(ActiveCountdownLabel, string.Format(wave3CountdownFormat, secondsRemaining), true);
+        SetCountdownLabelForActiveMode(secondsRemaining);
         if (ActiveCountdownLabel != null)
         {
             ActiveCountdownLabel.SetVisible(true);
@@ -736,8 +752,23 @@ public class SiegeMatchUi : MonoBehaviour
             return;
         }
 
-        float secondsRemaining = manager != null ? manager.SecondsUntilCannonsFire : 0f;
-        SetWorldLabelText(ActiveCountdownLabel, string.Format(wave3CountdownFormat, secondsRemaining), true);
+        float timerValue = manager != null ? manager.GetDodgeArrowsHudTimerSeconds() : 0f;
+        SetCountdownLabelForActiveMode(timerValue);
+    }
+
+    private void SetCountdownLabelForActiveMode(float timerValue)
+    {
+        string format = wave3CountdownFormat;
+        if (SiegeMatchSettings.IsDodgeArrowsEndlessMode)
+        {
+            format = dodgeArrowsEndlessHudFormat;
+        }
+        else if (SiegeMatchSettings.IsDodgeArrowsTimedMode)
+        {
+            format = wave3CountdownFormat;
+        }
+
+        SetWorldLabelText(ActiveCountdownLabel, string.Format(format, timerValue), true);
     }
 
     private void RefreshCommanderHpDisplay()
@@ -778,6 +809,14 @@ public class SiegeMatchUi : MonoBehaviour
         SetLabelVisible(worldDefeatLabel, false);
         SetLabelVisible(defenderVictoryLabel, false);
         SetLabelVisible(defenderDefeatLabel, false);
+    }
+
+    private void EnsureDodgeArrowsSubmenuExists()
+    {
+        if (FindObjectOfType<SiegeDodgeArrowsSubmenu>(true) == null)
+        {
+            gameObject.AddComponent<SiegeDodgeArrowsSubmenu>();
+        }
     }
 
     private void HidePlayingHudTargets()
@@ -859,20 +898,80 @@ public class SiegeMatchUi : MonoBehaviour
 
     private void SetDifficultyPresentationVisible(bool visible)
     {
+        CacheDifficultyOptions();
+
+        if (!visible)
+        {
+            for (int i = 0; i < resolvedDifficultyLabels.Count; i++)
+            {
+                SiegeWorldUiLabel label = resolvedDifficultyLabels[i];
+                if (label != null)
+                {
+                    label.SetVisible(false);
+                }
+            }
+
+            for (int i = 0; i < resolvedDifficultyRoots.Count; i++)
+            {
+                SetRootVisible(resolvedDifficultyRoots[i], false);
+            }
+
+            if (difficultyOptions != null)
+            {
+                for (int i = 0; i < difficultyOptions.Length; i++)
+                {
+                    if (difficultyOptions[i] != null)
+                    {
+                        difficultyOptions[i].SetOptionFullyVisible(false);
+                    }
+                }
+            }
+
+            return;
+        }
+
+        RefreshDifficultyOptionPresentation();
+    }
+
+    /// <summary>Re-applies main-menu vs Dodge submenu visibility without showing every option at once.</summary>
+    public void RefreshDifficultyOptionPresentation()
+    {
+        CacheDifficultyOptions();
+
+        SiegeDodgeArrowsSubmenu submenu = SiegeDodgeArrowsSubmenu.Instance;
+        bool submenuOpen = submenu != null && submenu.IsSubmenuOpen;
+        if (submenu != null)
+        {
+            submenu.ApplyLayout();
+        }
+
+        EnforceDifficultyOptionVisibility(submenuOpen);
+
         for (int i = 0; i < resolvedDifficultyLabels.Count; i++)
         {
             SiegeWorldUiLabel label = resolvedDifficultyLabels[i];
-            if (label != null)
+            if (label == null || IsOwnedByDifficultyOption(label))
             {
-                label.SetVisible(visible);
+                continue;
             }
+
+            label.SetVisible(ShouldShowUnmanagedDifficultyLabel(label, submenuOpen));
         }
 
         for (int i = 0; i < resolvedDifficultyRoots.Count; i++)
         {
-            SetRootVisible(resolvedDifficultyRoots[i], visible);
-        }
+            GameObject root = resolvedDifficultyRoots[i];
+            if (root == null || IsOwnedByDifficultyOption(root))
+            {
+                continue;
+            }
 
+            SetRootVisible(root, ShouldShowUnmanagedDifficultyRoot(root, submenuOpen));
+        }
+    }
+
+    private void EnforceDifficultyOptionVisibility(bool submenuOpen)
+    {
         if (difficultyOptions == null)
         {
             return;
@@ -880,11 +979,139 @@ public class SiegeMatchUi : MonoBehaviour
 
         for (int i = 0; i < difficultyOptions.Length; i++)
         {
-            if (difficultyOptions[i] != null)
+            SiegeDifficultyOption option = difficultyOptions[i];
+            if (option == null)
             {
-                difficultyOptions[i].SetOptionVisible(visible);
+                continue;
+            }
+
+            bool show = option.IsDodgeSubmenuChoice ? submenuOpen : !submenuOpen;
+            option.SetOptionFullyVisible(show);
+        }
+    }
+
+    private bool IsOwnedByDifficultyOption(SiegeWorldUiLabel label)
+    {
+        if (label == null || difficultyOptions == null)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < difficultyOptions.Length; i++)
+        {
+            SiegeDifficultyOption option = difficultyOptions[i];
+            if (option == null)
+            {
+                continue;
+            }
+
+            if (option.GetPresentationLabel() == label || label.transform.IsChildOf(option.transform))
+            {
+                return true;
             }
         }
+
+        return false;
+    }
+
+    private bool IsOwnedByDifficultyOption(GameObject root)
+    {
+        if (root == null || difficultyOptions == null)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < difficultyOptions.Length; i++)
+        {
+            SiegeDifficultyOption option = difficultyOptions[i];
+            if (option == null)
+            {
+                continue;
+            }
+
+            if (option.gameObject == root)
+            {
+                return true;
+            }
+
+            SiegeWorldUiLabel optionLabel = option.GetPresentationLabel();
+            if (optionLabel != null && optionLabel.gameObject == root)
+            {
+                return true;
+            }
+
+            TextMeshPro optionText = option.GetPresentationText();
+            if (optionText != null && optionText.gameObject == root)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool ShouldShowUnmanagedDifficultyLabel(SiegeWorldUiLabel label, bool submenuOpen)
+    {
+        return ShouldShowUnmanagedDifficultyObject(label.gameObject.name, submenuOpen);
+    }
+
+    private static bool ShouldShowUnmanagedDifficultyRoot(GameObject root, bool submenuOpen)
+    {
+        return ShouldShowUnmanagedDifficultyObject(root.name, submenuOpen);
+    }
+
+    private static bool ShouldShowUnmanagedDifficultyObject(string objectName, bool submenuOpen)
+    {
+        if (IsDodgeSubmenuOnlyObjectName(objectName))
+        {
+            return submenuOpen;
+        }
+
+        if (submenuOpen && IsMainMenuDifficultyObjectName(objectName))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool IsDodgeSubmenuOnlyObjectName(string objectName)
+    {
+        return ContainsNameToken(
+            objectName,
+            "timed",
+            "endless",
+            "back",
+            "submenuback",
+            "dodgearrowstimed",
+            "dodgearrowsendless",
+            "endlesssurvival",
+            "survivalmode",
+            "survival");
+    }
+
+    private static bool IsMainMenuDifficultyObjectName(string objectName)
+    {
+        if (IsDodgeSubmenuOnlyObjectName(objectName))
+        {
+            return false;
+        }
+
+        return ContainsNameToken(
+            objectName,
+            "demo",
+            "full",
+            "fullversion",
+            "demoversion",
+            "dodge",
+            "dodgearrows",
+            "arrowdodge",
+            "siegepvp",
+            "pvp",
+            "2wave",
+            "3wave",
+            "easy",
+            "hard");
     }
 
     private void CacheDifficultyOptions()
@@ -1060,6 +1287,9 @@ public class SiegeMatchUi : MonoBehaviour
             "dodge",
             "dodgearrows",
             "arrowdodge",
+            "timed",
+            "endless",
+            "back",
             "siegepvp",
             "pvp",
             "survive",
@@ -1175,7 +1405,12 @@ public class SiegeMatchUi : MonoBehaviour
 
     private string GetActiveOpeningStatus()
     {
-        if (SiegeMatchSettings.IsDodgeArrowsMode)
+        if (SiegeMatchSettings.IsDodgeArrowsEndlessMode)
+        {
+            return dodgeArrowsEndlessOpeningStatus;
+        }
+
+        if (SiegeMatchSettings.IsDodgeArrowsTimedMode)
         {
             return dodgeArrowsOpeningStatus;
         }
@@ -1330,6 +1565,13 @@ public class SiegeMatchUi : MonoBehaviour
 
     private string ResolveDefeatMessage(string reason)
     {
+        if (SiegeMatchSettings.IsDodgeArrowsEndlessMode && SiegeGameManager.Instance != null)
+        {
+            return string.Format(
+                dodgeArrowsEndlessDefeatFormat,
+                SiegeGameManager.Instance.MatchElapsedSeconds);
+        }
+
         if (string.IsNullOrWhiteSpace(reason))
         {
             return "Defeat.";

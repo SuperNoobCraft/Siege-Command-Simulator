@@ -7,7 +7,12 @@ using UnityEngine;
 [DisallowMultipleComponent]
 public class SiegeDifficultyOption : MonoBehaviour
 {
+    [Tooltip("Demo, Full, Siege PVP, Timed Dodge Arrows, or Endless Dodge Arrows. Timed/Endless/Back are submenu choices — leave Opens Submenu unchecked on those.")]
     [SerializeField] private SiegeGameMode gameMode = SiegeGameMode.Demo;
+    [Tooltip("Main-menu Dodge Arrows button opens the Timed / Endless submenu instead of starting immediately.")]
+    [SerializeField] private bool opensDodgeArrowsSubmenu;
+    [Tooltip("Returns from the Dodge Arrows submenu to the main mode select.")]
+    [SerializeField] private bool isSubmenuBackButton;
     [Header("Siege PVP tuning (Attacker stalls for cannons; Defender tries to stop them)")]
     [Tooltip("Off: use SiegeGameManager duration/speed. On: use the values below when this button is selected.")]
     [SerializeField] private bool useCustomPvpTuning = false;
@@ -19,6 +24,12 @@ public class SiegeDifficultyOption : MonoBehaviour
     [SerializeField] private Color highlightedColor = new Color(0.35f, 1f, 0.45f, 1f);
 
     public SiegeGameMode GameMode => gameMode;
+    public bool OpensDodgeArrowsSubmenu => opensDodgeArrowsSubmenu;
+    public bool IsSubmenuBackButton => isSubmenuBackButton;
+    public bool IsDodgeSubmenuChoice =>
+        isSubmenuBackButton
+        || gameMode == SiegeGameMode.DodgeArrowsEndless
+        || (gameMode == SiegeGameMode.DodgeArrows && !opensDodgeArrowsSubmenu);
     public bool UseCustomPvpTuning => useCustomPvpTuning;
     public float PvpMatchDurationSeconds => pvpMatchDurationSeconds;
     public float PvpMoveSpeedScale => pvpMoveSpeedScale;
@@ -26,6 +37,7 @@ public class SiegeDifficultyOption : MonoBehaviour
     {
         SiegeGameMode.Demo => SiegeMatchSettings.DemoWaveCount,
         SiegeGameMode.DodgeArrows => 0,
+        SiegeGameMode.DodgeArrowsEndless => 0,
         SiegeGameMode.SiegePvp => 0,
         _ => SiegeMatchSettings.FullWaveCount
     };
@@ -119,6 +131,16 @@ public class SiegeDifficultyOption : MonoBehaviour
         if (!visible)
         {
             SetHighlighted(false);
+        }
+    }
+
+    /// <summary>Visibility for mode-select buttons, including the whole option object.</summary>
+    public void SetOptionFullyVisible(bool visible)
+    {
+        SetOptionVisible(visible);
+        if (gameObject.activeSelf != visible)
+        {
+            gameObject.SetActive(visible);
         }
     }
 }

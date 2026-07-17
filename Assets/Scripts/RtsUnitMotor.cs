@@ -41,9 +41,9 @@ public class RtsUnitMotor : MonoBehaviour
 
     [Header("Drawn Path Following")]
     [Tooltip("Shrinks the collision hull while following a drawn path so slight arcs near walls can still pass.")]
-    [SerializeField, Min(0f)] private float pathCollisionBuffer = 0.35f;
-    [Tooltip("Seconds a drawn-path unit can remain blocked before movement is halted.")]
-    [SerializeField, Min(0f)] private float pathBlockedHaltDelay = 0.45f;
+    [SerializeField, Min(0f)] private float pathCollisionBuffer = 0.45f;
+    [Tooltip("Drop path waypoints closer than this (m) — noisy XR paths otherwise stall between micro segments.")]
+    [SerializeField, Min(0.05f)] private float pathMinSegmentLength = 0.25f;
     [Tooltip("When blocked on a drawn path, try sliding along the wall instead of pushing into it.")]
     [SerializeField] private bool slideAlongWallOnPath = true;
     [SerializeField] private bool drawCollisionDebug;
@@ -65,8 +65,7 @@ public class RtsUnitMotor : MonoBehaviour
     private Vector3 stuckSamplePosition;
     private float stuckSampleTime;
     private float nextDetourAttemptTime;
-    private float pathBlockedSinceTime = -1f;
-    private bool pathMovementHalted;
+    private int pathStuckConfirmCount;
 
     public bool IsCommandUnit => isCommandUnit;
     public bool CanReceiveCommands { get; set; } = true;
@@ -78,14 +77,13 @@ public class RtsUnitMotor : MonoBehaviour
     public float MoveSpeedMultiplier { get; set; } = 1f;
     public bool HasDestination => hasDestination;
     public bool HasActivePath => movementMode == MovementMode.Path && pathWaypoints.Count > 0;
-    public bool HasActivePathForDisplay => HasActivePath && !pathMovementHalted;
-    public bool IsPathMovementHalted => pathMovementHalted;
+    public bool HasActivePathForDisplay => HasActivePath;
     public Vector3 MoveDirection { get; private set; } = Vector3.forward;
     public bool IsBlockedBySolidObstacle { get; private set; }
     public bool IsStuck { get; private set; }
 
-    /// <summary>Fired when a drawn path is halted on a wall (PVP peers must be notified).</summary>
-    public event Action<RtsUnitMotor> PathMovementHalted;
+    /// <summary>Fired when a drawn path is abandoned (wall block or no progress). PVP sends STOP.</summary>
+    public event Action<RtsUnitMotor> PathFollowingAborted;
 
     private void Awake()
     {
@@ -108,8 +106,7 @@ public class RtsUnitMotor : MonoBehaviour
         hasDestination = true;
         IsBlockedBySolidObstacle = false;
         IsStuck = false;
-        pathBlockedSinceTime = -1f;
-        pathMovementHalted = false;
+        pathStuckConfirmCount = 0;
         ResetStuckTracking();
     }
 
@@ -121,9 +118,10 @@ public class RtsUnitMotor : MonoBehaviour
             return;
         }
 
-        for (int i = 0; i < waypoints.Count; i++)
+        List<Vector3> sanitized = RtsPathUtility.RemoveShortSegments(waypoints, pathMinSegmentLength);
+        for (int i = 0; i < sanitized.Count; i++)
         {
-            pathWaypoints.Add(FlattenToGround(waypoints[i]));
+            pathWaypoints.Add(FlattenToGround(sanitized[i]));
         }
 
         while (pathWaypoints.Count > 0
@@ -146,8 +144,7 @@ public class RtsUnitMotor : MonoBehaviour
         hasDestination = true;
         IsBlockedBySolidObstacle = false;
         IsStuck = false;
-        pathBlockedSinceTime = -1f;
-        pathMovementHalted = false;
+        pathStuckConfirmCount = 0;
         ResetStuckTracking();
     }
 
@@ -192,10 +189,10 @@ public class RtsUnitMotor : MonoBehaviour
         next.y = flat.y;
         transform.position = next;
 
-        // Unstick peer motors that halted on a different obstacle sample than the owner.
+        // Unstick obstacle flags without overriding an explicit path halt (PVP peers mirror owner halt).
         IsBlockedBySolidObstacle = false;
         IsStuck = false;
-        pathMovementHalted = false;
+        pathStuckConfirmCount = 0;
         ResetStuckTracking();
     }
 
@@ -206,7 +203,7 @@ public class RtsUnitMotor : MonoBehaviour
         transform.position = flat;
         IsBlockedBySolidObstacle = false;
         IsStuck = false;
-        pathMovementHalted = false;
+        pathStuckConfirmCount = 0;
         ResetStuckTracking();
     }
 
@@ -234,21 +231,22 @@ public class RtsUnitMotor : MonoBehaviour
     {
         if (!hasDestination)
         {
-            if (!pathMovementHalted)
-            {
-                IsBlockedBySolidObstacle = false;
-                IsStuck = false;
-            }
-
+            IsBlockedBySolidObstacle = false;
+            IsStuck = false;
+            pathStuckConfirmCount = 0;
             wallEscapeGraceEndTime = 0f;
             return;
         }
 
+        if (IsFollowingPath())
+        {
+            SkipDegeneratePathSegments();
+        }
+
         UpdateStuckDetection();
 
-        if (IsFollowingPath() && hasDestination && ShouldHaltBlockedPath())
+        if (IsFollowingPath() && TryAbortPathIfStuck())
         {
-            HaltBlockedPath();
             return;
         }
 
@@ -284,7 +282,20 @@ public class RtsUnitMotor : MonoBehaviour
         }
         else if (offset.sqrMagnitude < 0.000001f)
         {
-            return;
+            if (IsFollowingPath() && TryAdvancePastDegenerateSegment())
+            {
+                offset = GetMovementTarget() - transform.position;
+                offset.y = 0f;
+                if (offset.sqrMagnitude < 0.000001f)
+                {
+                    AbortPathFollowing();
+                    return;
+                }
+            }
+            else
+            {
+                return;
+            }
         }
 
         Vector3 direction = offset.normalized;
@@ -297,17 +308,12 @@ public class RtsUnitMotor : MonoBehaviour
 
         if (IsFollowingPath() && IsBlockedBySolidObstacle && !IsInWallEscapeGrace)
         {
-            if (ShouldHaltBlockedPath())
-            {
-                HaltBlockedPath();
-                return;
-            }
-
             if (slideAlongWallOnPath && TrySlideAlongWall(direction, stepDistance))
             {
                 return;
             }
 
+            AbortPathFollowing();
             return;
         }
 
@@ -352,7 +358,10 @@ public class RtsUnitMotor : MonoBehaviour
         }
 
         float distanceToTarget = offset.magnitude;
-        if (distanceToTarget <= arrivalSlowdownRadius && arrivalSlowdownRadius > 0.01f)
+        bool slowForFinalArrival = !IsFollowingPath() || pathWaypointIndex >= pathWaypoints.Count - 1;
+        if (slowForFinalArrival
+            && distanceToTarget <= arrivalSlowdownRadius
+            && arrivalSlowdownRadius > 0.01f)
         {
             float slowdown = Mathf.Clamp01(distanceToTarget / arrivalSlowdownRadius);
             stepDistance *= Mathf.Max(0.12f, slowdown);
@@ -364,9 +373,9 @@ public class RtsUnitMotor : MonoBehaviour
         if (useWallEscapeGrace)
         {
             transform.position += desiredDelta;
-            pathBlockedSinceTime = -1f;
             IsBlockedBySolidObstacle = false;
             IsStuck = false;
+            pathStuckConfirmCount = 0;
             ResetStuckTracking();
         }
         else if (!TryGetAllowedDelta(desiredDelta, out Vector3 allowedDelta))
@@ -390,9 +399,9 @@ public class RtsUnitMotor : MonoBehaviour
                 transform.position += allowedDelta;
             }
 
-            pathBlockedSinceTime = -1f;
             IsBlockedBySolidObstacle = false;
             IsStuck = false;
+            pathStuckConfirmCount = 0;
             ResetStuckTracking();
         }
 
@@ -470,9 +479,9 @@ public class RtsUnitMotor : MonoBehaviour
         segment.y = 0f;
 
         float segmentLength = segment.magnitude;
-        if (segmentLength < 0.01f)
+        if (segmentLength < pathMinSegmentLength)
         {
-            return destination;
+            return nextWaypoint;
         }
 
         Vector3 segmentDirection = segment / segmentLength;
@@ -554,7 +563,6 @@ public class RtsUnitMotor : MonoBehaviour
             {
                 transform.position += allowedEscape;
                 MoveDirection = allowedEscape.normalized;
-                pathBlockedSinceTime = -1f;
                 IsBlockedBySolidObstacle = false;
                 return true;
             }
@@ -564,7 +572,6 @@ public class RtsUnitMotor : MonoBehaviour
         {
             transform.position += avoidanceDelta;
             MoveDirection = avoidanceDelta.normalized;
-            pathBlockedSinceTime = -1f;
             IsBlockedBySolidObstacle = false;
             return true;
         }
@@ -612,9 +619,9 @@ public class RtsUnitMotor : MonoBehaviour
 
             transform.position += allowedSlide;
             MoveDirection = allowedSlide.normalized;
-            pathBlockedSinceTime = -1f;
             IsBlockedBySolidObstacle = false;
             IsStuck = false;
+            pathStuckConfirmCount = 0;
             ResetStuckTracking();
             return true;
         }
@@ -729,7 +736,17 @@ public class RtsUnitMotor : MonoBehaviour
 
         float movedDistanceSqr = HorizontalDistanceSqr(transform.position, stuckSamplePosition);
         float progressThreshold = GetStuckProgressThreshold();
-        IsStuck = movedDistanceSqr < progressThreshold * progressThreshold;
+        bool stuckThisSample = movedDistanceSqr < progressThreshold * progressThreshold;
+        IsStuck = stuckThisSample;
+        if (stuckThisSample)
+        {
+            pathStuckConfirmCount++;
+        }
+        else
+        {
+            pathStuckConfirmCount = 0;
+        }
+
         stuckSamplePosition = transform.position;
         stuckSampleTime = Time.time;
     }
@@ -737,7 +754,13 @@ public class RtsUnitMotor : MonoBehaviour
     private float GetStuckProgressThreshold()
     {
         float speedScaledDistance = GetCurrentMoveSpeed() * stuckDetectionTime * stuckProgressSpeedFactor;
-        return Mathf.Max(stuckProgressDistance, speedScaledDistance);
+        float threshold = Mathf.Max(stuckProgressDistance, speedScaledDistance);
+        if (IsFollowingPath())
+        {
+            threshold = Mathf.Max(threshold, stuckProgressDistance * 2f);
+        }
+
+        return threshold;
     }
 
     private void ResetStuckTracking()
@@ -745,6 +768,98 @@ public class RtsUnitMotor : MonoBehaviour
         stuckSamplePosition = transform.position;
         stuckSampleTime = Time.time;
         IsStuck = false;
+        pathStuckConfirmCount = 0;
+    }
+
+    private void SkipDegeneratePathSegments()
+    {
+        float minSegmentSqr = pathMinSegmentLength * pathMinSegmentLength;
+        while (pathWaypointIndex < pathWaypoints.Count - 1)
+        {
+            Vector3 current = pathWaypoints[pathWaypointIndex];
+            Vector3 next = pathWaypoints[pathWaypointIndex + 1];
+            if (HorizontalDistanceSqr(current, next) >= minSegmentSqr)
+            {
+                break;
+            }
+
+            pathWaypointIndex++;
+            destination = pathWaypoints[pathWaypointIndex];
+            finalDestination = destination;
+        }
+    }
+
+    private bool TryAdvancePastDegenerateSegment()
+    {
+        if (!IsFollowingPath() || pathWaypointIndex >= pathWaypoints.Count - 1)
+        {
+            return false;
+        }
+
+        SkipDegeneratePathSegments();
+        return pathWaypointIndex < pathWaypoints.Count - 1;
+    }
+
+    private bool TryAbortPathIfStuck()
+    {
+        if (pathStuckConfirmCount < 2)
+        {
+            return false;
+        }
+
+        if (IsBlockedBySolidObstacle || (solidObstacleLayers != 0 && IsCurrentlyOverlappingObstacle()))
+        {
+            return false;
+        }
+
+        AbortPathFollowing();
+        return true;
+    }
+
+    private void AbortPathFollowing()
+    {
+        if (!HasActivePath && !hasDestination)
+        {
+            return;
+        }
+
+        ClearMovement();
+        PathFollowingAborted?.Invoke(this);
+    }
+
+    private bool IsInWallEscapeGrace => wallEscapeGraceDuration > 0f && Time.time < wallEscapeGraceEndTime;
+
+    private void StopOnWall()
+    {
+        if (IsFollowingPath())
+        {
+            if (slideAlongWallOnPath)
+            {
+                float stepDistance = GetCurrentMoveSpeed() * Time.deltaTime;
+                Vector3 slideDirection = GetGoalDirection();
+                if (slideDirection.sqrMagnitude < 0.0001f)
+                {
+                    slideDirection = MoveDirection;
+                }
+
+                if (TrySlideAlongWall(slideDirection, stepDistance))
+                {
+                    IsBlockedBySolidObstacle = false;
+                    return;
+                }
+            }
+
+            AbortPathFollowing();
+            return;
+        }
+
+        bool shouldClearMovement = stopImmediatelyOnWallHit && !enableObstacleAvoidance;
+        if (shouldClearMovement)
+        {
+            ClearMovement();
+        }
+
+        IsBlockedBySolidObstacle = true;
     }
 
     private bool IsPositionClear(Vector3 worldPosition)
@@ -789,78 +904,6 @@ public class RtsUnitMotor : MonoBehaviour
         return true;
     }
 
-    private bool IsInWallEscapeGrace => wallEscapeGraceDuration > 0f && Time.time < wallEscapeGraceEndTime;
-
-    private bool ShouldHaltBlockedPath()
-    {
-        if (IsBlockedBySolidObstacle)
-        {
-            if (pathBlockedSinceTime < 0f)
-            {
-                pathBlockedSinceTime = Time.time;
-            }
-
-            return pathBlockedHaltDelay <= 0f || Time.time - pathBlockedSinceTime >= pathBlockedHaltDelay;
-        }
-
-        if (IsStuck && (IsBlockedBySolidObstacle || pathBlockedSinceTime >= 0f))
-        {
-            return true;
-        }
-
-        if (!IsBlockedBySolidObstacle)
-        {
-            pathBlockedSinceTime = -1f;
-        }
-
-        return false;
-    }
-
-    private void MarkPathBlockedThisFrame()
-    {
-        if (pathBlockedSinceTime < 0f)
-        {
-            pathBlockedSinceTime = Time.time;
-        }
-
-        IsBlockedBySolidObstacle = true;
-    }
-
-    private void HaltBlockedPath()
-    {
-        hasDestination = false;
-        usingDetour = false;
-        wallEscapeGraceEndTime = 0f;
-        pathBlockedSinceTime = -1f;
-        pathMovementHalted = true;
-        IsBlockedBySolidObstacle = true;
-        IsStuck = true;
-        ResetStuckTracking();
-        PathMovementHalted?.Invoke(this);
-    }
-
-    private void StopOnWall()
-    {
-        if (IsFollowingPath())
-        {
-            MarkPathBlockedThisFrame();
-            if (ShouldHaltBlockedPath())
-            {
-                HaltBlockedPath();
-            }
-
-            return;
-        }
-
-        bool shouldClearMovement = stopImmediatelyOnWallHit && !enableObstacleAvoidance;
-        if (shouldClearMovement)
-        {
-            ClearMovement();
-        }
-
-        IsBlockedBySolidObstacle = true;
-    }
-
     private void ClearPath()
     {
         pathWaypoints.Clear();
@@ -876,8 +919,7 @@ public class RtsUnitMotor : MonoBehaviour
         IsBlockedBySolidObstacle = false;
         IsStuck = false;
         wallEscapeGraceEndTime = 0f;
-        pathBlockedSinceTime = -1f;
-        pathMovementHalted = false;
+        pathStuckConfirmCount = 0;
         ResetStuckTracking();
     }
 

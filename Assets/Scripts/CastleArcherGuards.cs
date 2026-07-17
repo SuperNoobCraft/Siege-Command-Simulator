@@ -64,6 +64,8 @@ public class CastleArcherGuards : MonoBehaviour
         archersPerVolley = 2,
         firstShotDelay = 0.75f
     };
+    [Tooltip("Fraction of Dodge Arrows shots that land at a random point anywhere on the command tower floor instead of tracking the player.")]
+    [SerializeField, Range(0f, 1f)] private float dodgeArrowsDecoyShotChance = 0.2f;
     [Tooltip("Optional projectile overrides for Dodge Arrows. Leave speeds at zero to reuse the main projectile settings.")]
     [SerializeField] private DodgeArrowsProjectileProfile dodgeArrowsProjectile = new DodgeArrowsProjectileProfile
     {
@@ -72,6 +74,25 @@ public class CastleArcherGuards : MonoBehaviour
         maxArcHeight = 3.5f,
         launchHeight = 1.15f
     };
+
+    [Header("Dodge Arrows Endless")]
+    [Tooltip("Endless mode keeps accelerating arrow pressure after the reference duration.")]
+    [SerializeField] private PlayerHarassmentProfile dodgeArrowsEndlessHarassment = new PlayerHarassmentProfile
+    {
+        minTimeGap = 2.25f,
+        shotChance = 1f,
+        minScaledTimeGap = 0.85f,
+        maxScaledChance = 1f,
+        matchDurationReferenceSeconds = 45f,
+        gapScaleStrength = 1f,
+        chanceScaleStrength = 0.5f,
+        shotSpreadRadius = 1.25f,
+        archersPerVolley = 2,
+        firstShotDelay = 0.5f
+    };
+    [SerializeField, Min(0.05f)] private float endlessAbsoluteMinVolleyGap = 0.16f;
+    [SerializeField, Min(0f)] private float endlessPostRampAcceleration = 1.25f;
+    [SerializeField, Min(1)] private int endlessMaxArchersPerVolley = 6;
 
     [Header("Stillness Accuracy")]
     [Tooltip("While standing still, spread shrinks to zero over this many seconds (guaranteed hit). Applies in Dodge Arrows by default.")]
@@ -156,7 +177,12 @@ public class CastleArcherGuards : MonoBehaviour
         projectileArcHeight = Mathf.Max(0f, projectileArcHeight);
         projectileLaunchHeight = Mathf.Max(0f, projectileLaunchHeight);
         ValidateHarassmentProfile(dodgeArrowsHarassment);
+        ValidateHarassmentProfile(dodgeArrowsEndlessHarassment);
+        dodgeArrowsDecoyShotChance = Mathf.Clamp01(dodgeArrowsDecoyShotChance);
         dodgeArrowsProjectile.Validate();
+        endlessAbsoluteMinVolleyGap = Mathf.Max(0.05f, endlessAbsoluteMinVolleyGap);
+        endlessPostRampAcceleration = Mathf.Max(0f, endlessPostRampAcceleration);
+        endlessMaxArchersPerVolley = Mathf.Max(1, endlessMaxArchersPerVolley);
         stillnessMoveThreshold = Mathf.Max(0.01f, stillnessMoveThreshold);
         stillnessSecondsToGuaranteedHit = Mathf.Max(0.25f, stillnessSecondsToGuaranteedHit);
     }
@@ -252,13 +278,33 @@ public class CastleArcherGuards : MonoBehaviour
             return;
         }
 
-        int maxVolley = Mathf.Clamp(dodgeArrowsHarassment.archersPerVolley, 1, slots.Count);
+        int maxVolley = GetDodgeVolleyArcherCap();
         FirePlayerHarassmentVolley(player, maxVolley, randomizeVolleySize: true);
+    }
+
+    private int GetDodgeVolleyArcherCap()
+    {
+        PlayerHarassmentProfile profile = GetActiveHarassmentProfile();
+        int baseCap = Mathf.Clamp(profile.archersPerVolley, 1, slots.Count);
+        if (!IsDodgeArrowsEndlessMode())
+        {
+            return baseCap;
+        }
+
+        float progress = GetEndlessHarassmentProgress();
+        float ramp = Mathf.Clamp01(progress);
+        int extra = Mathf.FloorToInt(ramp * (endlessMaxArchersPerVolley - baseCap));
+        return Mathf.Clamp(baseCap + extra, 1, Mathf.Min(endlessMaxArchersPerVolley, slots.Count));
     }
 
     private void ScheduleNextDodgeVolley()
     {
-        nextPlayerHarassmentRollTime = Time.time + dodgeArrowsHarassment.GetScaledTimeGap(GetMatchProgress());
+        PlayerHarassmentProfile profile = GetActiveHarassmentProfile();
+        float progress = GetHarassmentProgress();
+        float gap = IsDodgeArrowsEndlessMode()
+            ? profile.GetScaledTimeGap(progress, endlessAbsoluteMinVolleyGap, endlessPostRampAcceleration)
+            : profile.GetScaledTimeGap(progress);
+        nextPlayerHarassmentRollTime = Time.time + gap;
     }
 
     private void FirePlayerHarassmentVolley(Transform player, int maxArcherCount, bool randomizeVolleySize = false)
@@ -333,12 +379,22 @@ public class CastleArcherGuards : MonoBehaviour
 
     private PlayerHarassmentProfile GetActiveHarassmentProfile()
     {
+        if (IsDodgeArrowsEndlessMode())
+        {
+            return dodgeArrowsEndlessHarassment;
+        }
+
         return IsDodgeArrowsMode() ? dodgeArrowsHarassment : regimentHarassmentProfile;
     }
 
     private bool IsDodgeArrowsMode()
     {
         return SiegeMatchSettings.IsDodgeArrowsMode;
+    }
+
+    private bool IsDodgeArrowsEndlessMode()
+    {
+        return SiegeMatchSettings.IsDodgeArrowsEndlessMode;
     }
 
     private float GetProjectileSpeed()
@@ -378,7 +434,7 @@ public class CastleArcherGuards : MonoBehaviour
     private float GetActivePlayerShotSpreadRadius()
     {
         float baseSpread = IsDodgeArrowsMode()
-            ? dodgeArrowsHarassment.shotSpreadRadius
+            ? GetActiveHarassmentProfile().shotSpreadRadius
             : playerShotSpreadRadius;
 
         if (!ShouldTightenSpreadFromStillness())
@@ -398,6 +454,32 @@ public class CastleArcherGuards : MonoBehaviour
         }
 
         return stillnessTightensSpreadInDemoFull;
+    }
+
+    private bool TryResolveDodgeArrowsAimPoint(
+        Transform player,
+        Vector3 aimOrigin,
+        Vector2 spreadXZ,
+        out Vector3 aimPoint)
+    {
+        aimPoint = aimOrigin + new Vector3(spreadXZ.x, 0f, spreadXZ.y);
+        if (!IsDodgeArrowsMode() || dodgeArrowsDecoyShotChance <= 0f)
+        {
+            return false;
+        }
+
+        if (Random.value >= dodgeArrowsDecoyShotChance)
+        {
+            return false;
+        }
+
+        if (SiegePlayerBoundary.TrySampleRandomCommandTowerGroundPoint(out Vector3 punishPoint))
+        {
+            aimPoint = punishPoint;
+            return true;
+        }
+
+        return false;
     }
 
     private void UpdateStillnessTracking()
@@ -468,6 +550,23 @@ public class CastleArcherGuards : MonoBehaviour
         shotSpreadRadius = playerShotSpreadRadius
     };
 
+    private float GetHarassmentProgress()
+    {
+        if (IsDodgeArrowsEndlessMode())
+        {
+            return GetEndlessHarassmentProgress();
+        }
+
+        return GetMatchProgress();
+    }
+
+    private float GetEndlessHarassmentProgress()
+    {
+        float elapsed = GetMatchElapsedSeconds();
+        float reference = GetMatchDurationReferenceSeconds();
+        return reference > 0.0001f ? elapsed / reference : elapsed;
+    }
+
     private float GetMatchProgress()
     {
         float elapsed = GetMatchElapsedSeconds();
@@ -480,6 +579,11 @@ public class CastleArcherGuards : MonoBehaviour
         SiegeGameManager manager = SiegeGameManager.Instance;
         if (manager != null)
         {
+            if (IsDodgeArrowsEndlessMode())
+            {
+                return Mathf.Max(1f, manager.DodgeArrowsEndlessRampReferenceSeconds);
+            }
+
             return Mathf.Max(1f, manager.TotalSecondsUntilCannonsFire);
         }
 
@@ -499,7 +603,8 @@ public class CastleArcherGuards : MonoBehaviour
 
         if (IsDodgeArrowsMode())
         {
-            nextPlayerHarassmentRollTime = Time.time + Mathf.Max(0f, dodgeArrowsHarassment.firstShotDelay);
+            PlayerHarassmentProfile profile = GetActiveHarassmentProfile();
+            nextPlayerHarassmentRollTime = Time.time + Mathf.Max(0f, profile.firstShotDelay);
             return;
         }
 
@@ -519,6 +624,12 @@ public class CastleArcherGuards : MonoBehaviour
 
     private float GetMatchElapsedSeconds()
     {
+        SiegeGameManager manager = SiegeGameManager.Instance;
+        if (manager != null && manager.IsPlaying)
+        {
+            return manager.MatchElapsedSeconds;
+        }
+
         EnemyWaveController waveController = EnemyWaveController.Instance;
         if (waveController != null)
         {
@@ -552,7 +663,11 @@ public class CastleArcherGuards : MonoBehaviour
 
         Vector2 spreadXZ = Random.insideUnitCircle * GetActivePlayerShotSpreadRadius();
         Vector3 aimOrigin = ResolvePlayerAimOrigin(player);
-        Vector3 aimPoint = aimOrigin + new Vector3(spreadXZ.x, 0f, spreadXZ.y);
+        Vector3 aimPoint;
+        if (!TryResolveDodgeArrowsAimPoint(player, aimOrigin, spreadXZ, out aimPoint))
+        {
+            aimPoint = aimOrigin + new Vector3(spreadXZ.x, 0f, spreadXZ.y);
+        }
 
         Vector3 launchPoint = archer.Transform.position;
         launchPoint.y += GetProjectileLaunchHeight();
@@ -901,8 +1016,22 @@ public class CastleArcherGuards : MonoBehaviour
 
         public float GetScaledTimeGap(float matchProgress)
         {
+            return GetScaledTimeGap(matchProgress, absoluteMinGap: 0.5f, postRampAcceleration: 0f);
+        }
+
+        public float GetScaledTimeGap(float matchProgress, float absoluteMinGap, float postRampAcceleration)
+        {
             float scale = Mathf.Clamp01(matchProgress * gapScaleStrength);
-            return Mathf.Lerp(minTimeGap, minScaledTimeGap, scale);
+            float gap = Mathf.Lerp(minTimeGap, minScaledTimeGap, scale);
+            if (matchProgress <= 1f || postRampAcceleration <= 0f)
+            {
+                return Mathf.Max(absoluteMinGap, gap);
+            }
+
+            float extra = matchProgress - 1f;
+            float floor = Mathf.Max(absoluteMinGap, minScaledTimeGap * 0.25f);
+            gap = Mathf.Lerp(minScaledTimeGap, floor, 1f - Mathf.Exp(-extra * postRampAcceleration));
+            return Mathf.Max(absoluteMinGap, gap);
         }
 
         public float GetScaledShotChance(float matchProgress)

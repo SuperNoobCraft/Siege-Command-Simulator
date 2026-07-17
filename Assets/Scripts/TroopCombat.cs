@@ -1474,6 +1474,17 @@ public class TroopCombat : MonoBehaviour
     {
         if (motor != null)
         {
+            if (!hardSnap && motor.HasActivePath)
+            {
+                Vector3 delta = worldPosition - transform.position;
+                delta.y = 0f;
+                float drift = delta.magnitude;
+                if (drift < Mathf.Max(0.5f, authoritySnapDistance * 0.5f))
+                {
+                    return;
+                }
+            }
+
             if (hardSnap)
             {
                 motor.SnapNetworkPosition(worldPosition);

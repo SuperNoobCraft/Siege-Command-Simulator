@@ -63,6 +63,93 @@ public class SiegePlayerBoundary : MonoBehaviour
         return collider.GetComponentInParent<SiegePlayerBoundary>() != null;
     }
 
+    public bool IsCommandTowerPlayArea => IsAttackerCommandTowerVolume();
+
+    /// <summary>Random ground point anywhere inside this boundary volume (used for tower-wide punish shots).</summary>
+    public bool TrySampleRandomPlayAreaGroundPoint(out Vector3 point)
+    {
+        point = Vector3.zero;
+        ResolveBoundaryCollider();
+        if (boundaryCollider == null)
+        {
+            return false;
+        }
+
+        Bounds bounds = boundaryCollider.bounds;
+        if (bounds.size.x <= 0.05f || bounds.size.z <= 0.05f)
+        {
+            return false;
+        }
+
+        float x = Random.Range(bounds.min.x, bounds.max.x);
+        float z = Random.Range(bounds.min.z, bounds.max.z);
+        float y = bounds.min.y + 0.05f;
+        point = new Vector3(x, y, z);
+        return IsFinitePosition(point);
+    }
+
+    /// <summary>Random ground point on the command tower play area (not the player dodge ring).</summary>
+    public static bool TrySampleRandomCommandTowerGroundPoint(out Vector3 point)
+    {
+        point = Vector3.zero;
+        SiegePlayerBoundary boundary = FindBestCommandTowerBoundary();
+        if (boundary != null && boundary.TrySampleRandomPlayAreaGroundPoint(out point))
+        {
+            return true;
+        }
+
+        SiegeCommandTowerFallDeath[] fallDeathVolumes = FindObjectsOfType<SiegeCommandTowerFallDeath>(true);
+        for (int i = 0; i < fallDeathVolumes.Length; i++)
+        {
+            SiegeCommandTowerFallDeath fallDeath = fallDeathVolumes[i];
+            if (fallDeath != null && fallDeath.TrySampleRandomTowerFloorPoint(out point))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static SiegePlayerBoundary FindBestCommandTowerBoundary()
+    {
+        SiegePlayerBoundary[] boundaries = FindObjectsOfType<SiegePlayerBoundary>(true);
+        SiegePlayerBoundary fallback = null;
+        for (int i = 0; i < boundaries.Length; i++)
+        {
+            SiegePlayerBoundary candidate = boundaries[i];
+            if (candidate == null)
+            {
+                continue;
+            }
+
+            if (fallback == null)
+            {
+                fallback = candidate;
+            }
+
+            if (candidate.IsCommandTowerPlayArea)
+            {
+                return candidate;
+            }
+
+            if (candidate.GetComponent<SiegeCommandTowerFallDeath>() != null
+                || candidate.GetComponentInParent<SiegeCommandTowerFallDeath>() != null)
+            {
+                return candidate;
+            }
+        }
+
+        return fallback;
+    }
+
+    private static bool IsFinitePosition(Vector3 position)
+    {
+        return float.IsFinite(position.x)
+            && float.IsFinite(position.y)
+            && float.IsFinite(position.z);
+    }
+
     /// <summary>
     /// Immediately disable command-tower blocking walls before a defender teleport in tracked XR.
     /// </summary>

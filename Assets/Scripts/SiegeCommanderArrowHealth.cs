@@ -23,8 +23,9 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
 
     [Header("Hits")]
     [SerializeField, Min(1)] private int maxHits = 3;
-    [Tooltip("Max arrow/cannon hits while playing Dodge Arrows or Cannon Duel. Demo/Full still use Max Hits.")]
-    [SerializeField, Min(1)] private int dodgeModeMaxHits = 1;
+    [Tooltip("Fallback when SiegeGameManager is missing. Prefer Dodge Arrows Timed/Endless Max Hits on SiegeGameManager.")]
+    [SerializeField, Min(1)] private int dodgeArrowsTimedMaxHitsFallback = 3;
+    [SerializeField, Min(1)] private int dodgeArrowsEndlessMaxHitsFallback = 1;
     [SerializeField, Min(0f)] private float hitInvulnerabilityDuration = 0.35f;
     [SerializeField] private bool autoCreateHeadHitVolume = false;
     [SerializeField] private bool autoRegisterChildColliders = true;
@@ -590,9 +591,24 @@ public class SiegeCommanderArrowHealth : MonoBehaviour
 
     public void ApplyActiveMaxHitsFromMatchMode()
     {
-        activeMaxHits = SiegeMatchSettings.IsArenaSurvivalMode
-            ? Mathf.Max(1, dodgeModeMaxHits)
-            : Mathf.Max(1, maxHits);
+        SiegeGameManager manager = SiegeGameManager.Instance;
+        if (SiegeMatchSettings.IsDodgeArrowsEndlessMode)
+        {
+            activeMaxHits = manager != null
+                ? manager.DodgeArrowsEndlessMaxHits
+                : Mathf.Max(1, dodgeArrowsEndlessMaxHitsFallback);
+        }
+        else if (SiegeMatchSettings.IsDodgeArrowsTimedMode)
+        {
+            activeMaxHits = manager != null
+                ? manager.DodgeArrowsTimedMaxHits
+                : Mathf.Max(1, dodgeArrowsTimedMaxHitsFallback);
+        }
+        else
+        {
+            activeMaxHits = Mathf.Max(1, maxHits);
+        }
+
         HitCount = Mathf.Min(HitCount, MaxHits);
     }
 

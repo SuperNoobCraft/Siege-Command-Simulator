@@ -425,4 +425,22 @@ public class SiegeCommandTowerFallDeath : MonoBehaviour
             towerFloorCollider = GetComponent<Collider>();
         }
     }
+
+    /// <summary>Random ground point across the full walkable tower floor (fallback when no SiegePlayerBoundary is available).</summary>
+    public bool TrySampleRandomTowerFloorPoint(out Vector3 point)
+    {
+        point = Vector3.zero;
+        ResolveTowerCollider();
+        if (towerFloorCollider == null)
+        {
+            return false;
+        }
+
+        Bounds bounds = towerFloorCollider.bounds;
+        float x = Random.Range(bounds.min.x, bounds.max.x);
+        float z = Random.Range(bounds.min.z, bounds.max.z);
+        float y = bounds.min.y + 0.05f;
+        point = new Vector3(x, y, z);
+        return float.IsFinite(x) && float.IsFinite(y) && float.IsFinite(z);
+    }
 }

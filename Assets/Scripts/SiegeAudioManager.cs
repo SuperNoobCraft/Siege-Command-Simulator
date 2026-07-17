@@ -226,6 +226,11 @@ public class SiegeAudioManager : MonoBehaviour
             return;
         }
 
+        if (SiegeMatchSettings.IsDodgeArrowsEndlessMode)
+        {
+            return;
+        }
+
         if (cannonCountdownAnnounced || secondsRemaining > cannonCountdownTriggerSeconds)
         {
             return;
