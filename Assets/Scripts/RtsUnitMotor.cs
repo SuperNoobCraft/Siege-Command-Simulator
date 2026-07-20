@@ -26,13 +26,34 @@ public class RtsUnitMotor : MonoBehaviour
 
     [Header("Solid Obstacles")]
     [SerializeField] private LayerMask solidObstacleLayers;
+    [Tooltip("Shrunk hull for sliding along walls on drawn paths. Solid blocking uses the full footprint instead.")]
     [SerializeField] private Collider movementBoundsCollider;
+    [Tooltip("Full regiment footprint used to block cliffs/walls so edge troops cannot mount solids.")]
+    [SerializeField] private Collider solidBlockCollider;
     [SerializeField] private Vector3 fallbackCastHalfExtents = new Vector3(1f, 0.5f, 1f);
     [SerializeField, Min(0f)] private float obstacleSkin = 0.05f;
+    [Tooltip("Extra horizontal padding on solid casts so thin walls/cliffs still register.")]
+    [SerializeField, Min(0f)] private float solidThicknessPadding = 0.2f;
+    [Tooltip("Max cast step length (m). Larger frame steps are subdivided so thin solids cannot be tunneled.")]
+    [SerializeField, Min(0.05f)] private float maxSolidCastStep = 0.2f;
+    [Tooltip("Steeper than this across the footprint is treated as an unwalkable ledge (gentle hills are fine).")]
+    [SerializeField, Range(15f, 80f)] private float maxWalkableSlopeDegrees = 40f;
+    [Tooltip("Max vertical rise between current and next center ground samples (blocks cliffs/ledges).")]
+    [SerializeField, Min(0.1f)] private float maxStepHeight = 1.25f;
+    [Tooltip("Ground normals steeper than this are treated as unwalkable cliff faces.")]
+    [SerializeField, Range(30f, 85f)] private float maxGroundNormalAngleDegrees = 50f;
+    [Tooltip("Solid casts/overlaps only block within this height band above the regiment plane (ignores gate roofs).")]
+    [SerializeField, Min(0.25f)] private float solidBodyHeight = 1.1f;
+    [Tooltip("Bottom of the solid-check band above the regiment plane.")]
+    [SerializeField, Min(0f)] private float solidBodyBottomClearance = 0.35f;
     [SerializeField] private bool stopImmediatelyOnWallHit = true;
     [SerializeField, Min(0f)] private float wallEscapeGraceDuration = 2.75f;
     [SerializeField, Range(0f, 1f)] private float wallEscapeDirectionThreshold = 0.1f;
     [SerializeField] private bool enableObstacleAvoidance = true;
+    [Tooltip("How far ahead to steer away from walls before contact.")]
+    [SerializeField, Min(0.5f)] private float obstacleLookaheadDistance = 2.75f;
+    [Tooltip("When blocked on a direct move, try sliding along the wall like drawn paths.")]
+    [SerializeField] private bool slideAlongWallOnDirectMove = true;
     [SerializeField, Min(0.1f)] private float stuckDetectionTime = 0.6f;
     [SerializeField, Min(0.05f)] private float stuckProgressDistance = 0.12f;
     [SerializeField, Range(0.1f, 1f)] private float stuckProgressSpeedFactor = 0.35f;
@@ -69,6 +90,8 @@ public class RtsUnitMotor : MonoBehaviour
 
     public bool IsCommandUnit => isCommandUnit;
     public bool CanReceiveCommands { get; set; } = true;
+    /// <summary>True if this motor applied an XZ move during the last Update.</summary>
+    public bool MovedHorizontallyThisFrame { get; private set; }
 
     public void SetIsCommandUnit(bool value)
     {
@@ -82,12 +105,27 @@ public class RtsUnitMotor : MonoBehaviour
     public bool IsBlockedBySolidObstacle { get; private set; }
     public bool IsStuck { get; private set; }
 
+    /// <summary>
+    /// While true, ignore overhead solids and soften cliff checks so units can walk under open gate roofs.
+    /// </summary>
+    public bool TraverseGateCorridor { get; set; }
+
     /// <summary>Fired when a drawn path is abandoned (wall block or no progress). PVP sends STOP.</summary>
     public event Action<RtsUnitMotor> PathFollowingAborted;
 
     private void Awake()
     {
+        if (solidObstacleLayers == 0)
+        {
+            solidObstacleLayers = RtsGroundUtility.DefaultSolidMask;
+        }
+
         ResolveMovementBoundsCollider();
+        ownColliders = GetComponentsInChildren<Collider>(includeInactive: false);
+    }
+
+    public void RefreshOwnColliders()
+    {
         ownColliders = GetComponentsInChildren<Collider>(includeInactive: false);
     }
 
@@ -96,11 +134,32 @@ public class RtsUnitMotor : MonoBehaviour
         movementBoundsCollider = collider;
     }
 
+    public void SetSolidBlockCollider(Collider collider)
+    {
+        solidBlockCollider = collider;
+    }
+
     public void MoveTo(Vector3 worldPoint)
     {
+        Vector3 flat = FlattenToGround(worldPoint);
+        const float sameDestinationRadiusSqr = 0.4f * 0.4f;
+        if (hasDestination
+            && movementMode == MovementMode.Direct
+            && HorizontalDistanceSqr(finalDestination, flat) <= sameDestinationRadiusSqr)
+        {
+            // Keep blocked/stuck/detour state — re-issuing the same order should not reset avoidance.
+            finalDestination = flat;
+            if (!usingDetour)
+            {
+                destination = flat;
+            }
+
+            return;
+        }
+
         ClearPath();
         movementMode = MovementMode.Direct;
-        destination = FlattenToGround(worldPoint);
+        destination = flat;
         finalDestination = destination;
         usingDetour = false;
         hasDestination = true;
@@ -108,6 +167,36 @@ public class RtsUnitMotor : MonoBehaviour
         IsStuck = false;
         pathStuckConfirmCount = 0;
         ResetStuckTracking();
+    }
+
+    /// <summary>True when the regiment footprint can reach worldPoint without crossing RTS_Solid.</summary>
+    public bool IsDirectPathClear(Vector3 worldPoint)
+    {
+        return HasLineOfMovement(transform.position, FlattenToGround(worldPoint));
+    }
+
+    /// <summary>Insert a short lateral detour toward the current final destination. Returns false during drawn paths.</summary>
+    public bool TryRequestDetour()
+    {
+        if (!hasDestination || IsFollowingPath())
+        {
+            return false;
+        }
+
+        Vector3 goalDirection = GetGoalDirection();
+        if (goalDirection.sqrMagnitude < 0.0001f)
+        {
+            return false;
+        }
+
+        if (!TryInsertDetourWaypoint(goalDirection))
+        {
+            return false;
+        }
+
+        IsBlockedBySolidObstacle = false;
+        pathStuckConfirmCount = 0;
+        return true;
     }
 
     public void FollowPath(IReadOnlyList<Vector3> waypoints)
@@ -166,7 +255,9 @@ public class RtsUnitMotor : MonoBehaviour
         Vector3 flat = FlattenToGround(worldPosition);
         Vector3 current = transform.position;
         float horizontalDeltaSqr = HorizontalDistanceSqr(current, flat);
-        float deadzoneSqr = 0.09f; // ~0.3m
+        // Wider deadzone while idle so pose sync doesn't creep stopped units.
+        float deadzone = hasDestination ? 0.3f : 0.75f;
+        float deadzoneSqr = deadzone * deadzone;
         if (horizontalDeltaSqr < deadzoneSqr)
         {
             return;
@@ -186,7 +277,8 @@ public class RtsUnitMotor : MonoBehaviour
             next.z = Mathf.Lerp(current.z, flat.z, blend);
         }
 
-        next.y = flat.y;
+        // Network sync is XZ only — local TroopCombat owns ground Y.
+        next.y = current.y;
         transform.position = next;
 
         // Unstick obstacle flags without overriding an explicit path halt (PVP peers mirror owner halt).
@@ -200,6 +292,8 @@ public class RtsUnitMotor : MonoBehaviour
     public void SnapNetworkPosition(Vector3 worldPosition)
     {
         Vector3 flat = FlattenToGround(worldPosition);
+        Vector3 current = transform.position;
+        flat.y = current.y;
         transform.position = flat;
         IsBlockedBySolidObstacle = false;
         IsStuck = false;
@@ -229,6 +323,8 @@ public class RtsUnitMotor : MonoBehaviour
 
     private void Update()
     {
+        MovedHorizontallyThisFrame = false;
+
         if (!hasDestination)
         {
             IsBlockedBySolidObstacle = false;
@@ -305,6 +401,7 @@ public class RtsUnitMotor : MonoBehaviour
         }
 
         float stepDistance = moveSpeed * Mathf.Max(0f, MoveSpeedMultiplier) * Time.deltaTime;
+        Vector3 goalDirection = GetGoalDirection();
 
         if (IsFollowingPath() && IsBlockedBySolidObstacle && !IsInWallEscapeGrace)
         {
@@ -357,6 +454,13 @@ public class RtsUnitMotor : MonoBehaviour
             wallEscapeGraceEndTime = 0f;
         }
 
+        // Steer away from walls before contact so units don't march straight into solids.
+        if (useAvoidance && !isOverlapping && direction.sqrMagnitude > 0.0001f)
+        {
+            direction = GetObstacleSteeredDirection(direction, goalDirection);
+            MoveDirection = direction;
+        }
+
         float distanceToTarget = offset.magnitude;
         bool slowForFinalArrival = !IsFollowingPath() || pathWaypointIndex >= pathWaypoints.Count - 1;
         if (slowForFinalArrival
@@ -373,6 +477,7 @@ public class RtsUnitMotor : MonoBehaviour
         if (useWallEscapeGrace)
         {
             transform.position += desiredDelta;
+            MovedHorizontallyThisFrame = desiredDelta.sqrMagnitude > 0.000001f;
             IsBlockedBySolidObstacle = false;
             IsStuck = false;
             pathStuckConfirmCount = 0;
@@ -380,7 +485,12 @@ public class RtsUnitMotor : MonoBehaviour
         }
         else if (!TryGetAllowedDelta(desiredDelta, out Vector3 allowedDelta))
         {
-            if (IsFollowingPath() && slideAlongWallOnPath && TrySlideAlongWall(direction, stepDistance))
+            if (slideAlongWallOnPath && IsFollowingPath() && TrySlideAlongWall(direction, stepDistance))
+            {
+                return;
+            }
+
+            if (slideAlongWallOnDirectMove && !IsFollowingPath() && TrySlideAlongWall(direction, stepDistance))
             {
                 return;
             }
@@ -396,7 +506,21 @@ public class RtsUnitMotor : MonoBehaviour
         {
             if (allowedDelta.sqrMagnitude > 0f)
             {
+                Vector3 previousPosition = transform.position;
                 transform.position += allowedDelta;
+                if (GetSolidQueryMask() != 0 && IsCurrentlyOverlappingObstacle())
+                {
+                    // Tunneled into a thin solid — revert the step.
+                    transform.position = previousPosition;
+                    if (!useAvoidance || !TryMoveWithObstacleAvoidance(direction, isOverlapping: true))
+                    {
+                        StopOnWall();
+                    }
+
+                    return;
+                }
+
+                MovedHorizontallyThisFrame = true;
             }
 
             IsBlockedBySolidObstacle = false;
@@ -562,6 +686,7 @@ public class RtsUnitMotor : MonoBehaviour
             if (TryGetAllowedDelta(escapeDelta, out Vector3 allowedEscape) && allowedEscape.sqrMagnitude > 0.0001f)
             {
                 transform.position += allowedEscape;
+                MovedHorizontallyThisFrame = true;
                 MoveDirection = allowedEscape.normalized;
                 IsBlockedBySolidObstacle = false;
                 return true;
@@ -571,6 +696,7 @@ public class RtsUnitMotor : MonoBehaviour
         if (TryGetBestAvoidanceDelta(desiredDirection, goalDirection, stepDistance, out Vector3 avoidanceDelta))
         {
             transform.position += avoidanceDelta;
+            MovedHorizontallyThisFrame = true;
             MoveDirection = avoidanceDelta.normalized;
             IsBlockedBySolidObstacle = false;
             return true;
@@ -578,17 +704,108 @@ public class RtsUnitMotor : MonoBehaviour
 
         // Detours are local-only and diverge from the synced drawn path — skip during path follow.
         if (!IsFollowingPath()
-            && IsStuck
             && Time.time >= nextDetourAttemptTime
+            && (IsBlockedBySolidObstacle || IsStuck)
             && TryInsertDetourWaypoint(goalDirection))
         {
-            nextDetourAttemptTime = Time.time + stuckDetectionTime;
+            nextDetourAttemptTime = Time.time + stuckDetectionTime * 0.5f;
             IsBlockedBySolidObstacle = false;
             return true;
         }
 
         IsBlockedBySolidObstacle = true;
         return false;
+    }
+
+    private Vector3 GetObstacleSteeredDirection(Vector3 desiredDirection, Vector3 goalDirection)
+    {
+        desiredDirection.y = 0f;
+        if (desiredDirection.sqrMagnitude < 0.0001f)
+        {
+            return desiredDirection;
+        }
+
+        desiredDirection.Normalize();
+        if (!TryGetAheadSolidHit(desiredDirection, obstacleLookaheadDistance, out RaycastHit aheadHit))
+        {
+            return desiredDirection;
+        }
+
+        Vector3 wallNormal = aheadHit.normal;
+        wallNormal.y = 0f;
+        if (wallNormal.sqrMagnitude < 0.0001f)
+        {
+            return desiredDirection;
+        }
+
+        wallNormal.Normalize();
+        Vector3 tangentA = new Vector3(-wallNormal.z, 0f, wallNormal.x);
+        Vector3 tangentB = -tangentA;
+        Vector3 goal = goalDirection.sqrMagnitude > 0.0001f ? goalDirection.normalized : desiredDirection;
+        Vector3 tangent = Vector3.Dot(tangentA, goal) >= Vector3.Dot(tangentB, goal) ? tangentA : tangentB;
+
+        float proximity = 1f - Mathf.Clamp01(aheadHit.distance / Mathf.Max(0.5f, obstacleLookaheadDistance));
+        float steerWeight = proximity * proximity;
+        Vector3 steered = Vector3.Slerp(desiredDirection, tangent, steerWeight * 0.9f);
+        steered.y = 0f;
+        return steered.sqrMagnitude > 0.0001f ? steered.normalized : desiredDirection;
+    }
+
+    private bool TryGetAheadSolidHit(Vector3 direction, float maxDistance, out RaycastHit bestHit)
+    {
+        bestHit = default;
+        LayerMask mask = GetSolidQueryMask();
+        if (mask == 0 || maxDistance < 0.05f)
+        {
+            return false;
+        }
+
+        GetSolidBlockCastShape(out Vector3 castCenter, out Vector3 halfExtents);
+        direction.y = 0f;
+        if (direction.sqrMagnitude < 0.0001f)
+        {
+            return false;
+        }
+
+        direction.Normalize();
+        RaycastHit[] hits = Physics.BoxCastAll(
+            castCenter,
+            halfExtents,
+            direction,
+            Quaternion.identity,
+            maxDistance,
+            mask,
+            QueryTriggerInteraction.Ignore);
+
+        if (hits == null || hits.Length == 0)
+        {
+            return false;
+        }
+
+        float nearest = float.PositiveInfinity;
+        bool found = false;
+        for (int i = 0; i < hits.Length; i++)
+        {
+            RaycastHit hit = hits[i];
+            if (hit.collider == null || IsOwnCollider(hit.collider))
+            {
+                continue;
+            }
+
+            if (!IsSolidHitBlockingHorizontalMove(hit, castCenter))
+            {
+                continue;
+            }
+
+            if (hit.distance < nearest)
+            {
+                nearest = hit.distance;
+                bestHit = hit;
+                found = true;
+            }
+        }
+
+        return found;
     }
 
     private bool TrySlideAlongWall(Vector3 desiredDirection, float stepDistance)
@@ -618,6 +835,7 @@ public class RtsUnitMotor : MonoBehaviour
             }
 
             transform.position += allowedSlide;
+            MovedHorizontallyThisFrame = true;
             MoveDirection = allowedSlide.normalized;
             IsBlockedBySolidObstacle = false;
             IsStuck = false;
@@ -657,7 +875,17 @@ public class RtsUnitMotor : MonoBehaviour
             Vector3 allowedDirection = allowedDelta.normalized;
             float progressScore = Mathf.Max(0f, Vector3.Dot(allowedDirection, goalDirection));
             float distanceScore = allowedDelta.magnitude / Mathf.Max(stepDistance, 0.0001f);
-            float score = progressScore * 2f + distanceScore;
+            float clearanceScore = 0f;
+            if (TryGetAheadSolidHit(allowedDirection, obstacleLookaheadDistance, out RaycastHit aheadHit))
+            {
+                clearanceScore = Mathf.Clamp01(aheadHit.distance / Mathf.Max(0.5f, obstacleLookaheadDistance));
+            }
+            else
+            {
+                clearanceScore = 1f;
+            }
+
+            float score = progressScore * 2f + distanceScore + clearanceScore * 1.5f;
             if (score > bestScore)
             {
                 bestScore = score;
@@ -677,7 +905,7 @@ public class RtsUnitMotor : MonoBehaviour
 
         goalDirection.Normalize();
         Vector3 tangent = new Vector3(-goalDirection.z, 0f, goalDirection.x);
-        float[] sideMultipliers = { 1f, -1f, 1.75f, -1.75f, 2.5f, -2.5f };
+        float[] sideMultipliers = { 1f, -1f, 1.75f, -1.75f, 2.5f, -2.5f, 3.25f, -3.25f };
 
         for (int i = 0; i < sideMultipliers.Length; i++)
         {
@@ -692,6 +920,11 @@ public class RtsUnitMotor : MonoBehaviour
             }
 
             if (!HasLineOfMovement(transform.position, detourPoint))
+            {
+                continue;
+            }
+
+            if (!HasLineOfMovement(detourPoint, finalDestination))
             {
                 continue;
             }
@@ -853,6 +1086,31 @@ public class RtsUnitMotor : MonoBehaviour
             return;
         }
 
+        if (slideAlongWallOnDirectMove)
+        {
+            float stepDistance = GetCurrentMoveSpeed() * Time.deltaTime;
+            Vector3 slideDirection = GetGoalDirection();
+            if (slideDirection.sqrMagnitude < 0.0001f)
+            {
+                slideDirection = MoveDirection;
+            }
+
+            if (TrySlideAlongWall(slideDirection, stepDistance))
+            {
+                IsBlockedBySolidObstacle = false;
+                return;
+            }
+        }
+
+        if (!IsFollowingPath()
+            && Time.time >= nextDetourAttemptTime
+            && TryInsertDetourWaypoint(GetGoalDirection()))
+        {
+            nextDetourAttemptTime = Time.time + stuckDetectionTime * 0.5f;
+            IsBlockedBySolidObstacle = false;
+            return;
+        }
+
         bool shouldClearMovement = stopImmediatelyOnWallHit && !enableObstacleAvoidance;
         if (shouldClearMovement)
         {
@@ -925,6 +1183,8 @@ public class RtsUnitMotor : MonoBehaviour
 
     private Vector3 FlattenToGround(Vector3 worldPoint)
     {
+        // Logical movement plane only — elevation is ignored for pathing/speed.
+        // TroopCombat snaps root Y onto ground separately.
         return new Vector3(worldPoint.x, transform.position.y, worldPoint.z);
     }
 
@@ -938,49 +1198,202 @@ public class RtsUnitMotor : MonoBehaviour
     private bool TryGetAllowedDelta(Vector3 desiredDelta, out Vector3 allowedDelta)
     {
         allowedDelta = Vector3.zero;
+        desiredDelta.y = 0f;
         if (desiredDelta.sqrMagnitude < 0.000001f)
         {
             allowedDelta = desiredDelta;
             return true;
         }
 
-        if (solidObstacleLayers == 0)
-        {
-            allowedDelta = desiredDelta;
-            return true;
-        }
-
-        GetMovementCastShape(out Vector3 castCenter, out Vector3 halfExtents);
-
         Vector3 direction = desiredDelta.normalized;
         float distance = desiredDelta.magnitude;
-        float nearestBlockedDistance = GetNearestObstacleDistance(castCenter, halfExtents, direction, distance);
 
-        if (nearestBlockedDistance >= distance)
+        // Binary-ish shrink: full step, then half, then quarter if formation/solid rejects.
+        float[] fractions = { 1f, 0.5f, 0.25f, 0.1f };
+        for (int i = 0; i < fractions.Length; i++)
         {
-            Vector3 destinationCenter = castCenter + direction * distance;
-            if (!IsOverlappingSolidObstacle(destinationCenter, halfExtents))
+            float step = distance * fractions[i];
+            Vector3 candidateDelta = direction * step;
+            Vector3 nextPosition = transform.position + candidateDelta;
+            if (!IsFormationMoveBlocked(nextPosition, candidateDelta))
             {
-                allowedDelta = desiredDelta;
-                return true;
+                allowedDelta = candidateDelta;
+                return allowedDelta.sqrMagnitude > 0.000001f;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Blocks moves where the full footprint hits RTS_Solid or the formation would span a cliff ledge.
+    /// Gentle slopes are allowed; only steep discontinuities count as ledges.
+    /// </summary>
+    private bool IsFormationMoveBlocked(Vector3 nextPosition, Vector3 moveDelta)
+    {
+        GetSolidBlockCastShape(out Vector3 castCenter, out Vector3 halfExtents);
+        Vector3 nextCenter = new Vector3(nextPosition.x, castCenter.y, nextPosition.z);
+
+        if (GetSolidQueryMask() != 0)
+        {
+            float castDistance = moveDelta.magnitude;
+            if (castDistance > 0.0001f)
+            {
+                Vector3 direction = moveDelta.normalized;
+                float step = Mathf.Max(0.05f, maxSolidCastStep);
+                float traveled = 0f;
+                while (traveled < castDistance - 0.0001f)
+                {
+                    float segment = Mathf.Min(step, castDistance - traveled);
+                    Vector3 segmentOrigin = castCenter + direction * traveled;
+                    float blockedAt = GetNearestObstacleDistance(
+                        segmentOrigin,
+                        halfExtents,
+                        direction,
+                        segment);
+                    if (blockedAt < segment - 0.001f)
+                    {
+                        return true;
+                    }
+
+                    traveled += segment;
+                }
+
+                // Thin walls can slip between boxcast samples — also probe with thin rays.
+                if (HasThinSolidBlockingRay(castCenter, halfExtents, direction, castDistance))
+                {
+                    return true;
+                }
             }
 
-            nearestBlockedDistance = 0f;
+            if (IsOverlappingSolidObstacle(nextCenter, halfExtents))
+            {
+                return true;
+            }
         }
 
-        float safeDistance = Mathf.Max(0f, nearestBlockedDistance - obstacleSkin);
-        if (safeDistance <= 0.001f)
+        return !IsFormationGroundWalkable(nextPosition, halfExtents);
+    }
+
+    private bool IsFormationGroundWalkable(Vector3 nextPosition, Vector3 halfExtents)
+    {
+        // Center + 4 corners only. Missing corner samples are ignored (mesh gaps on slopes
+        // used to false-fail and freeze units).
+        Vector3[] probes =
         {
-            return false;
+            Vector3.zero,
+            new Vector3(halfExtents.x, 0f, halfExtents.z),
+            new Vector3(-halfExtents.x, 0f, halfExtents.z),
+            new Vector3(halfExtents.x, 0f, -halfExtents.z),
+            new Vector3(-halfExtents.x, 0f, -halfExtents.z)
+        };
+
+        float centerY = nextPosition.y;
+        bool hasCenter = false;
+        float maxAngle = Mathf.Clamp(maxWalkableSlopeDegrees, 15f, 80f);
+        float maxNormalAngle = Mathf.Clamp(maxGroundNormalAngleDegrees, 30f, 85f);
+        float stepLimit = Mathf.Max(0.1f, maxStepHeight);
+        if (TraverseGateCorridor)
+        {
+            // Gate thresholds often have a sill / mesh seam — don't freeze exit on cliff heuristics.
+            maxAngle = Mathf.Max(maxAngle, 70f);
+            maxNormalAngle = Mathf.Max(maxNormalAngle, 70f);
+            stepLimit = Mathf.Max(stepLimit, 3f);
+        }
+        bool hasCurrentGround = RtsGroundUtility.TrySampleGround(
+            transform.position.x,
+            transform.position.z,
+            RtsGroundUtility.DefaultGroundMask,
+            256f,
+            0f,
+            out float currentGroundY,
+            out _,
+            preferredY: transform.position.y,
+            maxVerticalSnap: 64f);
+
+        // Block cliff climbs: destination center cannot rise more than maxStepHeight from current.
+        if (hasCurrentGround
+            && RtsGroundUtility.TrySampleGround(
+                nextPosition.x,
+                nextPosition.z,
+                RtsGroundUtility.DefaultGroundMask,
+                256f,
+                0f,
+                out float nextCenterGroundY,
+                out Vector3 nextCenterNormal,
+                preferredY: nextPosition.y,
+                maxVerticalSnap: 64f))
+        {
+            if (nextCenterGroundY - currentGroundY > stepLimit)
+            {
+                return false;
+            }
+
+            if (Vector3.Angle(nextCenterNormal, Vector3.up) > maxNormalAngle)
+            {
+                return false;
+            }
         }
 
-        allowedDelta = direction * safeDistance;
-        return true;
+        for (int i = 0; i < probes.Length; i++)
+        {
+            float x = nextPosition.x + probes[i].x;
+            float z = nextPosition.z + probes[i].z;
+            if (!RtsGroundUtility.TrySampleGround(
+                    x,
+                    z,
+                    RtsGroundUtility.DefaultGroundMask,
+                    256f,
+                    0f,
+                    out float groundY,
+                    out Vector3 groundNormal,
+                    preferredY: nextPosition.y,
+                    maxVerticalSnap: 64f))
+            {
+                continue;
+            }
+
+            if (Vector3.Angle(groundNormal, Vector3.up) > maxNormalAngle)
+            {
+                return false;
+            }
+
+            if (!hasCenter || i == 0)
+            {
+                centerY = groundY;
+                hasCenter = true;
+                if (i == 0)
+                {
+                    continue;
+                }
+            }
+
+            float horizontal = new Vector2(probes[i].x, probes[i].z).magnitude;
+            if (horizontal < 0.05f)
+            {
+                continue;
+            }
+
+            float rise = Mathf.Abs(groundY - centerY);
+            float slopeDegrees = Mathf.Atan2(rise, horizontal) * Mathf.Rad2Deg;
+            if (slopeDegrees > maxAngle)
+            {
+                return false;
+            }
+
+            // Corner of the formation climbing a ledge the center hasn't reached yet.
+            if (hasCurrentGround && groundY - currentGroundY > stepLimit + 0.35f)
+            {
+                return false;
+            }
+        }
+
+        return hasCenter;
     }
 
     private bool IsCurrentlyOverlappingObstacle()
     {
-        GetMovementCastShape(out Vector3 castCenter, out Vector3 halfExtents);
+        GetSolidBlockCastShape(out Vector3 castCenter, out Vector3 halfExtents);
         return IsOverlappingSolidObstacle(castCenter, halfExtents);
     }
 
@@ -1003,13 +1416,13 @@ public class RtsUnitMotor : MonoBehaviour
     private bool TryGetOverlappingEscapeDirection(out Vector3 escapeDirection)
     {
         escapeDirection = Vector3.zero;
-        GetMovementCastShape(out Vector3 castCenter, out Vector3 halfExtents);
+        GetSolidBlockCastShape(out Vector3 castCenter, out Vector3 halfExtents);
 
         Collider[] overlaps = Physics.OverlapBox(
             castCenter,
             halfExtents,
             Quaternion.identity,
-            solidObstacleLayers,
+            GetSolidQueryMask(),
             QueryTriggerInteraction.Ignore);
 
         if (overlaps == null || overlaps.Length == 0)
@@ -1023,6 +1436,11 @@ public class RtsUnitMotor : MonoBehaviour
         {
             Collider overlap = overlaps[i];
             if (overlap == null || IsOwnCollider(overlap))
+            {
+                continue;
+            }
+
+            if (!IsSolidColliderBlockingHorizontalMove(overlap, castCenter))
             {
                 continue;
             }
@@ -1065,8 +1483,44 @@ public class RtsUnitMotor : MonoBehaviour
         return true;
     }
 
+    private LayerMask GetSolidQueryMask()
+    {
+        LayerMask mask = solidObstacleLayers;
+        if (mask == 0)
+        {
+            return mask;
+        }
+
+        // Never treat walkable ground / unit volumes as solid blockers (breaks slopes if mask is broad).
+        int groundLayer = LayerMask.NameToLayer("RTS_Ground");
+        if (groundLayer >= 0)
+        {
+            mask &= ~(1 << groundLayer);
+        }
+
+        int unitLayer = RtsGroundUtility.UnitLayer;
+        if (unitLayer >= 0)
+        {
+            mask &= ~(1 << unitLayer);
+        }
+
+        int ignoreRaycast = LayerMask.NameToLayer("Ignore Raycast");
+        if (ignoreRaycast >= 0)
+        {
+            mask &= ~(1 << ignoreRaycast);
+        }
+
+        return mask;
+    }
+
     private float GetNearestObstacleDistance(Vector3 castCenter, Vector3 halfExtents, Vector3 direction, float maxDistance)
     {
+        LayerMask mask = GetSolidQueryMask();
+        if (mask == 0)
+        {
+            return maxDistance;
+        }
+
         float nearest = maxDistance;
         RaycastHit[] hits = Physics.BoxCastAll(
             castCenter,
@@ -1074,7 +1528,7 @@ public class RtsUnitMotor : MonoBehaviour
             direction,
             Quaternion.identity,
             maxDistance,
-            solidObstacleLayers,
+            mask,
             QueryTriggerInteraction.Ignore);
 
         if (hits == null || hits.Length == 0)
@@ -1090,19 +1544,78 @@ public class RtsUnitMotor : MonoBehaviour
                 continue;
             }
 
+            if (!IsSolidHitBlockingHorizontalMove(hit, castCenter))
+            {
+                continue;
+            }
+
             nearest = Mathf.Min(nearest, hit.distance);
         }
 
         return nearest;
     }
 
+    private bool HasThinSolidBlockingRay(Vector3 castCenter, Vector3 halfExtents, Vector3 direction, float maxDistance)
+    {
+        LayerMask mask = GetSolidQueryMask();
+        if (mask == 0 || maxDistance < 0.0001f)
+        {
+            return false;
+        }
+
+        float bodyMidY = transform.position.y + solidBodyBottomClearance + solidBodyHeight * 0.5f;
+        Vector3 right = new Vector3(-direction.z, 0f, direction.x);
+        if (right.sqrMagnitude < 0.0001f)
+        {
+            right = Vector3.right;
+        }
+
+        right.Normalize();
+        float lateral = Mathf.Max(0.05f, halfExtents.x * 0.85f);
+
+        Vector3[] origins =
+        {
+            new Vector3(castCenter.x, bodyMidY, castCenter.z),
+            new Vector3(castCenter.x, bodyMidY, castCenter.z) + right * lateral,
+            new Vector3(castCenter.x, bodyMidY, castCenter.z) - right * lateral,
+            new Vector3(castCenter.x, GetSolidBodyFeetY() + solidBodyHeight * 0.25f, castCenter.z),
+            new Vector3(castCenter.x, GetSolidBodyFeetY() + solidBodyHeight * 0.75f, castCenter.z)
+        };
+
+        for (int i = 0; i < origins.Length; i++)
+        {
+            if (Physics.Raycast(
+                    origins[i],
+                    direction,
+                    out RaycastHit hit,
+                    maxDistance,
+                    mask,
+                    QueryTriggerInteraction.Ignore)
+                && hit.collider != null
+                && !IsOwnCollider(hit.collider)
+                && IsSolidHitBlockingHorizontalMove(hit, castCenter)
+                && hit.distance < maxDistance - 0.001f)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private bool IsOverlappingSolidObstacle(Vector3 castCenter, Vector3 halfExtents)
     {
+        LayerMask mask = GetSolidQueryMask();
+        if (mask == 0)
+        {
+            return false;
+        }
+
         Collider[] overlaps = Physics.OverlapBox(
             castCenter,
             halfExtents,
             Quaternion.identity,
-            solidObstacleLayers,
+            mask,
             QueryTriggerInteraction.Ignore);
 
         if (overlaps == null || overlaps.Length == 0)
@@ -1113,13 +1626,115 @@ public class RtsUnitMotor : MonoBehaviour
         for (int i = 0; i < overlaps.Length; i++)
         {
             Collider overlap = overlaps[i];
-            if (overlap != null && !IsOwnCollider(overlap))
+            if (overlap != null
+                && !IsOwnCollider(overlap)
+                && IsSolidColliderBlockingHorizontalMove(overlap, castCenter))
             {
                 return true;
             }
         }
 
         return false;
+    }
+
+    private float GetSolidBodyFeetY()
+    {
+        return transform.position.y + solidBodyBottomClearance;
+    }
+
+    private float GetSolidBodyTopY()
+    {
+        return GetSolidBodyFeetY() + solidBodyHeight;
+    }
+
+    /// <summary>
+    /// True when a solid collider blocks horizontal movement at body height (not overhead roofs).
+    /// </summary>
+    private bool IsSolidColliderBlockingHorizontalMove(Collider collider, Vector3 probeCenter)
+    {
+        if (collider == null)
+        {
+            return false;
+        }
+
+        float feetY = GetSolidBodyFeetY();
+        float topY = GetSolidBodyTopY();
+
+        // Fully overhead — e.g. gate roof above headroom.
+        if (collider.bounds.min.y > topY + 0.05f)
+        {
+            return false;
+        }
+
+        // Fully underfoot — mis-tagged ground slab.
+        if (collider.bounds.max.y < feetY - 0.05f)
+        {
+            return false;
+        }
+
+        // During gate traversal: anything whose lowest point is above waist is treated as roof/arch.
+        if (TraverseGateCorridor && collider.bounds.min.y > feetY + solidBodyHeight * 0.45f)
+        {
+            return false;
+        }
+
+        Vector3 closest = collider.ClosestPoint(probeCenter);
+        if (closest.y > topY + 0.15f)
+        {
+            return false;
+        }
+
+        if (TraverseGateCorridor && closest.y > feetY + solidBodyHeight * 0.55f)
+        {
+            return false;
+        }
+
+        if (closest.y < feetY - 0.25f)
+        {
+            return false;
+        }
+
+        // Vertical contact only — ignore mostly downward normals (underside of roofs).
+        Vector3 away = probeCenter - closest;
+        if (away.sqrMagnitude > 0.0001f && away.normalized.y < -0.55f)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private bool IsSolidHitBlockingHorizontalMove(RaycastHit hit, Vector3 castCenter)
+    {
+        if (hit.collider == null)
+        {
+            return false;
+        }
+
+        // Ceiling / overhead lip — should not block walking under it.
+        if (hit.normal.y < -0.35f)
+        {
+            return false;
+        }
+
+        float topY = GetSolidBodyTopY();
+        float feetY = GetSolidBodyFeetY();
+        if (hit.point.y > topY + 0.15f)
+        {
+            return false;
+        }
+
+        if (TraverseGateCorridor && hit.point.y > feetY + solidBodyHeight * 0.55f)
+        {
+            return false;
+        }
+
+        if (hit.point.y < feetY - 0.25f)
+        {
+            return false;
+        }
+
+        return IsSolidColliderBlockingHorizontalMove(hit.collider, castCenter);
     }
 
     private bool IsOwnCollider(Collider candidate)
@@ -1160,39 +1775,59 @@ public class RtsUnitMotor : MonoBehaviour
         movementBoundsCollider = GetComponent<Collider>();
     }
 
-    private void GetMovementCastShape(out Vector3 castCenter, out Vector3 halfExtents)
+    private void GetSolidBlockCastShape(out Vector3 castCenter, out Vector3 halfExtents)
     {
+        Collider source = solidBlockCollider != null ? solidBlockCollider : movementBoundsCollider;
         castCenter = transform.position + Vector3.up * fallbackCastHalfExtents.y;
         halfExtents = new Vector3(
-            Mathf.Max(0.05f, fallbackCastHalfExtents.x - obstacleSkin),
-            Mathf.Max(0.05f, fallbackCastHalfExtents.y - obstacleSkin),
-            Mathf.Max(0.05f, fallbackCastHalfExtents.z - obstacleSkin));
+            Mathf.Max(0.05f, fallbackCastHalfExtents.x - obstacleSkin + solidThicknessPadding),
+            solidBodyHeight * 0.5f,
+            Mathf.Max(0.05f, fallbackCastHalfExtents.z - obstacleSkin + solidThicknessPadding));
 
-        if (movementBoundsCollider == null)
+        if (source == null)
         {
+            castCenter.y = transform.position.y + solidBodyBottomClearance + halfExtents.y;
             return;
         }
 
-        if (movementBoundsCollider is BoxCollider boxCollider)
+        if (source is BoxCollider boxCollider)
         {
-            castCenter = movementBoundsCollider.transform.TransformPoint(boxCollider.center);
-            halfExtents = Vector3.Scale(boxCollider.size * 0.5f, movementBoundsCollider.transform.lossyScale);
+            castCenter = source.transform.TransformPoint(boxCollider.center);
+            halfExtents = Vector3.Scale(boxCollider.size * 0.5f, source.transform.lossyScale);
         }
         else
         {
-            Bounds bounds = movementBoundsCollider.bounds;
+            Bounds bounds = source.bounds;
             castCenter = bounds.center;
             halfExtents = bounds.extents;
         }
 
-        halfExtents.x = Mathf.Max(0.05f, halfExtents.x - obstacleSkin);
-        halfExtents.y = Mathf.Max(0.05f, halfExtents.y - obstacleSkin);
-        halfExtents.z = Mathf.Max(0.05f, halfExtents.z - obstacleSkin);
+        halfExtents.x = Mathf.Max(0.05f, Mathf.Abs(halfExtents.x) - obstacleSkin + solidThicknessPadding);
+        halfExtents.z = Mathf.Max(0.05f, Mathf.Abs(halfExtents.z) - obstacleSkin + solidThicknessPadding);
+        // Horizontal blocking only — ignore overhead solids (gate roofs, archways).
+        halfExtents.y = solidBodyHeight * 0.5f;
+        castCenter.y = transform.position.y + solidBodyBottomClearance + halfExtents.y;
+    }
+
+    private void GetMovementCastShape(out Vector3 castCenter, out Vector3 halfExtents)
+    {
+        // Path wall-slide still uses the shrunk movement hull; solid blocking uses GetSolidBlockCastShape.
+        GetSolidBlockCastShape(out castCenter, out halfExtents);
+
+        if (movementBoundsCollider != null && movementBoundsCollider != solidBlockCollider
+            && movementBoundsCollider is BoxCollider boxCollider)
+        {
+            Vector3 shrunk = Vector3.Scale(boxCollider.size * 0.5f, movementBoundsCollider.transform.lossyScale);
+            halfExtents.x = Mathf.Max(0.05f, Mathf.Abs(shrunk.x) - obstacleSkin);
+            halfExtents.z = Mathf.Max(0.05f, Mathf.Abs(shrunk.z) - obstacleSkin);
+            castCenter = movementBoundsCollider.transform.TransformPoint(boxCollider.center);
+            castCenter.y = transform.position.y + halfExtents.y;
+        }
 
         if (IsFollowingPath() && pathCollisionBuffer > 0f)
         {
-            halfExtents.x = Mathf.Max(0.05f, halfExtents.x - pathCollisionBuffer);
-            halfExtents.z = Mathf.Max(0.05f, halfExtents.z - pathCollisionBuffer);
+            halfExtents.x = Mathf.Max(0.05f, halfExtents.x - pathCollisionBuffer * 0.25f);
+            halfExtents.z = Mathf.Max(0.05f, halfExtents.z - pathCollisionBuffer * 0.25f);
         }
     }
 

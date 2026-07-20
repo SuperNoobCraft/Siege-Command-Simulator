@@ -370,24 +370,56 @@ public class SiegeCommandTowerFallDeath : MonoBehaviour
             return true;
         }
 
-        Bounds bounds = towerFloorCollider.bounds;
-        Vector3 paddedMin = bounds.min + new Vector3(edgePadding, 0f, edgePadding);
-        Vector3 paddedMax = bounds.max - new Vector3(edgePadding, 0f, edgePadding);
+        // Collider.bounds is a world AABB and ignores rotation — a yawed tower floor
+        // becomes a larger axis-aligned rectangle, so fall only triggers at AABB corners.
+        if (towerFloorCollider is BoxCollider box)
+        {
+            return IsInsideOrientedBox(box, worldPosition);
+        }
+
+        return IsInsideViaClosestPoint(towerFloorCollider, worldPosition);
+    }
+
+    private bool IsInsideOrientedBox(BoxCollider box, Vector3 worldPosition)
+    {
+        Vector3 local = box.transform.InverseTransformPoint(worldPosition) - box.center;
+        Vector3 halfExtents = box.size * 0.5f;
+        halfExtents.x = Mathf.Max(0f, halfExtents.x - edgePadding);
+        halfExtents.z = Mathf.Max(0f, halfExtents.z - edgePadding);
 
         if (horizontalOnly)
         {
-            return worldPosition.x >= paddedMin.x
-                && worldPosition.x <= paddedMax.x
-                && worldPosition.z >= paddedMin.z
-                && worldPosition.z <= paddedMax.z;
+            return Mathf.Abs(local.x) <= halfExtents.x && Mathf.Abs(local.z) <= halfExtents.z;
         }
 
-        return worldPosition.x >= paddedMin.x
-            && worldPosition.x <= paddedMax.x
-            && worldPosition.y >= paddedMin.y
-            && worldPosition.y <= paddedMax.y
-            && worldPosition.z >= paddedMin.z
-            && worldPosition.z <= paddedMax.z;
+        halfExtents.y = Mathf.Max(0f, halfExtents.y - edgePadding);
+        return Mathf.Abs(local.x) <= halfExtents.x
+            && Mathf.Abs(local.y) <= halfExtents.y
+            && Mathf.Abs(local.z) <= halfExtents.z;
+    }
+
+    private bool IsInsideViaClosestPoint(Collider collider, Vector3 worldPosition)
+    {
+        Vector3 probe = worldPosition;
+        if (horizontalOnly)
+        {
+            // Compare on the collider's horizontal plane so mild vertical tracking noise
+            // does not push ClosestPoint onto the top/bottom faces.
+            Bounds bounds = collider.bounds;
+            probe.y = bounds.center.y;
+        }
+
+        Vector3 closest = collider.ClosestPoint(probe);
+        Vector3 delta = closest - probe;
+        if (horizontalOnly)
+        {
+            delta.y = 0f;
+        }
+
+        // ClosestPoint returns the probe itself when inside. Inward edge padding is only
+        // applied for BoxCollider (oriented local extents) above.
+        const float epsilonSq = 0.0001f;
+        return delta.sqrMagnitude <= epsilonSq;
     }
 
     private void ResolveTowerCollider()
@@ -434,6 +466,22 @@ public class SiegeCommandTowerFallDeath : MonoBehaviour
         if (towerFloorCollider == null)
         {
             return false;
+        }
+
+        if (towerFloorCollider is BoxCollider box)
+        {
+            Vector3 half = box.size * 0.5f;
+            if (half.x <= 0.025f || half.z <= 0.025f)
+            {
+                return false;
+            }
+
+            Vector3 local = box.center + new Vector3(
+                Random.Range(-half.x, half.x),
+                -half.y + 0.05f,
+                Random.Range(-half.z, half.z));
+            point = box.transform.TransformPoint(local);
+            return float.IsFinite(point.x) && float.IsFinite(point.y) && float.IsFinite(point.z);
         }
 
         Bounds bounds = towerFloorCollider.bounds;

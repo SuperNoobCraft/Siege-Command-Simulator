@@ -73,8 +73,9 @@ public class EnemyRegimentAI : MonoBehaviour
     [SerializeField, Min(0.5f)] private float directPathBlockWidth = 3.5f;
 
     [Header("Obstacle Recovery")]
-    [SerializeField, Min(0.1f)] private float unstuckRetryInterval = 0.5f;
-    [SerializeField, Min(0.5f)] private float unstuckOffsetDistance = 3f;
+    [SerializeField, Min(0.1f)] private float unstuckRetryInterval = 0.25f;
+    [SerializeField, Min(0.5f)] private float unstuckOffsetDistance = 4f;
+    [SerializeField, Min(0.5f)] private float unstuckForwardBias = 1.5f;
 
     [Header("Debug")]
     [SerializeField] private bool drawDebugGizmos = true;
@@ -637,10 +638,20 @@ public class EnemyRegimentAI : MonoBehaviour
 
     private void BeginGateExit()
     {
+        if (motor != null)
+        {
+            motor.TraverseGateCorridor = true;
+        }
+
         RtsCampManager campManager = RtsCampManager.Instance;
         if (campManager == null)
         {
             phase = AiPhase.Advancing;
+            if (motor != null)
+            {
+                motor.TraverseGateCorridor = false;
+            }
+
             RefreshMovementDestination();
             return;
         }
@@ -654,6 +665,18 @@ public class EnemyRegimentAI : MonoBehaviour
         if (!campManager.IsAtGateInside(transform.position, TroopCombat.Faction.Enemy))
         {
             IssueMoveOrder(campManager.GetGateInsidePosition(TroopCombat.Faction.Enemy));
+            return;
+        }
+
+        // At the inside waypoint — wait until the gate solid is disabled before pushing outside.
+        RtsCityGateController gate = RtsCityGateController.FindForFaction(TroopCombat.Faction.Enemy);
+        if (gate != null && !gate.IsPassable)
+        {
+            if (motor != null)
+            {
+                motor.Stop();
+            }
+
             return;
         }
 
@@ -680,18 +703,45 @@ public class EnemyRegimentAI : MonoBehaviour
             return;
         }
 
+        RtsCityGateController gate = RtsCityGateController.FindForFaction(TroopCombat.Faction.Enemy);
+        bool waitingForGate = campManager.IsAtGateInside(transform.position, TroopCombat.Faction.Enemy)
+            && gate != null
+            && !gate.IsPassable;
+
+        if (waitingForGate)
+        {
+            if (motor != null)
+            {
+                motor.Stop();
+            }
+
+            return;
+        }
+
         if (!motor.HasDestination && !motor.IsBlockedBySolidObstacle && !motor.IsStuck)
         {
             BeginGateExit();
         }
         else if (motor.IsBlockedBySolidObstacle || motor.IsStuck)
         {
+            // If the gate just opened, re-issue the outside move instead of bouncing back to camp.
+            if (gate != null && gate.IsPassable && campManager.IsAtGateInside(transform.position, TroopCombat.Faction.Enemy))
+            {
+                IssueMoveOrder(campManager.GetGateOutsidePosition(TroopCombat.Faction.Enemy));
+                return;
+            }
+
             TryRecoverFromObstacle(campManager);
         }
     }
 
     private void FinishGateExit()
     {
+        if (motor != null)
+        {
+            motor.TraverseGateCorridor = false;
+        }
+
         if (SiegeMatchSettings.IsSiegePvpMode || stagingToGateAfterRegroup)
         {
             phase = AiPhase.WaitingAtGateOutside;
@@ -748,8 +798,13 @@ public class EnemyRegimentAI : MonoBehaviour
             return;
         }
 
+        if (motor != null && motor.TryRequestDetour())
+        {
+            return;
+        }
+
         Vector3 recoveryDestination = GetObstacleRecoveryDestination();
-        IssueMoveOrder(recoveryDestination);
+        IssueMoveOrder(recoveryDestination, forceRepath: true);
     }
 
     private Vector3 GetObstacleRecoveryDestination()
@@ -769,25 +824,49 @@ public class EnemyRegimentAI : MonoBehaviour
 
         Vector3 forward = toGoal.normalized;
         Vector3 tangent = new Vector3(-forward.z, 0f, forward.x);
-        float[] sideMultipliers = { 1f, -1f, 1.5f, -1.5f, 2f, -2f };
+        float[] sideMultipliers = { 1f, -1f, 1.5f, -1.5f, 2f, -2f, 2.5f, -2.5f };
         int sideIndex = unstuckAttemptIndex % sideMultipliers.Length;
         unstuckAttemptIndex++;
 
+        // Offset from current position (not the goal) so we step along the wall we're stuck on.
         Vector3 offset = tangent * (unstuckOffsetDistance * sideMultipliers[sideIndex]);
-        offset += forward * (unstuckOffsetDistance * 0.35f);
-        return goal + offset;
+        offset += forward * unstuckForwardBias;
+        Vector3 recovery = transform.position + offset;
+        recovery.y = transform.position.y;
+        return recovery;
     }
 
     private void TryUnstuckGateExit(RtsCampManager campManager)
     {
-        Vector3 campCenter = campManager.GetCampCenter(TroopCombat.Faction.Enemy);
-        if (GetHorizontalDistanceSqr(transform.position, campCenter) > 1f)
+        RtsCityGateController gate = RtsCityGateController.FindForFaction(TroopCombat.Faction.Enemy);
+        if (gate != null && !gate.IsPassable)
         {
-            IssueMoveOrder(campCenter);
+            // Keep waiting at the gate threshold while it opens — don't bounce to camp.
+            if (motor != null)
+            {
+                motor.Stop();
+            }
+
             return;
         }
 
-        IssueMoveOrder(campManager.GetGateOutsidePosition(TroopCombat.Faction.Enemy));
+        Vector3 gateOutside = campManager.GetGateOutsidePosition(TroopCombat.Faction.Enemy);
+        Vector3 gateInside = campManager.GetGateInsidePosition(TroopCombat.Faction.Enemy);
+        Vector3 throughGate = gateOutside - gateInside;
+        throughGate.y = 0f;
+        if (throughGate.sqrMagnitude < 0.0001f)
+        {
+            throughGate = transform.forward;
+        }
+
+        throughGate.Normalize();
+        Vector3 side = new Vector3(-throughGate.z, 0f, throughGate.x);
+        float[] sideMultipliers = { 0f, 1f, -1f, 1.5f, -1.5f };
+        int sideIndex = unstuckAttemptIndex % sideMultipliers.Length;
+        unstuckAttemptIndex++;
+
+        Vector3 recovery = gateOutside + side * (unstuckOffsetDistance * 0.35f * sideMultipliers[sideIndex]);
+        IssueMoveOrder(recovery);
     }
 
     private void RefreshVision()
@@ -1281,6 +1360,11 @@ public class EnemyRegimentAI : MonoBehaviour
 
     private void IssueMoveOrder(Vector3 destination)
     {
+        IssueMoveOrder(destination, forceRepath: false);
+    }
+
+    private void IssueMoveOrder(Vector3 destination, bool forceRepath)
+    {
         if (ShouldHoldAtObjective())
         {
             motor.Stop();
@@ -1308,13 +1392,29 @@ public class EnemyRegimentAI : MonoBehaviour
             return;
         }
 
-        if (!motor.HasDestination
+        bool needsNewOrder = forceRepath
+            || !motor.HasDestination
             || motor.IsBlockedBySolidObstacle
             || motor.IsStuck
-            || GetHorizontalDistanceSqr(transform.position, destination) > arrivalRadiusSqr)
+            || GetHorizontalDistanceSqr(transform.position, destination) > arrivalRadiusSqr;
+
+        if (!needsNewOrder)
+        {
+            return;
+        }
+
+        if (!forceRepath && motor.IsDirectPathClear(destination))
         {
             motor.MoveTo(destination);
+            return;
         }
+
+        if (!forceRepath && motor.TryRequestDetour())
+        {
+            return;
+        }
+
+        motor.MoveTo(destination);
     }
 
     private static Vector3 GetFlankDirection(Vector3 targetCenter, bool useLeftFlank)

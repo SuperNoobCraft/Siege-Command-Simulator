@@ -14,6 +14,9 @@ public class RtsUnitHighlight : MonoBehaviour
     [SerializeField] private bool scaleOutlineWithCameraDistance = true;
     [SerializeField, Min(0f)] private float outlineDistanceScale = 0.002f;
     [SerializeField, Min(0f)] private float outlineMinWorldWidth = 0.05f;
+    [Tooltip("Project the footprint outline onto RTS_Ground like movement arrows.")]
+    [SerializeField] private bool projectOutlineOntoGround = true;
+    [SerializeField, Min(0f)] private float outlineGroundOffset = 0.08f;
 
     [Header("Targets")]
     [SerializeField] private bool preferColliderWireframe = true;
@@ -27,7 +30,8 @@ public class RtsUnitHighlight : MonoBehaviour
 
     private MaterialPropertyBlock propertyBlock;
     private LineRenderer wireframeOutline;
-    private Vector3[] cachedWireframePositions;
+    private Vector3[] cachedLocalFootprintCorners;
+    private Vector3[] projectedWorldPositions;
     private bool isHovered;
     private bool isSelected;
     private float activeOutlineWidth;
@@ -35,11 +39,7 @@ public class RtsUnitHighlight : MonoBehaviour
 
     private void Awake()
     {
-        if (highlightBoundsCollider == null)
-        {
-            highlightBoundsCollider = GetComponent<Collider>();
-        }
-
+        ResolveHighlightBoundsCollider();
         propertyBlock = new MaterialPropertyBlock();
 
         if (preferColliderWireframe && highlightBoundsCollider != null)
@@ -55,11 +55,64 @@ public class RtsUnitHighlight : MonoBehaviour
         ApplyVisuals();
     }
 
+    private void Start()
+    {
+        // TroopCombat creates SelectionVolume in Awake; resolve again in case we ran first.
+        Collider previous = highlightBoundsCollider;
+        ResolveHighlightBoundsCollider();
+        if (preferColliderWireframe
+            && highlightBoundsCollider != null
+            && highlightBoundsCollider != previous)
+        {
+            CacheWireframeGeometry();
+            EnsureWireframeOutline();
+            RefreshProjectedOutlinePositions();
+            ApplyVisuals();
+        }
+    }
+
+    private void ResolveHighlightBoundsCollider()
+    {
+        if (highlightBoundsCollider != null)
+        {
+            return;
+        }
+
+        TroopCombat combat = GetComponent<TroopCombat>();
+        if (combat != null)
+        {
+            Collider selection = combat.SelectionCollider;
+            if (selection != null)
+            {
+                highlightBoundsCollider = selection;
+                return;
+            }
+        }
+
+        Transform selectionVolume = transform.Find("SelectionVolume");
+        if (selectionVolume != null)
+        {
+            highlightBoundsCollider = selectionVolume.GetComponent<Collider>();
+            if (highlightBoundsCollider != null)
+            {
+                return;
+            }
+        }
+
+        highlightBoundsCollider = GetComponent<Collider>();
+    }
+
     private void LateUpdate()
     {
-        if (wireframeOutline != null && wireframeOutline.enabled && hasActiveOutline)
+        if (wireframeOutline == null || !wireframeOutline.enabled || !hasActiveOutline)
         {
-            wireframeOutline.widthMultiplier = GetEffectiveOutlineWidth(activeOutlineWidth);
+            return;
+        }
+
+        wireframeOutline.widthMultiplier = GetEffectiveOutlineWidth(activeOutlineWidth);
+        if (projectOutlineOntoGround)
+        {
+            RefreshProjectedOutlinePositions();
         }
     }
 
@@ -69,6 +122,7 @@ public class RtsUnitHighlight : MonoBehaviour
         selectedOutlineWidth = Mathf.Max(0f, selectedOutlineWidth);
         outlineDistanceScale = Mathf.Max(0f, outlineDistanceScale);
         outlineMinWorldWidth = Mathf.Max(0f, outlineMinWorldWidth);
+        outlineGroundOffset = Mathf.Max(0f, outlineGroundOffset);
 
         if (isActiveAndEnabled)
         {
@@ -127,15 +181,13 @@ public class RtsUnitHighlight : MonoBehaviour
             return;
         }
 
+        // Footprint rectangle only (bottom face) — projects cleanly onto ground like path arrows.
         Vector3[] corners = GetFixedLocalCornerPoints(highlightBoundsCollider);
-        cachedWireframePositions = new[]
+        cachedLocalFootprintCorners = new[]
         {
-            corners[0], corners[1], corners[2], corners[3], corners[0],
-            corners[4], corners[5], corners[6], corners[7], corners[4],
-            corners[0], corners[4],
-            corners[1], corners[5],
-            corners[2], corners[6]
+            corners[0], corners[1], corners[2], corners[3], corners[0]
         };
+        projectedWorldPositions = new Vector3[cachedLocalFootprintCorners.Length];
     }
 
     private static Vector3[] GetFixedLocalCornerPoints(Collider boundsSource)
@@ -195,7 +247,7 @@ public class RtsUnitHighlight : MonoBehaviour
 
     private void EnsureWireframeOutline()
     {
-        if (wireframeOutline != null || cachedWireframePositions == null)
+        if (wireframeOutline != null || cachedLocalFootprintCorners == null)
         {
             return;
         }
@@ -209,7 +261,7 @@ public class RtsUnitHighlight : MonoBehaviour
         outlineObject.layer = ignoreRaycastLayer >= 0 ? ignoreRaycastLayer : gameObject.layer;
 
         wireframeOutline = outlineObject.AddComponent<LineRenderer>();
-        wireframeOutline.useWorldSpace = false;
+        wireframeOutline.useWorldSpace = true;
         wireframeOutline.loop = false;
         wireframeOutline.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
         wireframeOutline.receiveShadows = false;
@@ -218,9 +270,37 @@ public class RtsUnitHighlight : MonoBehaviour
         wireframeOutline.alignment = LineAlignment.View;
         wireframeOutline.numCornerVertices = 4;
         wireframeOutline.numCapVertices = 4;
-        wireframeOutline.positionCount = cachedWireframePositions.Length;
+        wireframeOutline.positionCount = cachedLocalFootprintCorners.Length;
         wireframeOutline.sharedMaterial = new Material(Shader.Find("Sprites/Default"));
-        wireframeOutline.SetPositions(cachedWireframePositions);
+        RefreshProjectedOutlinePositions();
+    }
+
+    private void RefreshProjectedOutlinePositions()
+    {
+        if (wireframeOutline == null || cachedLocalFootprintCorners == null)
+        {
+            return;
+        }
+
+        Transform source = highlightBoundsCollider != null ? highlightBoundsCollider.transform : transform;
+        if (projectedWorldPositions == null || projectedWorldPositions.Length != cachedLocalFootprintCorners.Length)
+        {
+            projectedWorldPositions = new Vector3[cachedLocalFootprintCorners.Length];
+        }
+
+        for (int i = 0; i < cachedLocalFootprintCorners.Length; i++)
+        {
+            Vector3 world = source.TransformPoint(cachedLocalFootprintCorners[i]);
+            if (projectOutlineOntoGround)
+            {
+                world = RtsGroundUtility.ProjectPointOntoGround(world, outlineGroundOffset, preferredY: transform.position.y);
+            }
+
+            projectedWorldPositions[i] = world;
+        }
+
+        wireframeOutline.positionCount = projectedWorldPositions.Length;
+        wireframeOutline.SetPositions(projectedWorldPositions);
     }
 
     private void ClearVisuals()
@@ -352,5 +432,6 @@ public class RtsUnitHighlight : MonoBehaviour
         wireframeOutline.startColor = stateColor;
         wireframeOutline.endColor = stateColor;
         wireframeOutline.widthMultiplier = GetEffectiveOutlineWidth(outlineWidth);
+        RefreshProjectedOutlinePositions();
     }
 }

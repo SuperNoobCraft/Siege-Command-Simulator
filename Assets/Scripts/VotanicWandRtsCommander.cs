@@ -489,7 +489,7 @@ public class VotanicWandRtsCommander : MonoBehaviour
             previousDisplay.SetHoverVisible(false);
         }
 
-        if (!TryRaycastGameplayHit(ray, maxRayDistance, selectableLayers, out RaycastHit hit))
+        if (!TryFindSelectableUnit(ray, out RtsUnitMotor unit, out RaycastHit hit))
         {
             hoveredUnit = null;
             hoveredPathDisplay = null;
@@ -497,12 +497,12 @@ public class VotanicWandRtsCommander : MonoBehaviour
             return;
         }
 
-        RtsUnitMotor unit = hit.collider.GetComponentInParent<RtsUnitMotor>();
-        bool isCommandUnit = unit != null
-            && unit.IsCommandUnit
+        bool isCommandUnit = unit.IsCommandUnit
             && unit.CanReceiveCommands
             && MatchesControllableFaction(unit);
-        debugHoverLine = "Hover hit: " + hit.collider.name + " | unit=" + (unit != null ? unit.name : "none") + " | commandable=" + isCommandUnit;
+        debugHoverLine = "Hover hit: " + hit.collider.name
+            + " | unit=" + unit.name
+            + " | commandable=" + isCommandUnit;
 
         if (verboseDebugLogs)
         {
@@ -515,6 +515,108 @@ public class VotanicWandRtsCommander : MonoBehaviour
         {
             hoveredPathDisplay.SetHoverVisible(true);
         }
+    }
+
+    /// <summary>
+    /// Picks the nearest commandable regiment along the wand ray.
+    /// Skips terrain/ground hits (critical on 3D battlefields where ground is closer than the unit hull).
+    /// </summary>
+    private bool TryFindSelectableUnit(Ray ray, out RtsUnitMotor unit, out RaycastHit hit)
+    {
+        unit = null;
+        hit = default;
+
+        LayerMask mask = selectableLayers;
+        int unitLayer = RtsGroundUtility.UnitLayer;
+        if (unitLayer >= 0)
+        {
+            mask |= 1 << unitLayer;
+        }
+
+        // Fat pick ray so aiming in CAVE/3D does not require a perfect center hit.
+        const float pickRadius = 0.85f;
+        RaycastHit[] hits = Physics.SphereCastAll(
+            ray,
+            pickRadius,
+            maxRayDistance,
+            mask,
+            QueryTriggerInteraction.Collide);
+
+        if (hits == null || hits.Length == 0)
+        {
+            hits = Physics.RaycastAll(
+                ray,
+                maxRayDistance,
+                mask,
+                QueryTriggerInteraction.Collide);
+        }
+
+        if (hits == null || hits.Length == 0)
+        {
+            return false;
+        }
+
+        System.Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
+
+        float bestDistance = float.PositiveInfinity;
+        for (int i = 0; i < hits.Length; i++)
+        {
+            Collider hitCollider = hits[i].collider;
+            if (ShouldIgnoreRaycastCollider(hitCollider))
+            {
+                continue;
+            }
+
+            // Never treat battlefield/ground meshes as unit picks.
+            if (IsGroundLikeCollider(hitCollider))
+            {
+                continue;
+            }
+
+            RtsUnitMotor candidate = hitCollider.GetComponentInParent<RtsUnitMotor>();
+            if (candidate == null)
+            {
+                continue;
+            }
+
+            if (hits[i].distance < bestDistance)
+            {
+                bestDistance = hits[i].distance;
+                unit = candidate;
+                hit = hits[i];
+            }
+        }
+
+        return unit != null;
+    }
+
+    private static bool IsGroundLikeCollider(Collider collider)
+    {
+        if (collider == null)
+        {
+            return true;
+        }
+
+        int layer = collider.gameObject.layer;
+        int groundLayer = LayerMask.NameToLayer("RTS_Ground");
+        if (groundLayer >= 0 && layer == groundLayer)
+        {
+            return true;
+        }
+
+        if (collider is TerrainCollider)
+        {
+            return true;
+        }
+
+        if (collider.GetComponentInParent<RtsUnitMotor>() != null
+            || collider.GetComponentInParent<TroopCombat>() != null)
+        {
+            return false;
+        }
+
+        // Large mesh colliders without a unit parent are treated as ground/props.
+        return collider is MeshCollider;
     }
 
     private void UpdateHighlights()
@@ -629,11 +731,11 @@ public class VotanicWandRtsCommander : MonoBehaviour
                     return false;
                 }
 
-                point = gameplayHit.point;
+                point = FlattenBattlefieldPoint(gameplayHit.point);
                 return true;
             }
 
-            point = hit.point;
+            point = FlattenBattlefieldPoint(hit.point);
             return true;
         }
 
@@ -643,14 +745,30 @@ public class VotanicWandRtsCommander : MonoBehaviour
             return false;
         }
 
-        point = groundHit.point;
+        point = FlattenBattlefieldPoint(groundHit.point);
         return true;
     }
 
-    private bool TryRaycastGameplayHit(Ray ray, float maxDistance, LayerMask layers, out RaycastHit hit)
+    /// <summary>
+    /// Pathing ignores elevation: keep XZ from the ground hit, force Y onto the logical regiment plane.
+    /// </summary>
+    private Vector3 FlattenBattlefieldPoint(Vector3 worldPoint)
+    {
+        float planeY = commandingUnit != null
+            ? commandingUnit.transform.position.y
+            : (hoveredUnit != null ? hoveredUnit.transform.position.y : worldPoint.y);
+        return new Vector3(worldPoint.x, planeY, worldPoint.z);
+    }
+
+    private bool TryRaycastGameplayHit(
+        Ray ray,
+        float maxDistance,
+        LayerMask layers,
+        out RaycastHit hit,
+        QueryTriggerInteraction triggerInteraction = QueryTriggerInteraction.Ignore)
     {
         hit = default;
-        RaycastHit[] hits = Physics.RaycastAll(ray, maxDistance, layers, QueryTriggerInteraction.Ignore);
+        RaycastHit[] hits = Physics.RaycastAll(ray, maxDistance, layers, triggerInteraction);
         if (hits == null || hits.Length == 0)
         {
             return false;
@@ -768,12 +886,15 @@ public class VotanicWandRtsCommander : MonoBehaviour
 
         for (int i = 0; i < points.Count; i++)
         {
-            Vector3 point = points[i];
-            point.y += previewGroundOffset;
-            renderedPoints.Add(point);
+            renderedPoints.Add(points[i]);
         }
 
         AppendArrowHead(renderedPoints, previewArrowHeadLength, previewArrowHeadAngle);
+        for (int i = 0; i < renderedPoints.Count; i++)
+        {
+            renderedPoints[i] = RtsGroundUtility.ProjectPointOntoGround(renderedPoints[i], previewGroundOffset);
+        }
+
         previewPathLine.positionCount = renderedPoints.Count;
         previewPathLine.widthMultiplier = previewLineWidth;
         previewPathLine.startColor = previewPathColor;
@@ -1011,7 +1132,13 @@ public class VotanicWandRtsCommander : MonoBehaviour
     private bool TryRaycastForPointer(Ray ray, float pointerLength, out RaycastHit hit)
     {
         LayerMask pointerLayers = selectableLayers | groundLayers;
-        return TryRaycastGameplayHit(ray, pointerLength, pointerLayers, out hit);
+        // Collide with selection triggers so the beam color feedback matches hover picking.
+        return TryRaycastGameplayHit(
+            ray,
+            pointerLength,
+            pointerLayers,
+            out hit,
+            QueryTriggerInteraction.Collide);
     }
 
     private bool UsesTrackedPathTuning()

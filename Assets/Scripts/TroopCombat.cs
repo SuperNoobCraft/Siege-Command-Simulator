@@ -5,7 +5,7 @@ using UnityEngine;
 using UnityEditor;
 #endif
 
-[DefaultExecutionOrder(-50)]
+[DefaultExecutionOrder(200)]
 public class TroopCombat : MonoBehaviour
 {
     public static event System.Action<TroopCombat> RegimentEnteredRetreat;
@@ -93,6 +93,13 @@ public class TroopCombat : MonoBehaviour
     [SerializeField] private Collider movementBoundsCollider;
     [SerializeField, Range(0.15f, 1f)] private float movementBoundsScale = 0.55f;
 
+    [Header("Selection Volume")]
+    [Tooltip("Tall pick volume for wand/mouse selection. Separate from combat footprint.")]
+    [SerializeField] private Collider selectionCollider;
+    [SerializeField, Min(0.5f)] private float selectionVolumeHeight = 5f;
+    [SerializeField, Min(0.5f)] private float selectionVolumeXZScale = 1.6f;
+    [SerializeField] private bool autoCreateSelectionVolume = true;
+
     [Header("Regiment Visuals")]
     [SerializeField] private GameObject troopPrefab;
     [SerializeField] private GameObject flagHolderPrefab;
@@ -105,6 +112,25 @@ public class TroopCombat : MonoBehaviour
     [SerializeField, Range(0f, 0.5f)] private float formationJitterFraction = 0.2f;
     [SerializeField] private bool randomizeSpawnOrder = true;
     [SerializeField, Range(-180f, 180f)] private float troopFacingYawOffsetDegrees = 0f;
+    [Header("Ground Projection")]
+    [Tooltip("Snap the regiment root (models, footprint, selection, movement bounds) down onto RTS_Ground.")]
+    [SerializeField] private bool snapRegimentRootToGround = true;
+    [Tooltip("Also offset each troop mesh to the ground under its own slot (slopes across the formation).")]
+    [SerializeField] private bool projectTroopVisualsToGround = true;
+    [SerializeField] private LayerMask troopGroundLayers;
+    [SerializeField] private float regimentGroundYOffset = 0f;
+    [SerializeField] private float troopGroundYOffset = 0f;
+    [SerializeField, Min(1f)] private float troopGroundRayStartHeight = 256f;
+    [Tooltip("Max how far above the regiment plane a troop visual may climb (blocks cliff-top projection).")]
+    [SerializeField, Min(0.1f)] private float maxTroopVisualStepHeight = 1.25f;
+    [Tooltip("Keep root Y stuck to ground under the regiment while it moves.")]
+    [SerializeField] private bool keepRegimentRootOnGroundWhileMoving = true;
+    [Tooltip("Ignore ground Y changes smaller than this (meters) to stop idle flicker.")]
+    [SerializeField, Min(0f)] private float groundSnapHysteresis = 0.12f;
+    [Tooltip("Max upward root snap per frame while moving (prevents jumping to overlapping higher meshes).")]
+    [SerializeField, Min(0.05f)] private float maxRegimentGroundRisePerSnap = 0.35f;
+    [Tooltip("While moving, ease root Y toward ground instead of hard-snapping every frame.")]
+    [SerializeField, Min(0f)] private float groundSnapSmoothSpeed = 0f;
 
     [Header("Debug Gizmos")]
     [SerializeField] private bool drawDebugGizmos = true;
@@ -128,6 +154,7 @@ public class TroopCombat : MonoBehaviour
     }
 
     private RtsUnitMotor motor;
+    private EnemyRegimentAI regimentAi;
     private TroopCombat currentTarget;
     private float currentHealth;
     private float nextAttackTime;
@@ -145,6 +172,14 @@ public class TroopCombat : MonoBehaviour
     private const float MinimumFacingMovementDistance = 0.02f;
     private readonly List<TroopVisualInstance> troopVisuals = new List<TroopVisualInstance>();
     private int activeTroopVisualCount;
+    private Vector3 lastGroundProjectionRegimentPosition;
+    private bool troopGroundProjectionDirty = true;
+    private bool loggedMissingGround;
+    private float authoredYawDegrees;
+    private Coroutine retryGroundSnapCoroutine;
+    private bool hasLockedRegimentGroundY;
+    private float lockedRegimentGroundY;
+    private Vector3 lockedRegimentGroundXZ;
 
     public Faction TroopFaction => faction;
     public State CurrentState { get; private set; } = State.Idle;
@@ -183,6 +218,26 @@ public class TroopCombat : MonoBehaviour
     public bool HoldsInCampUntilNextWave { get; private set; }
     public bool IsRegrouping => CurrentState == State.Regroup;
     public float CombatMoveSpeedMultiplier => GetCombatMoveSpeedMultiplier();
+    public Collider FootprintCollider => footprintCollider;
+    public Collider SelectionCollider
+    {
+        get
+        {
+            EnsureSelectionCollider();
+            return selectionCollider;
+        }
+    }
+
+    public bool IsSelectionCollider(Collider collider)
+    {
+        if (collider == null)
+        {
+            return false;
+        }
+
+        EnsureSelectionCollider();
+        return selectionCollider != null && collider == selectionCollider;
+    }
 
     private Vector3 matchStartPosition;
     private Quaternion matchStartRotation;
@@ -208,7 +263,8 @@ public class TroopCombat : MonoBehaviour
 
         if (hasCachedMatchStartPose && ShouldRestoreMatchStartPose())
         {
-            transform.SetPositionAndRotation(matchStartPosition, matchStartRotation);
+            transform.position = new Vector3(matchStartPosition.x, matchStartPosition.y, matchStartPosition.z);
+            transform.rotation = GetAuthoredLevelRotation();
         }
 
         isPermanentlyEliminated = false;
@@ -233,14 +289,33 @@ public class TroopCombat : MonoBehaviour
         RestoreFlagHolderVisual();
         SyncTroopVisualsToHealth();
         ApplyTroopVisualFormation();
+        RtsEnsureGroundColliders.EnsureSceneGroundColliders();
+        Physics.SyncTransforms();
+        SnapRegimentToGround(force: true);
+        if (snapRegimentRootToGround && isActiveAndEnabled)
+        {
+            if (retryGroundSnapCoroutine != null)
+            {
+                StopCoroutine(retryGroundSnapCoroutine);
+            }
+
+            retryGroundSnapCoroutine = StartCoroutine(RetryGroundSnapRoutine());
+        }
+
         lastRegimentPosition = transform.position;
     }
 
     private void Awake()
     {
         motor = GetComponent<RtsUnitMotor>();
+        regimentAi = GetComponent<EnemyRegimentAI>();
         CacheMatchStartPose();
         currentHealth = Mathf.Max(1f, maxHealth);
+
+        if (troopGroundLayers == 0)
+        {
+            troopGroundLayers = RtsGroundUtility.DefaultGroundMask;
+        }
 
         if (footprintCollider == null)
         {
@@ -248,6 +323,7 @@ public class TroopCombat : MonoBehaviour
         }
 
         EnsureMovementBoundsCollider();
+        EnsureSelectionCollider();
 
         if (motor != null)
         {
@@ -260,6 +336,13 @@ public class TroopCombat : MonoBehaviour
             {
                 motor.SetMovementBoundsCollider(footprintCollider);
             }
+
+            if (footprintCollider != null)
+            {
+                motor.SetSolidBlockCollider(footprintCollider);
+            }
+
+            motor.RefreshOwnColliders();
         }
 
         CacheTroopPrefabScale();
@@ -268,18 +351,63 @@ public class TroopCombat : MonoBehaviour
         ApplyTroopVisualFormation();
         lastRegimentPosition = transform.position;
 
-        EnsureFormationRootUpright();
+        EnsureFormationRootLevel();
         if (troopVisualRoot != null)
         {
             troopVisualRoot.localScale = Vector3.one;
         }
     }
 
+    private void Start()
+    {
+        // Battlefield imports often ship with renderers only — add MeshColliders before snapping.
+        RtsEnsureGroundColliders.EnsureSceneGroundColliders();
+        Physics.SyncTransforms();
+        SnapRegimentToGround(force: true);
+        if (snapRegimentRootToGround)
+        {
+            if (retryGroundSnapCoroutine != null)
+            {
+                StopCoroutine(retryGroundSnapCoroutine);
+            }
+
+            retryGroundSnapCoroutine = StartCoroutine(RetryGroundSnapRoutine());
+        }
+    }
+
+    private System.Collections.IEnumerator RetryGroundSnapRoutine()
+    {
+        // Mesh colliders / streamed terrain may not be queryable on the first frame.
+        for (int i = 0; i < 30; i++)
+        {
+            yield return null;
+            RtsEnsureGroundColliders.EnsureSceneGroundColliders();
+            Physics.SyncTransforms();
+            if (SnapRegimentRootToGround(smooth: false, force: true))
+            {
+                troopGroundProjectionDirty = true;
+                ProjectTroopVisualsToGround();
+                retryGroundSnapCoroutine = null;
+                yield break;
+            }
+        }
+
+        retryGroundSnapCoroutine = null;
+    }
+
     private void CacheMatchStartPose()
     {
         matchStartPosition = transform.position;
-        matchStartRotation = transform.rotation;
+        // Keep editor yaw (map-facing); strip pitch/roll so slopes never tilt the regiment.
+        authoredYawDegrees = transform.eulerAngles.y;
+        matchStartRotation = GetAuthoredLevelRotation();
         hasCachedMatchStartPose = true;
+        transform.rotation = matchStartRotation;
+    }
+
+    private Quaternion GetAuthoredLevelRotation()
+    {
+        return Quaternion.Euler(0f, authoredYawDegrees, 0f);
     }
 
     private bool ShouldRestoreMatchStartPose()
@@ -315,6 +443,7 @@ public class TroopCombat : MonoBehaviour
             movementBoundsCollider = existing.GetComponent<Collider>();
             if (movementBoundsCollider != null)
             {
+                movementBoundsCollider.isTrigger = true;
                 return;
             }
         }
@@ -328,7 +457,8 @@ public class TroopCombat : MonoBehaviour
         boundsObject.transform.SetParent(transform, false);
 
         BoxCollider movementBox = boundsObject.AddComponent<BoxCollider>();
-        movementBox.isTrigger = false;
+        // Trigger only — used for cast shape, must never physically push the regiment.
+        movementBox.isTrigger = true;
 
         if (footprintCollider is BoxCollider footprintBox)
         {
@@ -351,6 +481,101 @@ public class TroopCombat : MonoBehaviour
         }
 
         movementBoundsCollider = movementBox;
+    }
+
+    private void EnsureSelectionCollider()
+    {
+        if (selectionCollider != null)
+        {
+            return;
+        }
+
+        Transform existing = transform.Find("SelectionVolume");
+        if (existing != null)
+        {
+            selectionCollider = existing.GetComponent<Collider>();
+            if (selectionCollider != null)
+            {
+                ConfigureSelectionCollider(selectionCollider);
+                return;
+            }
+        }
+
+        if (!autoCreateSelectionVolume)
+        {
+            return;
+        }
+
+        if (footprintCollider == null)
+        {
+            footprintCollider = GetComponent<Collider>();
+        }
+
+        GameObject selectionObject = new GameObject("SelectionVolume");
+        selectionObject.transform.SetParent(transform, false);
+
+        BoxCollider selectionBox = selectionObject.AddComponent<BoxCollider>();
+        selectionBox.isTrigger = true;
+        ApplySelectionBoxShape(selectionBox);
+
+        selectionCollider = selectionBox;
+        ConfigureSelectionCollider(selectionCollider);
+    }
+
+    private void ApplySelectionBoxShape(BoxCollider selectionBox)
+    {
+        float height = Mathf.Max(0.5f, selectionVolumeHeight);
+        float xzScale = Mathf.Max(0.5f, selectionVolumeXZScale);
+
+        if (footprintCollider is BoxCollider footprintBox)
+        {
+            Vector3 size = footprintBox.size;
+            selectionBox.center = new Vector3(
+                footprintBox.center.x,
+                height * 0.5f,
+                footprintBox.center.z);
+            selectionBox.size = new Vector3(
+                Mathf.Max(0.25f, size.x * xzScale),
+                height,
+                Mathf.Max(0.25f, size.z * xzScale));
+            return;
+        }
+
+        if (footprintCollider != null)
+        {
+            Bounds bounds = footprintCollider.bounds;
+            Vector3 localCenter = transform.InverseTransformPoint(bounds.center);
+            Vector3 localSize = transform.InverseTransformVector(bounds.size);
+            selectionBox.center = new Vector3(localCenter.x, height * 0.5f, localCenter.z);
+            selectionBox.size = new Vector3(
+                Mathf.Max(0.25f, Mathf.Abs(localSize.x) * xzScale),
+                height,
+                Mathf.Max(0.25f, Mathf.Abs(localSize.z) * xzScale));
+            return;
+        }
+
+        selectionBox.center = new Vector3(0f, height * 0.5f, 0f);
+        selectionBox.size = new Vector3(2f * xzScale, height, 2f * xzScale);
+    }
+
+    private void ConfigureSelectionCollider(Collider collider)
+    {
+        if (collider == null)
+        {
+            return;
+        }
+
+        collider.isTrigger = true;
+        int unitLayer = LayerMask.NameToLayer("RTS_Unit");
+        if (unitLayer >= 0)
+        {
+            collider.gameObject.layer = unitLayer;
+        }
+
+        if (collider is BoxCollider box)
+        {
+            ApplySelectionBoxShape(box);
+        }
     }
 
     private void OnValidate()
@@ -386,6 +611,13 @@ public class TroopCombat : MonoBehaviour
         retreatDeathDisappearSpan = Mathf.Max(0f, retreatDeathDisappearSpan);
         combatMoveSpeedPercentage = Mathf.Clamp01(combatMoveSpeedPercentage);
         combatOverlapSmoothingSpeed = Mathf.Max(0f, combatOverlapSmoothingSpeed);
+        selectionVolumeHeight = Mathf.Max(0.5f, selectionVolumeHeight);
+        selectionVolumeXZScale = Mathf.Max(0.5f, selectionVolumeXZScale);
+        troopGroundRayStartHeight = Mathf.Max(1f, troopGroundRayStartHeight);
+        maxTroopVisualStepHeight = Mathf.Max(0.1f, maxTroopVisualStepHeight);
+        maxRegimentGroundRisePerSnap = Mathf.Max(0.05f, maxRegimentGroundRisePerSnap);
+        groundSnapHysteresis = Mathf.Max(0f, groundSnapHysteresis);
+        groundSnapSmoothSpeed = Mathf.Max(0f, groundSnapSmoothSpeed);
     }
 
     private void Update()
@@ -434,7 +666,316 @@ public class TroopCombat : MonoBehaviour
             return;
         }
 
+        // Level root (no pitch/roll) but keep the editor-authored yaw.
+        EnsureFormationRootLevel();
+
+        if (motor != null)
+        {
+            motor.TraverseGateCorridor = IsTraversingGate
+                || (regimentAi != null && regimentAi.IsExitingGate);
+        }
+
+        bool isRegimentIdle = IsRegimentMovementIdle();
+        bool moved = motor != null && motor.MovedHorizontallyThisFrame;
+
+        if (isRegimentIdle)
+        {
+            MaintainIdleGroundLock();
+        }
+        else
+        {
+            ClearIdleGroundLock();
+
+            if (keepRegimentRootOnGroundWhileMoving && moved)
+            {
+                SnapRegimentRootToGround(smooth: false, force: false);
+                EnsureFormationRootLevel();
+            }
+        }
+
         UpdateTroopFacing();
+
+        // Never re-project while idle — that was causing troops to slowly crawl downhill.
+        if (moved || troopGroundProjectionDirty)
+        {
+            ProjectTroopVisualsToGround();
+        }
+    }
+
+    private bool IsRegimentMovementIdle()
+    {
+        return motor == null || (!motor.HasDestination && !motor.MovedHorizontallyThisFrame);
+    }
+
+    private void MaintainIdleGroundLock()
+    {
+        // Remote PVP peers still receive XZ corrections — only freeze Y for them.
+        bool freezeFullPose = !UsesRemoteCombatAuthority();
+        Vector3 position = transform.position;
+
+        if (!hasLockedRegimentGroundY)
+        {
+            SnapRegimentRootToGround(smooth: false, force: false);
+            position = transform.position;
+            lockedRegimentGroundY = position.y;
+            lockedRegimentGroundXZ = new Vector3(position.x, 0f, position.z);
+            hasLockedRegimentGroundY = true;
+            troopGroundProjectionDirty = true;
+            return;
+        }
+
+        if (freezeFullPose)
+        {
+            // Hard freeze — nothing may drift the regiment (or its selection collider) while idle.
+            Vector3 locked = new Vector3(lockedRegimentGroundXZ.x, lockedRegimentGroundY, lockedRegimentGroundXZ.z);
+            if ((position - locked).sqrMagnitude > 0.0000001f)
+            {
+                transform.position = locked;
+            }
+
+            return;
+        }
+
+        Vector3 xzDelta = new Vector3(position.x, 0f, position.z) - lockedRegimentGroundXZ;
+        if (xzDelta.sqrMagnitude > 0.04f)
+        {
+            SnapRegimentRootToGround(smooth: false, force: false);
+            position = transform.position;
+            lockedRegimentGroundY = position.y;
+            lockedRegimentGroundXZ = new Vector3(position.x, 0f, position.z);
+            troopGroundProjectionDirty = true;
+            return;
+        }
+
+        if (Mathf.Abs(position.y - lockedRegimentGroundY) > 0.0001f)
+        {
+            position.y = lockedRegimentGroundY;
+            transform.position = position;
+        }
+    }
+
+    private void ClearIdleGroundLock()
+    {
+        hasLockedRegimentGroundY = false;
+    }
+
+    private void SnapRegimentToGround(bool force)
+    {
+        ClearIdleGroundLock();
+
+        if (!snapRegimentRootToGround)
+        {
+            if (force || projectTroopVisualsToGround)
+            {
+                troopGroundProjectionDirty = true;
+                ProjectTroopVisualsToGround();
+            }
+
+            return;
+        }
+
+        SnapRegimentRootToGround(smooth: false, force: true);
+        EnsureFormationRootLevel();
+        troopGroundProjectionDirty = true;
+        ProjectTroopVisualsToGround();
+    }
+
+    private bool SnapRegimentRootToGround(bool smooth, bool force)
+    {
+        LayerMask groundMask = ResolveGroundMask();
+        Vector3 position = transform.position;
+        float maxVerticalSnap = force ? 512f : 2.5f;
+        if (!RtsGroundUtility.TrySampleGroundY(
+                position.x,
+                position.z,
+                groundMask,
+                troopGroundRayStartHeight,
+                regimentGroundYOffset,
+                out float groundY,
+                preferredY: position.y,
+                maxVerticalSnap: maxVerticalSnap))
+        {
+            if (!loggedMissingGround)
+            {
+                loggedMissingGround = true;
+                Debug.LogWarning(
+                    "TroopCombat could not find walkable ground under '"
+                    + name
+                    + "' at XZ ("
+                    + position.x.ToString("F1")
+                    + ", "
+                    + position.z.ToString("F1")
+                    + "). Add a MeshCollider/TerrainCollider on the battlefield (layer RTS_Ground preferred).",
+                    this);
+            }
+
+            return false;
+        }
+
+        loggedMissingGround = false;
+
+        if (!force && groundY > position.y + maxRegimentGroundRisePerSnap)
+        {
+            groundY = position.y + maxRegimentGroundRisePerSnap;
+        }
+
+        float delta = groundY - position.y;
+        if (!force && Mathf.Abs(delta) < groundSnapHysteresis)
+        {
+            return true;
+        }
+
+        if (smooth && groundSnapSmoothSpeed > 0f && !force)
+        {
+            float maxStep = groundSnapSmoothSpeed * Time.deltaTime;
+            position.y = Mathf.MoveTowards(position.y, groundY, maxStep);
+        }
+        else
+        {
+            position.y = groundY;
+        }
+
+        if (Mathf.Abs(transform.position.y - position.y) > 0.0001f)
+        {
+            transform.position = position;
+            troopGroundProjectionDirty = true;
+        }
+
+        return true;
+    }
+
+    private bool SnapRegimentRootToGround()
+    {
+        return SnapRegimentRootToGround(smooth: false, force: false);
+    }
+
+    private LayerMask ResolveGroundMask()
+    {
+        return troopGroundLayers.value != 0
+            ? troopGroundLayers
+            : RtsGroundUtility.DefaultGroundMask;
+    }
+
+    private void ProjectTroopVisualsToGround()
+    {
+        if (!projectTroopVisualsToGround || troopVisuals.Count == 0)
+        {
+            troopGroundProjectionDirty = false;
+            return;
+        }
+
+        Vector3 regimentPosition = transform.position;
+        LayerMask groundMask = ResolveGroundMask();
+        LayerMask solidMask = RtsGroundUtility.DefaultSolidMask;
+        float planeY = regimentPosition.y;
+        float hysteresis = Mathf.Max(0.01f, groundSnapHysteresis);
+
+        for (int i = 0; i < troopVisuals.Count; i++)
+        {
+            TroopVisualInstance troopVisual = troopVisuals[i];
+            if (troopVisual.Instance == null || !troopVisual.Instance.activeSelf)
+            {
+                continue;
+            }
+
+            Transform visualTransform = troopVisual.Instance.transform;
+            Transform parent = visualTransform.parent;
+            Vector3 local = visualTransform.localPosition;
+
+            Vector3 worldSlot = parent != null
+                ? parent.TransformPoint(new Vector3(local.x, 0f, local.z))
+                : new Vector3(visualTransform.position.x, planeY, visualTransform.position.z);
+
+            float groundY = planeY;
+            bool sampled = RtsGroundUtility.TrySampleGroundY(
+                worldSlot.x,
+                worldSlot.z,
+                groundMask,
+                troopGroundRayStartHeight,
+                troopGroundYOffset,
+                out groundY,
+                preferredY: planeY,
+                maxVerticalSnap: 8f);
+
+            if (!sampled)
+            {
+                groundY = planeY;
+            }
+
+            // Outer troops over a solid: stay on the regiment plane (may sit inside the solid)
+            // instead of climbing onto the obstacle top.
+            if (sampled
+                && groundY > planeY + 0.15f
+                && WouldElevateOntoSolid(worldSlot.x, worldSlot.z, planeY, groundY, solidMask))
+            {
+                groundY = planeY;
+            }
+
+            // Same-mesh cliff tops are still RTS_Ground — clamp visual climb so troops don't mount ledges.
+            float maxVisualRise = Mathf.Max(0.1f, maxTroopVisualStepHeight);
+            if (groundY > planeY + maxVisualRise)
+            {
+                groundY = planeY;
+            }
+
+            float currentWorldY = parent != null
+                ? parent.TransformPoint(local).y
+                : visualTransform.position.y;
+            if (Mathf.Abs(currentWorldY - groundY) < hysteresis && !troopGroundProjectionDirty)
+            {
+                continue;
+            }
+
+            if (parent != null)
+            {
+                Vector3 targetWorld = new Vector3(worldSlot.x, groundY, worldSlot.z);
+                float localY = parent.InverseTransformPoint(targetWorld).y;
+                visualTransform.localPosition = new Vector3(local.x, localY, local.z);
+            }
+            else
+            {
+                Vector3 world = visualTransform.position;
+                world.y = groundY;
+                visualTransform.position = world;
+            }
+        }
+
+        lastGroundProjectionRegimentPosition = new Vector3(
+            regimentPosition.x,
+            transform.position.y,
+            regimentPosition.z);
+        troopGroundProjectionDirty = false;
+    }
+
+    private static bool WouldElevateOntoSolid(
+        float worldX,
+        float worldZ,
+        float planeY,
+        float groundY,
+        LayerMask solidMask)
+    {
+        if (solidMask == 0)
+        {
+            return false;
+        }
+
+        float midY = (planeY + groundY) * 0.5f;
+        float halfHeight = Mathf.Max(0.35f, (groundY - planeY) * 0.5f + 0.2f);
+        if (Physics.CheckBox(
+                new Vector3(worldX, midY, worldZ),
+                new Vector3(0.4f, halfHeight, 0.4f),
+                Quaternion.identity,
+                solidMask,
+                QueryTriggerInteraction.Ignore))
+        {
+            return true;
+        }
+
+        return Physics.CheckSphere(
+            new Vector3(worldX, groundY + 0.25f, worldZ),
+            0.45f,
+            solidMask,
+            QueryTriggerInteraction.Ignore);
     }
 
     private void UpdateMovementSpeed()
@@ -857,6 +1398,13 @@ public class TroopCombat : MonoBehaviour
                 {
                     motor.MoveTo(GetRetreatDestination(campManager));
                 }
+                else if (motor.IsBlockedBySolidObstacle || motor.IsStuck)
+                {
+                    if (!motor.TryRequestDetour())
+                    {
+                        motor.MoveTo(GetRetreatDestination(campManager));
+                    }
+                }
             }
             else if (!campManager.HasReachedCampCenter(transform.position, faction)
                 && !motor.HasDestination
@@ -864,12 +1412,29 @@ public class TroopCombat : MonoBehaviour
             {
                 motor.MoveTo(campManager.GetCampCenter(faction));
             }
+            else if (motor.IsBlockedBySolidObstacle || motor.IsStuck)
+            {
+                if (!motor.TryRequestDetour())
+                {
+                    motor.MoveTo(campManager.GetCampCenter(faction));
+                }
+            }
         }
 
-        if (Time.time >= nextRetreatDestinationRefreshTime && motor != null && !motor.IsBlockedBySolidObstacle)
+        if (Time.time >= nextRetreatDestinationRefreshTime && motor != null)
         {
             nextRetreatDestinationRefreshTime = Time.time + retreatDestinationRefreshInterval;
-            UpdateRetreatDestination();
+            if (motor.IsBlockedBySolidObstacle || motor.IsStuck)
+            {
+                if (!motor.TryRequestDetour())
+                {
+                    UpdateRetreatDestination();
+                }
+            }
+            else
+            {
+                UpdateRetreatDestination();
+            }
         }
 
         if (!peerVisualOnly && Time.time >= invulnerableUntil && IsInterceptedByEnemy())
@@ -939,33 +1504,42 @@ public class TroopCombat : MonoBehaviour
             return;
         }
 
-        Vector3 regimentDelta = transform.position - lastRegimentPosition;
-        lastRegimentPosition = transform.position;
-        regimentDelta.y = 0f;
-
-        Vector3 facingDirection = Vector3.zero;
-        if (regimentDelta.sqrMagnitude >= MinimumFacingMovementDistance * MinimumFacingMovementDistance)
-        {
-            facingDirection = regimentDelta.normalized;
-        }
-        else if (motor != null && motor.HasDestination)
-        {
-            facingDirection = motor.MoveDirection;
-            facingDirection.y = 0f;
-        }
-
-        if (facingDirection.sqrMagnitude < 0.0001f)
+        // Ignore microscopic idle noise — that was re-applying facing and zeroing root rotation every few frames.
+        if (motor == null || !motor.MovedHorizontallyThisFrame)
         {
             return;
         }
 
+        Vector3 facingDirection = motor.MoveDirection;
+        facingDirection.y = 0f;
+        if (facingDirection.sqrMagnitude < 0.0001f)
+        {
+            Vector3 regimentDelta = transform.position - lastRegimentPosition;
+            regimentDelta.y = 0f;
+            if (regimentDelta.sqrMagnitude < MinimumFacingMovementDistance * MinimumFacingMovementDistance)
+            {
+                lastRegimentPosition = transform.position;
+                return;
+            }
+
+            facingDirection = regimentDelta.normalized;
+        }
+
+        lastRegimentPosition = transform.position;
         ApplyFacingToTroopVisuals(GetTroopFacingRotation(facingDirection));
     }
 
-    private void EnsureFormationRootUpright()
+    private void EnsureFormationRootLevel()
     {
-        transform.rotation = Quaternion.identity;
-        if (troopVisualRoot != null)
+        // Keep editor yaw; never pitch/roll with terrain.
+        Quaternion target = GetAuthoredLevelRotation();
+        if (Quaternion.Angle(transform.rotation, target) > 0.01f)
+        {
+            transform.rotation = target;
+        }
+
+        if (troopVisualRoot != null
+            && Quaternion.Angle(troopVisualRoot.localRotation, Quaternion.identity) > 0.01f)
         {
             troopVisualRoot.localRotation = Quaternion.identity;
         }
@@ -973,8 +1547,9 @@ public class TroopCombat : MonoBehaviour
 
     private void ApplyFacingToTroopVisuals(Quaternion facing)
     {
-        EnsureFormationRootUpright();
+        EnsureFormationRootLevel();
 
+        // Yaw each soldier in local space only — never rotate the regiment root.
         for (int i = 0; i < troopVisuals.Count; i++)
         {
             TroopVisualInstance troopVisual = troopVisuals[i];
@@ -995,8 +1570,11 @@ public class TroopCombat : MonoBehaviour
             return Quaternion.identity;
         }
 
-        float yaw = Mathf.Atan2(worldDirection.x, worldDirection.z) * Mathf.Rad2Deg + troopFacingYawOffsetDegrees;
-        return Quaternion.Euler(0f, yaw, 0f);
+        float worldYaw = Mathf.Atan2(worldDirection.x, worldDirection.z) * Mathf.Rad2Deg
+            + troopFacingYawOffsetDegrees;
+        // Root already has authoredYaw — troop local yaw is relative to that.
+        float localYaw = Mathf.DeltaAngle(authoredYawDegrees, worldYaw);
+        return Quaternion.Euler(0f, localYaw, 0f);
     }
 
     private bool IsInterceptedByEnemy()
@@ -2335,6 +2913,9 @@ public class TroopCombat : MonoBehaviour
             Vector3 visualScale = troopVisual.IsFlagHolder ? flagHolderPrefabScale : troopPrefabScale;
             ApplyTroopVisualScale(troopVisual.Instance.transform, visualScale);
         }
+
+        // Local Y stays 0 here. Root snap + LateUpdate project meshes after the regiment is on ground.
+        troopGroundProjectionDirty = true;
     }
 
     private void SyncTroopVisualScale()

@@ -84,12 +84,15 @@ public class RtsMovementPathDisplay : MonoBehaviour
 
         for (int i = 0; i < points.Count; i++)
         {
-            Vector3 point = points[i];
-            point.y += groundOffset;
-            renderedPoints.Add(point);
+            renderedPoints.Add(points[i]);
         }
 
         AppendArrowHead(renderedPoints);
+        for (int i = 0; i < renderedPoints.Count; i++)
+        {
+            renderedPoints[i] = RtsGroundUtility.ProjectPointOntoGround(renderedPoints[i], groundOffset);
+        }
+
         pathLine.positionCount = renderedPoints.Count;
         pathLine.widthMultiplier = lineWidth;
         pathLine.startColor = color;

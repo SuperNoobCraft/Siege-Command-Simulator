@@ -65,17 +65,25 @@ Implement an RTS-like flow with VotanicXR wand:
 
 ### Object Components
 - Each unit:
-  - Collider
+  - Combat footprint `Collider` (keep size = true regiment footprint; used for combat overlaps)
+  - Auto child `SelectionVolume` (tall trigger on `RTS_Unit`, easier wand pick in 3D)
+  - Auto child `MovementBounds` (wall casts only)
   - `RtsUnitMotor` with `Is Command Unit` left enabled
-  - `RtsUnitMotor`
-  - `RtsUnitHighlight`
+  - `RtsUnitHighlight` (outline uses SelectionVolume when present)
+  - `TroopCombat` with `Project Troop Visuals To Ground` enabled so soldiers sit on `RTS_Ground` slopes
 - Ground:
-  - Collider
+  - Collider on `RTS_Ground` (mesh/terrain OK; movement still treats the field as a flat plane)
 - Commander object (active in scene):
   - `VotanicWandRtsCommander`
   - Set `Wand Origin` to intended pointing transform.
   - `Selectable Layers` = RTS_Unit
   - `Ground Layers` = RTS_Ground
+
+### 3D Battlefield Notes
+- Author units high in Y (e.g. y=100) if convenient — on `Start` / match reset each `TroopCombat` snaps its **root** onto `RTS_Ground`, so footprint, selection, and movement bounds come down together.
+- While moving, root Y keeps sticking to ground under the regiment (XZ movement still ignores elevation cost).
+- Individual troop meshes can additionally snap to the ground under their formation slot for slopes.
+- Path aim hits use ground XZ but force Y to the commanding unit's plane.
 
 ### Recommended Commander Defaults
 - `Issue Command Name`: `Grab`
