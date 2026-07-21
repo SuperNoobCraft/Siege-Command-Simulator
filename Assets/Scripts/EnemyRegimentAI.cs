@@ -88,6 +88,7 @@ public class EnemyRegimentAI : MonoBehaviour
     private float nextDestinationRefreshTime;
     private float nextUnstuckAttemptTime;
     private int unstuckAttemptIndex;
+    private float lastUnstuckProgressDistanceSqr = float.MaxValue;
     private bool hasEnteredBattlefield;
     private bool hasAssignedCannonObjective;
     private Vector3 assignedCannonObjective;
@@ -109,6 +110,7 @@ public class EnemyRegimentAI : MonoBehaviour
     public AssignedWave WaveAssignment => assignedWave;
     public int AssignedWaveNumber => (int)assignedWave;
     public bool IncludeInSiegePvp => includeInSiegePvp;
+
     public bool HasEnteredBattlefield => hasEnteredBattlefield;
     public bool IsWaitingInCamp => phase == AiPhase.WaitingInCamp;
     public bool IsExitingGate => phase == AiPhase.ExitingGate;
@@ -171,10 +173,28 @@ public class EnemyRegimentAI : MonoBehaviour
         if (motor != null)
         {
             motor.SetIsCommandUnit(true);
-            // Enabled after staging at gate / on deploy finish; disabled while exiting gate.
-            motor.CanReceiveCommands = phase == AiPhase.WaitingAtGateOutside
-                || (hasEnteredBattlefield && phase != AiPhase.ExitingGate && phase != AiPhase.WaitingInCamp);
+            RefreshSiegePvpCommandPermissions();
         }
+    }
+
+    private void RefreshSiegePvpCommandPermissions()
+    {
+        if (!siegePvpPlayerControlled || motor == null || !motor.IsCommandUnit || combat == null)
+        {
+            return;
+        }
+
+        SiegePvpSession session = SiegePvpSession.Instance;
+        if (session != null && session.IsMatchRunning && session.IsLocallyOwnedTroop(combat))
+        {
+            motor.CanReceiveCommands = combat.CurrentState != TroopCombat.State.Dead
+                && !combat.IsRetreating
+                && !combat.IsRegrouping;
+            return;
+        }
+
+        motor.CanReceiveCommands = phase == AiPhase.WaitingAtGateOutside
+            || (hasEnteredBattlefield && phase != AiPhase.ExitingGate && phase != AiPhase.WaitingInCamp);
     }
 
     public void ClearSiegePvpControl()
@@ -306,6 +326,12 @@ public class EnemyRegimentAI : MonoBehaviour
 
     private void UpdateSiegePvpPlayerControl()
     {
+        SiegePvpSession session = SiegePvpSession.Instance;
+        if (session != null && session.IsMatchRunning && combat != null && !session.IsLocallyOwnedTroop(combat))
+        {
+            return;
+        }
+
         TrackRegroupTransitions();
 
         if (combat.IsRetreating || combat.IsRegrouping)
@@ -316,37 +342,25 @@ public class EnemyRegimentAI : MonoBehaviour
         if (stagingToGateAfterRegroup || phase == AiPhase.ExitingGate)
         {
             UpdateGateExit();
+            RefreshSiegePvpCommandPermissions();
             return;
         }
 
         if (phase == AiPhase.WaitingAtGateOutside || phase == AiPhase.WaitingInCamp)
         {
-            if (motor != null && motor.IsCommandUnit)
-            {
-                motor.CanReceiveCommands = true;
-            }
+            RefreshSiegePvpCommandPermissions();
 
-            // Player has taken over — leave the wait-at-gate loop. Staying here and calling
-            // Stop() whenever HasDestination flickers was causing defender-side jitter.
+            // Player has taken over — leave the wait-at-gate loop.
             if (motor != null && (motor.HasActivePath || motor.HasDestination))
             {
                 phase = AiPhase.Advancing;
                 return;
             }
 
-            if (phase == AiPhase.WaitingAtGateOutside && motor != null && !motor.HasDestination)
-            {
-                motor.Stop();
-            }
-
             return;
         }
 
-        // After the player has issued orders, leave path following to the motor/combat.
-        if (motor != null && motor.IsCommandUnit)
-        {
-            motor.CanReceiveCommands = true;
-        }
+        RefreshSiegePvpCommandPermissions();
     }
 
     private void HandleRegimentRegroupCompleted(TroopCombat regiment)
@@ -772,12 +786,21 @@ public class EnemyRegimentAI : MonoBehaviour
         if (ShouldHoldAtObjective())
         {
             unstuckAttemptIndex = 0;
+            lastUnstuckProgressDistanceSqr = float.MaxValue;
             return;
+        }
+
+        float progressDistanceSqr = tacticalDestination != Vector3.zero
+            ? GetHorizontalDistanceSqr(transform.position, tacticalDestination)
+            : float.MaxValue;
+        if (progressDistanceSqr < lastUnstuckProgressDistanceSqr - 1f)
+        {
+            unstuckAttemptIndex = 0;
+            lastUnstuckProgressDistanceSqr = progressDistanceSqr;
         }
 
         if (!motor.IsBlockedBySolidObstacle && !motor.IsStuck)
         {
-            unstuckAttemptIndex = 0;
             return;
         }
 
@@ -798,12 +821,29 @@ public class EnemyRegimentAI : MonoBehaviour
             return;
         }
 
+        if (motor != null && motor.TryEscapeFromSolid())
+        {
+            return;
+        }
+
         if (motor != null && motor.TryRequestDetour())
         {
             return;
         }
 
         Vector3 recoveryDestination = GetObstacleRecoveryDestination();
+        for (int i = 0; i < 5; i++)
+        {
+            if (motor != null
+                && motor.IsWorldPositionClear(recoveryDestination)
+                && motor.IsDirectPathClear(recoveryDestination))
+            {
+                break;
+            }
+
+            recoveryDestination = GetObstacleRecoveryDestination();
+        }
+
         IssueMoveOrder(recoveryDestination, forceRepath: true);
     }
 
@@ -1403,6 +1443,11 @@ public class EnemyRegimentAI : MonoBehaviour
             return;
         }
 
+        if ((motor.IsBlockedBySolidObstacle || motor.IsStuck) && motor.TryEscapeFromSolid())
+        {
+            return;
+        }
+
         if (!forceRepath && motor.IsDirectPathClear(destination))
         {
             motor.MoveTo(destination);
@@ -1410,6 +1455,12 @@ public class EnemyRegimentAI : MonoBehaviour
         }
 
         if (!forceRepath && motor.TryRequestDetour())
+        {
+            return;
+        }
+
+        // When jammed, don't re-issue the same blocked goal — recovery owns the next order.
+        if (!forceRepath && (motor.IsBlockedBySolidObstacle || motor.IsStuck))
         {
             return;
         }

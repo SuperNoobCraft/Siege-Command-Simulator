@@ -37,11 +37,11 @@ public class RtsUnitMotor : MonoBehaviour
     [Tooltip("Max cast step length (m). Larger frame steps are subdivided so thin solids cannot be tunneled.")]
     [SerializeField, Min(0.05f)] private float maxSolidCastStep = 0.2f;
     [Tooltip("Steeper than this across the footprint is treated as an unwalkable ledge (gentle hills are fine).")]
-    [SerializeField, Range(15f, 80f)] private float maxWalkableSlopeDegrees = 40f;
+    [SerializeField, Range(15f, 80f)] private float maxWalkableSlopeDegrees = 55f;
     [Tooltip("Max vertical rise between current and next center ground samples (blocks cliffs/ledges).")]
-    [SerializeField, Min(0.1f)] private float maxStepHeight = 1.25f;
+    [SerializeField, Min(0.1f)] private float maxStepHeight = 2f;
     [Tooltip("Ground normals steeper than this are treated as unwalkable cliff faces.")]
-    [SerializeField, Range(30f, 85f)] private float maxGroundNormalAngleDegrees = 50f;
+    [SerializeField, Range(30f, 85f)] private float maxGroundNormalAngleDegrees = 60f;
     [Tooltip("Solid casts/overlaps only block within this height band above the regiment plane (ignores gate roofs).")]
     [SerializeField, Min(0.25f)] private float solidBodyHeight = 1.1f;
     [Tooltip("Bottom of the solid-check band above the regiment plane.")]
@@ -85,8 +85,18 @@ public class RtsUnitMotor : MonoBehaviour
     private float wallEscapeGraceEndTime;
     private Vector3 stuckSamplePosition;
     private float stuckSampleTime;
+    private float stuckSampleGoalDistance;
     private float nextDetourAttemptTime;
     private int pathStuckConfirmCount;
+    private int radialEscapeAttemptIndex;
+    private int overlapStuckFrames;
+    private float nextForcedEscapeAttemptTime;
+
+    private static readonly float[] RadialEscapeAngleOffsets =
+    {
+        180f, -150f, 150f, -120f, 120f, -90f, 90f, -60f, 60f, -45f, 45f, -30f, 30f, 0f,
+        165f, -165f, 135f, -135f, 105f, -105f, 75f, -75f, 15f, -15f
+    };
 
     public bool IsCommandUnit => isCommandUnit;
     public bool CanReceiveCommands { get; set; } = true;
@@ -199,6 +209,207 @@ public class RtsUnitMotor : MonoBehaviour
         return true;
     }
 
+    /// <summary>True when the regiment footprint fits at worldPoint without overlapping RTS_Solid.</summary>
+    public bool IsWorldPositionClear(Vector3 worldPoint)
+    {
+        return IsPositionClear(FlattenToGround(worldPoint));
+    }
+
+    /// <summary>
+    /// Push away from an overlapping solid or step back from a wall ahead.
+    /// Used by AI/retreat recovery when sliding/detours alone are not enough.
+    /// </summary>
+    public bool TryEscapeFromSolid()
+    {
+        bool wasFollowingPath = IsFollowingPath();
+        bool restoreGoal = hasDestination || wasFollowingPath;
+        Vector3 savedGoal = finalDestination;
+        if (wasFollowingPath && pathWaypoints.Count > 0)
+        {
+            savedGoal = pathWaypoints[pathWaypoints.Count - 1];
+        }
+
+        if (wasFollowingPath)
+        {
+            ConvertPathToDirectMove(savedGoal);
+        }
+
+        float stepDistance = Mathf.Max(GetCurrentMoveSpeed() * Time.deltaTime, 0.08f);
+        stepDistance = Mathf.Max(stepDistance, obstacleSkin + 0.15f);
+        float escapeDistance = stepDistance * 2.5f;
+        bool overlapping = IsCurrentlyOverlappingObstacle();
+        if (overlapping)
+        {
+            escapeDistance = Mathf.Max(escapeDistance, detourWaypointSpacing * 0.85f);
+        }
+
+        if (TryGetOverlappingEscapeDirection(out Vector3 escapeDirection)
+            && TryApplyEscapeDelta(escapeDirection * escapeDistance))
+        {
+            RestoreGoalAfterEscape(savedGoal, restoreGoal);
+            return true;
+        }
+
+        Vector3 probeDirection = MoveDirection.sqrMagnitude > 0.0001f ? MoveDirection : GetGoalDirection();
+        if (TryGetAheadSolidHit(probeDirection, obstacleLookaheadDistance, out RaycastHit aheadHit))
+        {
+            Vector3 wallNormal = aheadHit.normal;
+            wallNormal.y = 0f;
+            if (wallNormal.sqrMagnitude > 0.0001f)
+            {
+                wallNormal.Normalize();
+                Vector3 backAway = wallNormal * escapeDistance;
+                if (TryApplyEscapeDelta(backAway))
+                {
+                    RestoreGoalAfterEscape(savedGoal, restoreGoal);
+                    return true;
+                }
+
+                Vector3 tangent = new Vector3(-wallNormal.z, 0f, wallNormal.x);
+                Vector3[] slides = { tangent, -tangent, (tangent + wallNormal * 0.5f).normalized, (-tangent + wallNormal * 0.5f).normalized };
+                for (int i = 0; i < slides.Length; i++)
+                {
+                    if (TryApplyEscapeDelta(slides[i] * escapeDistance))
+                    {
+                        RestoreGoalAfterEscape(savedGoal, restoreGoal);
+                        return true;
+                    }
+                }
+            }
+        }
+
+        if (TryRadialWallEscape(stepDistance, overlapping))
+        {
+            RestoreGoalAfterEscape(savedGoal, restoreGoal);
+            return true;
+        }
+
+        if (restoreGoal)
+        {
+            RestoreGoalAfterEscape(savedGoal, restoreGoal);
+        }
+
+        return false;
+    }
+
+    private bool TryApplyEscapeDelta(Vector3 escapeDelta)
+    {
+        escapeDelta.y = 0f;
+        if (escapeDelta.sqrMagnitude < 0.0001f)
+        {
+            return false;
+        }
+
+        if (TryGetAllowedDelta(escapeDelta, out Vector3 allowedEscape) && allowedEscape.sqrMagnitude > 0.0001f)
+        {
+            transform.position += allowedEscape;
+            MovedHorizontallyThisFrame = true;
+            MoveDirection = allowedEscape.normalized;
+            IsBlockedBySolidObstacle = false;
+            IsStuck = false;
+            pathStuckConfirmCount = 0;
+            ResetStuckTracking();
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool TryRadialWallEscape(float stepDistance, bool overlapping)
+    {
+        Vector3 referenceDirection = GetGoalDirection();
+        if (referenceDirection.sqrMagnitude < 0.0001f)
+        {
+            referenceDirection = MoveDirection.sqrMagnitude > 0.0001f ? MoveDirection : transform.forward;
+        }
+
+        referenceDirection.y = 0f;
+        if (referenceDirection.sqrMagnitude < 0.0001f)
+        {
+            return false;
+        }
+
+        referenceDirection.Normalize();
+        float escapeDistance = Mathf.Max(stepDistance * 2.5f, detourWaypointSpacing * (overlapping ? 0.9f : 0.55f));
+        int startIndex = radialEscapeAttemptIndex % RadialEscapeAngleOffsets.Length;
+        radialEscapeAttemptIndex++;
+
+        float bestScore = float.MinValue;
+        Vector3 bestDelta = Vector3.zero;
+        for (int attempt = 0; attempt < RadialEscapeAngleOffsets.Length; attempt++)
+        {
+            float angle = RadialEscapeAngleOffsets[(startIndex + attempt) % RadialEscapeAngleOffsets.Length];
+            Vector3 candidateDirection = Quaternion.Euler(0f, angle, 0f) * referenceDirection;
+            candidateDirection.y = 0f;
+            if (candidateDirection.sqrMagnitude < 0.0001f)
+            {
+                continue;
+            }
+
+            candidateDirection.Normalize();
+            Vector3 candidateDelta = candidateDirection * escapeDistance;
+            if (!TryGetAllowedDelta(candidateDelta, out Vector3 allowedDelta) || allowedDelta.sqrMagnitude < 0.0001f)
+            {
+                continue;
+            }
+
+            Vector3 allowedDirection = allowedDelta.normalized;
+            float clearanceScore = 1f;
+            if (TryGetAheadSolidHit(allowedDirection, obstacleLookaheadDistance, out RaycastHit aheadHit))
+            {
+                clearanceScore = Mathf.Clamp01(aheadHit.distance / Mathf.Max(0.5f, obstacleLookaheadDistance));
+            }
+
+            float overlapBonus = 0f;
+            if (overlapping && TryGetOverlappingEscapeDirection(out Vector3 overlapDirection))
+            {
+                overlapBonus = Mathf.Max(0f, Vector3.Dot(allowedDirection, overlapDirection)) * 2f;
+            }
+
+            float backtrackBonus = Mathf.Max(0f, -Vector3.Dot(allowedDirection, referenceDirection));
+            float score = allowedDelta.magnitude + clearanceScore * 1.5f + overlapBonus + backtrackBonus;
+            if (score > bestScore)
+            {
+                bestScore = score;
+                bestDelta = allowedDelta;
+            }
+        }
+
+        if (bestScore <= float.MinValue)
+        {
+            return false;
+        }
+
+        transform.position += bestDelta;
+        MovedHorizontallyThisFrame = true;
+        MoveDirection = bestDelta.normalized;
+        IsBlockedBySolidObstacle = false;
+        IsStuck = false;
+        pathStuckConfirmCount = 0;
+        ResetStuckTracking();
+        return true;
+    }
+
+    private void ConvertPathToDirectMove(Vector3 goal)
+    {
+        ClearPath();
+        movementMode = MovementMode.Direct;
+        destination = goal;
+        finalDestination = goal;
+        hasDestination = true;
+        usingDetour = false;
+    }
+
+    private void RestoreGoalAfterEscape(Vector3 goal, bool restoreGoal)
+    {
+        if (!restoreGoal)
+        {
+            return;
+        }
+
+        ConvertPathToDirectMove(goal);
+    }
+
     public void FollowPath(IReadOnlyList<Vector3> waypoints)
     {
         ClearPath();
@@ -238,7 +449,7 @@ public class RtsUnitMotor : MonoBehaviour
     }
 
     /// <summary>
-    /// Unused (compat). Both PVP peers simulate paths locally; do not gate Update on this.
+    /// PVP peer view: do not simulate pathing locally — owner POSE stream is authoritative.
     /// </summary>
     public bool SuppressLocalSimulation { get; set; }
 
@@ -279,7 +490,11 @@ public class RtsUnitMotor : MonoBehaviour
 
         // Network sync is XZ only — local TroopCombat owns ground Y.
         next.y = current.y;
-        transform.position = next;
+        if (HorizontalDistanceSqr(current, next) > 0.0001f)
+        {
+            transform.position = next;
+            MovedHorizontallyThisFrame = true;
+        }
 
         // Unstick obstacle flags without overriding an explicit path halt (PVP peers mirror owner halt).
         IsBlockedBySolidObstacle = false;
@@ -294,7 +509,11 @@ public class RtsUnitMotor : MonoBehaviour
         Vector3 flat = FlattenToGround(worldPosition);
         Vector3 current = transform.position;
         flat.y = current.y;
-        transform.position = flat;
+        if (HorizontalDistanceSqr(current, flat) > 0.0001f)
+        {
+            transform.position = flat;
+            MovedHorizontallyThisFrame = true;
+        }
         IsBlockedBySolidObstacle = false;
         IsStuck = false;
         pathStuckConfirmCount = 0;
@@ -325,6 +544,13 @@ public class RtsUnitMotor : MonoBehaviour
     {
         MovedHorizontallyThisFrame = false;
 
+        if (SuppressLocalSimulation)
+        {
+            IsBlockedBySolidObstacle = false;
+            IsStuck = false;
+            return;
+        }
+
         if (!hasDestination)
         {
             IsBlockedBySolidObstacle = false;
@@ -340,6 +566,23 @@ public class RtsUnitMotor : MonoBehaviour
         }
 
         UpdateStuckDetection();
+
+        if (solidObstacleLayers != 0 && IsCurrentlyOverlappingObstacle())
+        {
+            overlapStuckFrames++;
+            if (overlapStuckFrames >= 2 && Time.time >= nextForcedEscapeAttemptTime)
+            {
+                nextForcedEscapeAttemptTime = Time.time + 0.2f;
+                if (TryEscapeFromSolid())
+                {
+                    overlapStuckFrames = 0;
+                }
+            }
+        }
+        else
+        {
+            overlapStuckFrames = 0;
+        }
 
         if (IsFollowingPath() && TryAbortPathIfStuck())
         {
@@ -410,6 +653,11 @@ public class RtsUnitMotor : MonoBehaviour
                 return;
             }
 
+            if (TryEscapeFromSolid())
+            {
+                return;
+            }
+
             AbortPathFollowing();
             return;
         }
@@ -476,12 +724,16 @@ public class RtsUnitMotor : MonoBehaviour
 
         if (useWallEscapeGrace)
         {
-            transform.position += desiredDelta;
-            MovedHorizontallyThisFrame = desiredDelta.sqrMagnitude > 0.000001f;
-            IsBlockedBySolidObstacle = false;
-            IsStuck = false;
-            pathStuckConfirmCount = 0;
-            ResetStuckTracking();
+            if (TryGetAllowedDelta(desiredDelta, out Vector3 escapeDelta) && escapeDelta.sqrMagnitude > 0.0001f)
+            {
+                transform.position += escapeDelta;
+                MovedHorizontallyThisFrame = true;
+                IsBlockedBySolidObstacle = false;
+            }
+            else if (!useAvoidance || !TryMoveWithObstacleAvoidance(direction, isOverlapping))
+            {
+                StopOnWall();
+            }
         }
         else if (!TryGetAllowedDelta(desiredDelta, out Vector3 allowedDelta))
         {
@@ -524,9 +776,8 @@ public class RtsUnitMotor : MonoBehaviour
             }
 
             IsBlockedBySolidObstacle = false;
-            IsStuck = false;
-            pathStuckConfirmCount = 0;
-            ResetStuckTracking();
+            // Do not reset stuck tracking here — wall slides / micro-moves must still
+            // count as stuck when they fail to advance toward the goal.
         }
 
         Vector3 remaining = destination - transform.position;
@@ -702,8 +953,11 @@ public class RtsUnitMotor : MonoBehaviour
             return true;
         }
 
-        // Detours are local-only and diverge from the synced drawn path — skip during path follow.
-        if (!IsFollowingPath()
+        // Detours are local-only and diverge from the synced drawn path — allow when deeply stuck in solids.
+        bool allowDetourDuringPath = IsFollowingPath()
+            && pathStuckConfirmCount >= 2
+            && (IsBlockedBySolidObstacle || IsCurrentlyOverlappingObstacle());
+        if ((!IsFollowingPath() || allowDetourDuringPath)
             && Time.time >= nextDetourAttemptTime
             && (IsBlockedBySolidObstacle || IsStuck)
             && TryInsertDetourWaypoint(goalDirection))
@@ -745,8 +999,11 @@ public class RtsUnitMotor : MonoBehaviour
         Vector3 tangent = Vector3.Dot(tangentA, goal) >= Vector3.Dot(tangentB, goal) ? tangentA : tangentB;
 
         float proximity = 1f - Mathf.Clamp01(aheadHit.distance / Mathf.Max(0.5f, obstacleLookaheadDistance));
-        float steerWeight = proximity * proximity;
-        Vector3 steered = Vector3.Slerp(desiredDirection, tangent, steerWeight * 0.9f);
+        float steerWeight = Mathf.Clamp01(proximity * proximity + proximity * 0.35f);
+        // When nearly touching the wall, commit to sliding along it instead of grazing into it.
+        Vector3 steered = proximity > 0.7f
+            ? tangent
+            : Vector3.Slerp(desiredDirection, tangent, steerWeight * 0.95f);
         steered.y = 0f;
         return steered.sqrMagnitude > 0.0001f ? steered.normalized : desiredDirection;
     }
@@ -810,21 +1067,27 @@ public class RtsUnitMotor : MonoBehaviour
 
     private bool TrySlideAlongWall(Vector3 desiredDirection, float stepDistance)
     {
-        if (!TryGetOverlappingEscapeDirection(out Vector3 escapeDirection))
+        if (!TryGetSlideWallNormal(desiredDirection, out Vector3 wallNormal))
         {
             return false;
         }
 
         Vector3 goalDirection = GetGoalDirection();
-        Vector3 tangent = Vector3.ProjectOnPlane(goalDirection.sqrMagnitude > 0.0001f ? goalDirection : desiredDirection, escapeDirection);
+        Vector3 tangent = Vector3.ProjectOnPlane(goalDirection.sqrMagnitude > 0.0001f ? goalDirection : desiredDirection, wallNormal);
         tangent.y = 0f;
         if (tangent.sqrMagnitude < 0.0001f)
         {
-            tangent = new Vector3(-escapeDirection.z, 0f, escapeDirection.x);
+            tangent = new Vector3(-wallNormal.z, 0f, wallNormal.x);
         }
 
         tangent.Normalize();
-        Vector3[] slideDirections = { tangent, -tangent };
+        Vector3[] slideDirections =
+        {
+            tangent,
+            -tangent,
+            (tangent + wallNormal * 0.35f).normalized,
+            (-tangent + wallNormal * 0.35f).normalized
+        };
 
         for (int i = 0; i < slideDirections.Length; i++)
         {
@@ -838,13 +1101,44 @@ public class RtsUnitMotor : MonoBehaviour
             MovedHorizontallyThisFrame = true;
             MoveDirection = allowedSlide.normalized;
             IsBlockedBySolidObstacle = false;
-            IsStuck = false;
-            pathStuckConfirmCount = 0;
-            ResetStuckTracking();
             return true;
         }
 
         return false;
+    }
+
+    private bool TryGetSlideWallNormal(Vector3 preferredDirection, out Vector3 wallNormal)
+    {
+        wallNormal = Vector3.zero;
+        if (TryGetOverlappingEscapeDirection(out Vector3 escapeDirection))
+        {
+            wallNormal = escapeDirection;
+            return true;
+        }
+
+        preferredDirection.y = 0f;
+        Vector3 probeDirection = preferredDirection.sqrMagnitude > 0.0001f
+            ? preferredDirection.normalized
+            : (MoveDirection.sqrMagnitude > 0.0001f ? MoveDirection : GetGoalDirection());
+        if (probeDirection.sqrMagnitude < 0.0001f)
+        {
+            return false;
+        }
+
+        if (!TryGetAheadSolidHit(probeDirection, obstacleLookaheadDistance, out RaycastHit aheadHit))
+        {
+            return false;
+        }
+
+        wallNormal = aheadHit.normal;
+        wallNormal.y = 0f;
+        if (wallNormal.sqrMagnitude < 0.0001f)
+        {
+            return false;
+        }
+
+        wallNormal.Normalize();
+        return true;
     }
 
     private bool TryGetBestAvoidanceDelta(
@@ -905,45 +1199,110 @@ public class RtsUnitMotor : MonoBehaviour
 
         goalDirection.Normalize();
         Vector3 tangent = new Vector3(-goalDirection.z, 0f, goalDirection.x);
-        float[] sideMultipliers = { 1f, -1f, 1.75f, -1.75f, 2.5f, -2.5f, 3.25f, -3.25f };
+        bool needsEscape = IsBlockedBySolidObstacle || IsStuck || IsCurrentlyOverlappingObstacle();
+        float[] sideMultipliers = { 0.75f, -0.75f, 1.5f, -1.5f, 2.25f, -2.25f, 3f, -3f, 4f, -4f };
+        float[] forwardMultipliers = needsEscape
+            ? new[] { -0.6f, -0.25f, 0f, 0.35f, 0.65f, 1f, 1.4f }
+            : new[] { 0.65f, 1f, 1.4f, 1.8f };
+        Vector3 goal = usingDetour ? finalDestination : destination;
+        float currentGoalDistance = HorizontalDistanceSqr(transform.position, goal);
+        Vector3 wallNormal = Vector3.zero;
+        bool hasWallNormal = TryGetSlideWallNormal(goalDirection, out wallNormal);
+        Vector3 bestDetour = Vector3.zero;
+        float bestScore = float.MinValue;
+        float minProgress = needsEscape
+            ? -detourProbeDistance * detourProbeDistance * 4f
+            : -0.5f;
 
-        for (int i = 0; i < sideMultipliers.Length; i++)
+        for (int f = 0; f < forwardMultipliers.Length; f++)
         {
-            Vector3 detourPoint = transform.position
-                + tangent * (detourProbeDistance * sideMultipliers[i])
-                + goalDirection * detourWaypointSpacing;
-            detourPoint = FlattenToGround(detourPoint);
-
-            if (!IsPositionClear(detourPoint))
+            float forwardDistance = detourWaypointSpacing * forwardMultipliers[f];
+            for (int i = 0; i < sideMultipliers.Length; i++)
             {
-                continue;
-            }
+                Vector3 detourPoint = transform.position
+                    + tangent * (detourProbeDistance * sideMultipliers[i])
+                    + goalDirection * forwardDistance;
+                if (needsEscape && hasWallNormal && forwardMultipliers[f] <= 0f)
+                {
+                    detourPoint += wallNormal * (detourWaypointSpacing * 0.75f);
+                }
 
-            if (!HasLineOfMovement(transform.position, detourPoint))
-            {
-                continue;
-            }
+                detourPoint = FlattenToGround(detourPoint);
 
-            if (!HasLineOfMovement(detourPoint, finalDestination))
-            {
-                continue;
-            }
+                if (!IsPositionClear(detourPoint))
+                {
+                    continue;
+                }
 
-            finalDestination = usingDetour ? finalDestination : destination;
-            destination = detourPoint;
-            usingDetour = true;
-            IsStuck = false;
-            ResetStuckTracking();
-            return true;
+                if (!HasLineOfMovement(transform.position, detourPoint))
+                {
+                    continue;
+                }
+
+                float goalDistance = HorizontalDistanceSqr(detourPoint, goal);
+                float progressScore = currentGoalDistance - goalDistance;
+                if (progressScore < minProgress)
+                {
+                    continue;
+                }
+
+                float clearanceScore = 0f;
+                Vector3 detourDirection = detourPoint - transform.position;
+                detourDirection.y = 0f;
+                if (detourDirection.sqrMagnitude > 0.0001f)
+                {
+                    detourDirection.Normalize();
+                    if (TryGetAheadSolidHit(detourDirection, obstacleLookaheadDistance, out RaycastHit aheadHit))
+                    {
+                        clearanceScore = Mathf.Clamp01(aheadHit.distance / Mathf.Max(0.5f, obstacleLookaheadDistance));
+                    }
+                    else
+                    {
+                        clearanceScore = 1f;
+                    }
+                }
+
+                float escapeBonus = 0f;
+                if (needsEscape && hasWallNormal && detourDirection.sqrMagnitude > 0.0001f)
+                {
+                    escapeBonus = Mathf.Max(0f, Vector3.Dot(detourDirection, wallNormal)) * 2f;
+                }
+
+                float finalLegBonus = HasLineOfMovement(detourPoint, goal) ? 1f : 0f;
+                float lateralPenalty = Mathf.Abs(sideMultipliers[i]) * 0.08f;
+                float score = progressScore * 2f + clearanceScore * 1.5f + finalLegBonus + escapeBonus - lateralPenalty;
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    bestDetour = detourPoint;
+                }
+            }
         }
 
-        return false;
+        if (bestScore <= float.MinValue)
+        {
+            return false;
+        }
+
+        finalDestination = usingDetour ? finalDestination : destination;
+        destination = bestDetour;
+        usingDetour = true;
+        IsStuck = false;
+        ResetStuckTracking();
+        return true;
     }
 
     private void ResumeAfterDetour()
     {
-        destination = finalDestination;
         usingDetour = false;
+        destination = finalDestination;
+        // Don't march straight back into the same solid after a successful side-step.
+        if (!HasLineOfMovement(transform.position, finalDestination)
+            && TryInsertDetourWaypoint(GetGoalDirection()))
+        {
+            return;
+        }
+
         IsStuck = false;
         ResetStuckTracking();
     }
@@ -967,9 +1326,16 @@ public class RtsUnitMotor : MonoBehaviour
             return;
         }
 
-        float movedDistanceSqr = HorizontalDistanceSqr(transform.position, stuckSamplePosition);
+        Vector3 goal = usingDetour ? destination : finalDestination;
+        float goalDistance = Mathf.Sqrt(HorizontalDistanceSqr(transform.position, goal));
         float progressThreshold = GetStuckProgressThreshold();
-        bool stuckThisSample = movedDistanceSqr < progressThreshold * progressThreshold;
+        float goalProgress = stuckSampleGoalDistance - goalDistance;
+
+        // Near arrival, slowdown makes tiny steps look like stuck — ignore that case.
+        // Sliding along a wall without closing on the goal still counts as stuck.
+        float arrivalGrace = Mathf.Max(arrivalRadius * 2f, arrivalSlowdownRadius);
+        bool nearArrival = !usingDetour && goalDistance <= arrivalGrace;
+        bool stuckThisSample = !nearArrival && goalProgress < progressThreshold * 0.5f;
         IsStuck = stuckThisSample;
         if (stuckThisSample)
         {
@@ -981,6 +1347,7 @@ public class RtsUnitMotor : MonoBehaviour
         }
 
         stuckSamplePosition = transform.position;
+        stuckSampleGoalDistance = goalDistance;
         stuckSampleTime = Time.time;
     }
 
@@ -999,6 +1366,10 @@ public class RtsUnitMotor : MonoBehaviour
     private void ResetStuckTracking()
     {
         stuckSamplePosition = transform.position;
+        Vector3 goal = usingDetour ? destination : finalDestination;
+        stuckSampleGoalDistance = hasDestination
+            ? Mathf.Sqrt(HorizontalDistanceSqr(transform.position, goal))
+            : 0f;
         stuckSampleTime = Time.time;
         IsStuck = false;
         pathStuckConfirmCount = 0;
@@ -1035,12 +1406,17 @@ public class RtsUnitMotor : MonoBehaviour
 
     private bool TryAbortPathIfStuck()
     {
-        if (pathStuckConfirmCount < 2)
+        bool overlapping = solidObstacleLayers != 0 && IsCurrentlyOverlappingObstacle();
+        if (overlapping || (IsBlockedBySolidObstacle && pathStuckConfirmCount >= 1))
         {
-            return false;
+            Vector3 goal = pathWaypoints.Count > 0 ? pathWaypoints[pathWaypoints.Count - 1] : finalDestination;
+            AbortPathFollowing();
+            ConvertPathToDirectMove(goal);
+            TryEscapeFromSolid();
+            return true;
         }
 
-        if (IsBlockedBySolidObstacle || (solidObstacleLayers != 0 && IsCurrentlyOverlappingObstacle()))
+        if (pathStuckConfirmCount < 2)
         {
             return false;
         }
@@ -1082,7 +1458,17 @@ public class RtsUnitMotor : MonoBehaviour
                 }
             }
 
+            if (TryEscapeFromSolid())
+            {
+                return;
+            }
+
             AbortPathFollowing();
+            if (TryEscapeFromSolid())
+            {
+                return;
+            }
+
             return;
         }
 
@@ -1100,6 +1486,11 @@ public class RtsUnitMotor : MonoBehaviour
                 IsBlockedBySolidObstacle = false;
                 return;
             }
+        }
+
+        if (TryEscapeFromSolid())
+        {
+            return;
         }
 
         if (!IsFollowingPath()
@@ -1178,6 +1569,7 @@ public class RtsUnitMotor : MonoBehaviour
         IsStuck = false;
         wallEscapeGraceEndTime = 0f;
         pathStuckConfirmCount = 0;
+        overlapStuckFrames = 0;
         ResetStuckTracking();
     }
 
@@ -1277,43 +1669,31 @@ public class RtsUnitMotor : MonoBehaviour
 
     private bool IsFormationGroundWalkable(Vector3 nextPosition, Vector3 halfExtents)
     {
-        // Center + 4 corners only. Missing corner samples are ignored (mesh gaps on slopes
-        // used to false-fail and freeze units).
+        // Use a compact probe radius — solidThicknessPadding is for wall hits only and made
+        // slope probes falsely fail across gentle hills with a wide formation.
+        float probeRadiusX = Mathf.Max(0.2f, Mathf.Min(halfExtents.x, fallbackCastHalfExtents.x));
+        float probeRadiusZ = Mathf.Max(0.2f, Mathf.Min(halfExtents.z, fallbackCastHalfExtents.z));
         Vector3[] probes =
         {
             Vector3.zero,
-            new Vector3(halfExtents.x, 0f, halfExtents.z),
-            new Vector3(-halfExtents.x, 0f, halfExtents.z),
-            new Vector3(halfExtents.x, 0f, -halfExtents.z),
-            new Vector3(-halfExtents.x, 0f, -halfExtents.z)
+            new Vector3(probeRadiusX, 0f, probeRadiusZ),
+            new Vector3(-probeRadiusX, 0f, probeRadiusZ),
+            new Vector3(probeRadiusX, 0f, -probeRadiusZ),
+            new Vector3(-probeRadiusX, 0f, -probeRadiusZ)
         };
 
-        float centerY = nextPosition.y;
         bool hasCenter = false;
-        float maxAngle = Mathf.Clamp(maxWalkableSlopeDegrees, 15f, 80f);
-        float maxNormalAngle = Mathf.Clamp(maxGroundNormalAngleDegrees, 30f, 85f);
-        float stepLimit = Mathf.Max(0.1f, maxStepHeight);
+        float centerY = nextPosition.y;
+        // Cliffs only. Gentle hills must not freeze movement — TroopCombat owns Y snap.
+        float cliffStep = Mathf.Max(1.5f, maxStepHeight);
+        float cliffNormalAngle = Mathf.Clamp(Mathf.Max(maxGroundNormalAngleDegrees, 55f), 45f, 85f);
         if (TraverseGateCorridor)
         {
-            // Gate thresholds often have a sill / mesh seam — don't freeze exit on cliff heuristics.
-            maxAngle = Mathf.Max(maxAngle, 70f);
-            maxNormalAngle = Mathf.Max(maxNormalAngle, 70f);
-            stepLimit = Mathf.Max(stepLimit, 3f);
+            cliffStep = Mathf.Max(cliffStep, 3f);
+            cliffNormalAngle = Mathf.Max(cliffNormalAngle, 70f);
         }
-        bool hasCurrentGround = RtsGroundUtility.TrySampleGround(
-            transform.position.x,
-            transform.position.z,
-            RtsGroundUtility.DefaultGroundMask,
-            256f,
-            0f,
-            out float currentGroundY,
-            out _,
-            preferredY: transform.position.y,
-            maxVerticalSnap: 64f);
 
-        // Block cliff climbs: destination center cannot rise more than maxStepHeight from current.
-        if (hasCurrentGround
-            && RtsGroundUtility.TrySampleGround(
+        if (!RtsGroundUtility.TrySampleGround(
                 nextPosition.x,
                 nextPosition.z,
                 RtsGroundUtility.DefaultGroundMask,
@@ -1322,20 +1702,41 @@ public class RtsUnitMotor : MonoBehaviour
                 out float nextCenterGroundY,
                 out Vector3 nextCenterNormal,
                 preferredY: nextPosition.y,
-                maxVerticalSnap: 64f))
+                maxVerticalSnap: 16f))
         {
-            if (nextCenterGroundY - currentGroundY > stepLimit)
-            {
-                return false;
-            }
+            // Missing ground under center — allow move (mesh gaps) rather than freeze.
+            return true;
+        }
 
-            if (Vector3.Angle(nextCenterNormal, Vector3.up) > maxNormalAngle)
+        hasCenter = true;
+        centerY = nextCenterGroundY;
+
+        if (Vector3.Angle(nextCenterNormal, Vector3.up) > cliffNormalAngle)
+        {
+            return false;
+        }
+
+        if (RtsGroundUtility.TrySampleGround(
+                transform.position.x,
+                transform.position.z,
+                RtsGroundUtility.DefaultGroundMask,
+                256f,
+                0f,
+                out float currentGroundY,
+                out _,
+                preferredY: transform.position.y,
+                maxVerticalSnap: 16f))
+        {
+            // Only block a true ledge climb — descending is always fine.
+            if (nextCenterGroundY - currentGroundY > cliffStep)
             {
                 return false;
             }
         }
 
-        for (int i = 0; i < probes.Length; i++)
+        // Corner checks: only reject when a corner sits on a near-vertical cliff face or a
+        // much higher ledge than the formation center. Mild slopes across the footprint are OK.
+        for (int i = 1; i < probes.Length; i++)
         {
             float x = nextPosition.x + probes[i].x;
             float z = nextPosition.z + probes[i].z;
@@ -1347,42 +1748,18 @@ public class RtsUnitMotor : MonoBehaviour
                     0f,
                     out float groundY,
                     out Vector3 groundNormal,
-                    preferredY: nextPosition.y,
-                    maxVerticalSnap: 64f))
+                    preferredY: centerY,
+                    maxVerticalSnap: 16f))
             {
                 continue;
             }
 
-            if (Vector3.Angle(groundNormal, Vector3.up) > maxNormalAngle)
+            if (Vector3.Angle(groundNormal, Vector3.up) > cliffNormalAngle)
             {
                 return false;
             }
 
-            if (!hasCenter || i == 0)
-            {
-                centerY = groundY;
-                hasCenter = true;
-                if (i == 0)
-                {
-                    continue;
-                }
-            }
-
-            float horizontal = new Vector2(probes[i].x, probes[i].z).magnitude;
-            if (horizontal < 0.05f)
-            {
-                continue;
-            }
-
-            float rise = Mathf.Abs(groundY - centerY);
-            float slopeDegrees = Mathf.Atan2(rise, horizontal) * Mathf.Rad2Deg;
-            if (slopeDegrees > maxAngle)
-            {
-                return false;
-            }
-
-            // Corner of the formation climbing a ledge the center hasn't reached yet.
-            if (hasCurrentGround && groundY - currentGroundY > stepLimit + 0.35f)
+            if (groundY - centerY > cliffStep)
             {
                 return false;
             }

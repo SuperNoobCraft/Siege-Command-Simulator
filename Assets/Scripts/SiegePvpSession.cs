@@ -369,6 +369,7 @@ public class SiegePvpSession : MonoBehaviour
         }
 
         RefreshLobbyStatus();
+        ApplyCommandFactionFilter();
     }
 
     public void NotifyLocalReady()
@@ -526,7 +527,9 @@ public class SiegePvpSession : MonoBehaviour
             return;
         }
 
-        if (!SiegeMatchSettings.IsSiegePvpMode && lobbyPhase == LobbyPhase.Idle)
+        bool inPvpFlow = SiegeMatchSettings.IsSiegePvpMode
+            || lobbyPhase != LobbyPhase.Idle;
+        if (!inPvpFlow)
         {
             wandCommander.SetControllableFaction(TroopCombat.Faction.Friendly);
             return;
@@ -888,6 +891,7 @@ public class SiegePvpSession : MonoBehaviour
             manager != null ? manager.DemoMoveSpeedScale : 0.6f,
             matchDurationSeconds,
             moveSpeedScale);
+        ApplyCommandFactionFilter();
         ApplyMoveSpeedToAllTroops();
         ConfigureCityDefenderRegimentsForPvp();
     }
@@ -976,12 +980,21 @@ public class SiegePvpSession : MonoBehaviour
 
     private void ApplyNetworkAuthorityRoles()
     {
-        // Both peers simulate FollowPath locally. POSE only nudges XZ — never suppress motors.
         for (int i = 0; i < syncMotorsByIndex.Count; i++)
         {
-            if (syncMotorsByIndex[i] != null)
+            RtsUnitMotor motor = syncMotorsByIndex[i];
+            if (motor == null)
             {
-                syncMotorsByIndex[i].SuppressLocalSimulation = false;
+                continue;
+            }
+
+            bool locallyOwned = IsLocallyOwnedMotor(motor);
+            motor.SuppressLocalSimulation = !locallyOwned;
+
+            TroopCombat troop = motor.GetComponent<TroopCombat>();
+            if (troop != null && !locallyOwned)
+            {
+                troop.SetNetworkOwnerPoseHalted(!motor.HasActivePath && !motor.HasDestination);
             }
         }
     }
@@ -1095,6 +1108,8 @@ public class SiegePvpSession : MonoBehaviour
             token,
             syncIndex));
 
+        BroadcastOwnedMotorPoseImmediate(motor, syncIndex, forceHaltedFlag: true);
+
         if (logNetworkMessages)
         {
             Debug.Log("SiegePvp STOP send unit#" + syncIndex + " '" + motor.name + "'", this);
@@ -1176,7 +1191,7 @@ public class SiegePvpSession : MonoBehaviour
         }
 
         BroadcastOwnedStop(syncIndex, motor, reason: "path-aborted");
-        BroadcastOwnedMotorPoseImmediate(motor, syncIndex, forceHaltedFlag: false);
+        BroadcastOwnedMotorPoseImmediate(motor, syncIndex, forceHaltedFlag: true);
     }
 
     private void BroadcastOwnedStop(int syncIndex, RtsUnitMotor motor, string reason)
@@ -1228,9 +1243,17 @@ public class SiegePvpSession : MonoBehaviour
     private int BuildPoseSyncFlags(RtsUnitMotor motor, int syncIndex, Vector3 position, bool forceHaltedFlag)
     {
         int flags = 0;
-        if (motor.HasActivePath || motor.HasDestination)
+        bool hasPath = motor.HasActivePath || motor.HasDestination;
+        bool halted = forceHaltedFlag || !hasPath;
+
+        if (hasPath && !halted)
         {
             flags |= PoseSyncFlagHasPath;
+        }
+
+        if (halted)
+        {
+            flags |= PoseSyncFlagPathHalted;
         }
 
         TroopCombat troop = motor.GetComponent<TroopCombat>();
@@ -1239,18 +1262,21 @@ public class SiegePvpSession : MonoBehaviour
             flags |= PoseSyncFlagRetreatInvulnerable;
         }
 
-        if (lastBroadcastPoseByIndex.TryGetValue(syncIndex, out Vector3 previous))
+        if (!halted)
         {
-            Vector3 delta = position - previous;
-            delta.y = 0f;
-            if (delta.sqrMagnitude >= 0.0225f) // ~0.15m
+            if (lastBroadcastPoseByIndex.TryGetValue(syncIndex, out Vector3 previous))
+            {
+                Vector3 delta = position - previous;
+                delta.y = 0f;
+                if (delta.sqrMagnitude >= 0.0225f) // ~0.15m
+                {
+                    flags |= PoseSyncFlagAdvancing;
+                }
+            }
+            else
             {
                 flags |= PoseSyncFlagAdvancing;
             }
-        }
-        else
-        {
-            flags |= PoseSyncFlagAdvancing;
         }
 
         return flags;
@@ -1476,6 +1502,12 @@ public class SiegePvpSession : MonoBehaviour
         applyingRemotePath = true;
         try
         {
+            TroopCombat troop = motor.GetComponent<TroopCombat>();
+            if (troop != null)
+            {
+                troop.SetNetworkOwnerPoseHalted(false);
+            }
+
             motor.SuppressLocalSimulation = false;
             Vector3 pathStart = path[0];
             Vector3 currentPos = motor.transform.position;
@@ -1491,6 +1523,11 @@ public class SiegePvpSession : MonoBehaviour
             }
 
             motor.FollowPath(path);
+
+            if (troop != null)
+            {
+                troop.NotifyNetworkPositionApplied(hardSnap: false);
+            }
 
             if (logNetworkMessages)
             {
@@ -1539,7 +1576,6 @@ public class SiegePvpSession : MonoBehaviour
                     continue;
                 }
 
-                motor.SuppressLocalSimulation = false;
                 Vector3 remotePos = new Vector3(x, y, z);
                 TroopCombat troop = motor.GetComponent<TroopCombat>();
 
@@ -1557,24 +1593,18 @@ public class SiegePvpSession : MonoBehaviour
                 }
 
                 bool ownerHasPath = (syncFlags & PoseSyncFlagHasPath) != 0;
+                bool ownerHalted = (syncFlags & PoseSyncFlagPathHalted) != 0;
                 bool ownerAdvancing = (syncFlags & PoseSyncFlagAdvancing) != 0;
                 bool ownerRetreatInvulnerable = (syncFlags & PoseSyncFlagRetreatInvulnerable) != 0;
 
-                Vector3 currentPos = motor.transform.position;
-                Vector3 delta = remotePos - currentPos;
-                delta.y = 0f;
-                float horizontalErrorSqr = delta.sqrMagnitude;
-                float haltResyncSqr = pathHaltResyncDistance * pathHaltResyncDistance;
+                if (troop != null)
+                {
+                    troop.SetNetworkOwnerPoseHalted(ownerHalted);
+                }
 
-                UpdateRemotePoseStability(syncIndex, remotePos, ownerAdvancing, ownerHasPath);
+                motor.SuppressLocalSimulation = ownerHalted;
 
-                bool ownerStoppedFollowingPath = !ownerHasPath
-                    && (!ownerAdvancing || GetRemotePoseStableCount(syncIndex) >= 3);
-                bool peerDriftedWhileOwnerStopped = ownerStoppedFollowingPath
-                    && (motor.HasActivePath || motor.HasDestination)
-                    && horizontalErrorSqr >= haltResyncSqr;
-
-                if (peerDriftedWhileOwnerStopped)
+                if (ownerHalted)
                 {
                     if (motor.HasActivePath || motor.HasDestination)
                     {
@@ -1591,6 +1621,58 @@ public class SiegePvpSession : MonoBehaviour
                             remotePos,
                             authoritySnapDistance,
                             ownerRetreatInvulnerable);
+                    }
+                    else if (troop != null)
+                    {
+                        troop.NotifyNetworkPositionApplied(hardSnap: true);
+                    }
+
+                    continue;
+                }
+
+                motor.SuppressLocalSimulation = false;
+
+                Vector3 currentPos = motor.transform.position;
+                Vector3 delta = remotePos - currentPos;
+                delta.y = 0f;
+                float horizontalErrorSqr = delta.sqrMagnitude;
+                float haltResyncSqr = pathHaltResyncDistance * pathHaltResyncDistance;
+
+                UpdateRemotePoseStability(syncIndex, remotePos, ownerAdvancing, ownerHasPath);
+
+                bool ownerStoppedFollowingPath = ownerHalted
+                    || (!ownerHasPath && (!ownerAdvancing || GetRemotePoseStableCount(syncIndex) >= 3));
+                bool peerDriftedWhileOwnerStopped = ownerStoppedFollowingPath
+                    && (motor.HasActivePath || motor.HasDestination)
+                    && horizontalErrorSqr >= haltResyncSqr;
+
+                if (peerDriftedWhileOwnerStopped)
+                {
+                    if (motor.HasActivePath || motor.HasDestination)
+                    {
+                        motor.Stop();
+                    }
+
+                    motor.SuppressLocalSimulation = true;
+                    if (troop != null)
+                    {
+                        troop.SetNetworkOwnerPoseHalted(true);
+                    }
+
+                    motor.SnapNetworkPosition(remotePos);
+
+                    if (hasAuthority && troop != null)
+                    {
+                        troop.ApplyNetworkCombatAuthority(
+                            authorityHealth,
+                            authorityState,
+                            remotePos,
+                            authoritySnapDistance,
+                            ownerRetreatInvulnerable);
+                    }
+                    else if (troop != null)
+                    {
+                        troop.NotifyNetworkPositionApplied(hardSnap: true);
                     }
 
                     continue;
@@ -1612,6 +1694,11 @@ public class SiegePvpSession : MonoBehaviour
                     motor.transform.rotation,
                     forceAuthority: true,
                     authoritySnapDistance: authoritySnapDistance);
+
+                if (troop != null)
+                {
+                    troop.NotifyNetworkPositionApplied(hardSnap: false);
+                }
             }
         }
         finally
@@ -1666,7 +1753,7 @@ public class SiegePvpSession : MonoBehaviour
             return CombatStateActive;
         }
 
-        if (troop.CurrentState == TroopCombat.State.Dead)
+        if (troop.CurrentState == TroopCombat.State.Dead || troop.IsPermanentlyEliminated)
         {
             return CombatStateDead;
         }
@@ -1706,6 +1793,13 @@ public class SiegePvpSession : MonoBehaviour
         try
         {
             motor.Stop();
+            motor.SuppressLocalSimulation = true;
+            TroopCombat troop = motor.GetComponent<TroopCombat>();
+            if (troop != null)
+            {
+                troop.SetNetworkOwnerPoseHalted(true);
+            }
+
             if (logNetworkMessages)
             {
                 Debug.Log("SiegePvp applied remote STOP unit#" + syncIndex + " -> " + motor.name, this);
@@ -1797,6 +1891,21 @@ public class SiegePvpSession : MonoBehaviour
             sanitized,
             Mathf.Max(2, maxSyncedPathPoints),
             pathNetworkSimplifyEpsilon);
+    }
+
+    /// <summary>
+    /// Owner retreat issues a direct MoveTo — mirror it as a short PATH so peers simulate at full speed.
+    /// </summary>
+    public void NotifyRetreatDestinationFromAuthority(RtsUnitMotor motor, Vector3 destination)
+    {
+        if (!matchRunning || applyingRemotePath || motor == null || !IsLocallyOwnedMotor(motor))
+        {
+            return;
+        }
+
+        Vector3 start = motor.transform.position;
+        List<Vector3> path = new List<Vector3>(2) { start, destination };
+        HandleLocalPathCommand(motor, path);
     }
 
     /// <summary>Push HP/retreat/death immediately after local combat resolves on the authority machine.</summary>

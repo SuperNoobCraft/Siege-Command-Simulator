@@ -75,7 +75,8 @@ public class TroopCombat : MonoBehaviour
     [SerializeField] private GameObject rangedProjectilePrefab;
     [SerializeField, Min(0.1f)] private float rangedProjectileSpeed = 18f;
     [SerializeField, Range(0.05f, 1f)] private float rangedProjectileFrequency = 0.35f;
-    [SerializeField, Min(0f)] private float rangedProjectileArcHeight = 2f;
+    [SerializeField, Min(0f)] private float rangedProjectileMinArcHeight = 1.25f;
+    [SerializeField, Min(0f)] private float rangedProjectileMaxArcHeight = 2.75f;
     [SerializeField, Range(0f, 1f)] private float rangedProjectileDispersion = 0.35f;
     [SerializeField, Min(0f)] private float rangedProjectileMaxSpreadRadius = 2.5f;
     [SerializeField, Min(0f)] private float rangedProjectileLaunchHeight = 1.1f;
@@ -160,13 +161,17 @@ public class TroopCombat : MonoBehaviour
     private float nextAttackTime;
     private float nextScanTime;
     private float nextRetreatDestinationRefreshTime;
+    private float nextRetreatUnstuckTime;
+    private int retreatUnstuckAttemptIndex;
     private float invulnerableUntil;
     private bool isPermanentlyEliminated;
+    private bool retreatVisualsSyncedToDefeat;
     private Coroutine retreatDeathDisappearCoroutine;
     private RetreatPhase retreatPhase = RetreatPhase.ToGateOutside;
     private Vector3 troopPrefabScale = Vector3.one;
     private Vector3 flagHolderPrefabScale = Vector3.one;
     private bool flagHolderShowingDefeated;
+    private bool networkOwnerPoseHalted;
     private Vector3 lastRegimentPosition;
     private float smoothedCombatOverlap;
     private const float MinimumFacingMovementDistance = 0.02f;
@@ -208,6 +213,7 @@ public class TroopCombat : MonoBehaviour
     public int MinimumUnitCountAtDefeat => Mathf.RoundToInt(maxUnitCount * defeatedUnitPercentage);
     public bool IsCommandable => motor == null || motor.CanReceiveCommands;
     public bool IsRetreating => CurrentState == State.Retreat;
+    public bool IsPermanentlyEliminated => isPermanentlyEliminated;
     public bool IsRetreatInvulnerable => CurrentState == State.Retreat && Time.time < invulnerableUntil;
     public bool IsTraversingGate =>
         CurrentState == State.Retreat
@@ -268,6 +274,7 @@ public class TroopCombat : MonoBehaviour
         }
 
         isPermanentlyEliminated = false;
+        retreatVisualsSyncedToDefeat = false;
         currentHealth = Mathf.Max(1f, maxHealth);
         currentTarget = null;
         HoldsInCampUntilNextWave = false;
@@ -594,7 +601,8 @@ public class TroopCombat : MonoBehaviour
 
         rangedProjectileSpeed = Mathf.Max(0.1f, rangedProjectileSpeed);
         rangedProjectileFrequency = Mathf.Clamp(rangedProjectileFrequency, 0.05f, 1f);
-        rangedProjectileArcHeight = Mathf.Max(0f, rangedProjectileArcHeight);
+        rangedProjectileMinArcHeight = Mathf.Max(0f, rangedProjectileMinArcHeight);
+        rangedProjectileMaxArcHeight = Mathf.Max(rangedProjectileMinArcHeight, rangedProjectileMaxArcHeight);
         rangedProjectileDispersion = Mathf.Clamp01(rangedProjectileDispersion);
         rangedProjectileMaxSpreadRadius = Mathf.Max(0f, rangedProjectileMaxSpreadRadius);
         rangedProjectileLaunchHeight = Mathf.Max(0f, rangedProjectileLaunchHeight);
@@ -677,6 +685,7 @@ public class TroopCombat : MonoBehaviour
 
         bool isRegimentIdle = IsRegimentMovementIdle();
         bool moved = motor != null && motor.MovedHorizontallyThisFrame;
+        bool blockedOrStuck = motor != null && (motor.IsBlockedBySolidObstacle || motor.IsStuck);
 
         if (isRegimentIdle)
         {
@@ -686,7 +695,8 @@ public class TroopCombat : MonoBehaviour
         {
             ClearIdleGroundLock();
 
-            if (keepRegimentRootOnGroundWhileMoving && moved)
+            // Skip ground snap while jammed — vibrating against solids was climbing bad probes (float-up).
+            if (keepRegimentRootOnGroundWhileMoving && moved && !blockedOrStuck)
             {
                 SnapRegimentRootToGround(smooth: false, force: false);
                 EnsureFormationRootLevel();
@@ -696,7 +706,7 @@ public class TroopCombat : MonoBehaviour
         UpdateTroopFacing();
 
         // Never re-project while idle — that was causing troops to slowly crawl downhill.
-        if (moved || troopGroundProjectionDirty)
+        if ((moved && !blockedOrStuck) || troopGroundProjectionDirty)
         {
             ProjectTroopVisualsToGround();
         }
@@ -704,13 +714,57 @@ public class TroopCombat : MonoBehaviour
 
     private bool IsRegimentMovementIdle()
     {
+        if (networkOwnerPoseHalted && UsesRemoteCombatAuthority())
+        {
+            return true;
+        }
+
         return motor == null || (!motor.HasDestination && !motor.MovedHorizontallyThisFrame);
+    }
+
+    /// <summary>
+    /// PVP peer view: owner says this regiment is stopped — mirror solo idle hardening.
+    /// </summary>
+    public void SetNetworkOwnerPoseHalted(bool halted)
+    {
+        if (networkOwnerPoseHalted == halted)
+        {
+            return;
+        }
+
+        networkOwnerPoseHalted = halted;
+        if (halted)
+        {
+            if (motor != null)
+            {
+                motor.Stop();
+            }
+
+            ClearIdleGroundLock();
+        }
+    }
+
+    /// <summary>After a network pose snap/lerp, refresh ground height so peers don't sink or float.</summary>
+    public void NotifyNetworkPositionApplied(bool hardSnap)
+    {
+        if (!UsesRemoteCombatAuthority())
+        {
+            return;
+        }
+
+        ClearIdleGroundLock();
+        if (keepRegimentRootOnGroundWhileMoving || hardSnap)
+        {
+            SnapRegimentRootToGround(smooth: !hardSnap, force: hardSnap);
+            EnsureFormationRootLevel();
+            troopGroundProjectionDirty = true;
+        }
     }
 
     private void MaintainIdleGroundLock()
     {
-        // Remote PVP peers still receive XZ corrections — only freeze Y for them.
-        bool freezeFullPose = !UsesRemoteCombatAuthority();
+        // Remote peer: when owner is halted, use the same full pose lock as solo.
+        bool freezeFullPose = !UsesRemoteCombatAuthority() || networkOwnerPoseHalted;
         Vector3 position = transform.position;
 
         if (!hasLockedRegimentGroundY)
@@ -726,9 +780,20 @@ public class TroopCombat : MonoBehaviour
 
         if (freezeFullPose)
         {
-            // Hard freeze — nothing may drift the regiment (or its selection collider) while idle.
             Vector3 locked = new Vector3(lockedRegimentGroundXZ.x, lockedRegimentGroundY, lockedRegimentGroundXZ.z);
-            if ((position - locked).sqrMagnitude > 0.0000001f)
+            float divergenceSqr = (position - locked).sqrMagnitude;
+            // Network snap while halted — adopt the new pose instead of snapping back to the old lock.
+            if (divergenceSqr > 1f)
+            {
+                SnapRegimentRootToGround(smooth: false, force: false);
+                position = transform.position;
+                lockedRegimentGroundY = position.y;
+                lockedRegimentGroundXZ = new Vector3(position.x, 0f, position.z);
+                troopGroundProjectionDirty = true;
+                return;
+            }
+
+            if (divergenceSqr > 0.0000001f)
             {
                 transform.position = locked;
             }
@@ -784,7 +849,8 @@ public class TroopCombat : MonoBehaviour
     {
         LayerMask groundMask = ResolveGroundMask();
         Vector3 position = transform.position;
-        float maxVerticalSnap = force ? 512f : 2.5f;
+        // Moving: stay near current height. Force/init: allow large drops from authored y≈100.
+        float maxVerticalSnap = force ? 512f : 8f;
         if (!RtsGroundUtility.TrySampleGroundY(
                 position.x,
                 position.z,
@@ -814,8 +880,16 @@ public class TroopCombat : MonoBehaviour
 
         loggedMissingGround = false;
 
-        if (!force && groundY > position.y + maxRegimentGroundRisePerSnap)
+        float rise = groundY - position.y;
+        if (!force && rise > maxRegimentGroundRisePerSnap)
         {
+            // Far above = cliff ledge. Leave Y alone rather than jump.
+            if (rise > Mathf.Max(2f, maxRegimentGroundRisePerSnap * 4f))
+            {
+                return true;
+            }
+
+            // Gentle uphill: chase ground gradually so we never lag underground for long.
             groundY = position.y + maxRegimentGroundRisePerSnap;
         }
 
@@ -1308,12 +1382,14 @@ public class TroopCombat : MonoBehaviour
             Vector3 launchPoint = launchPoints[i];
             launchPoint.y += rangedProjectileLaunchHeight;
 
+            float arrowArc = Random.Range(rangedProjectileMinArcHeight, rangedProjectileMaxArcHeight);
+
             TroopRangedProjectile.Launch(
                 rangedProjectilePrefab,
                 launchPoint,
                 impactPoint,
                 rangedProjectileSpeed,
-                rangedProjectileArcHeight);
+                arrowArc);
         }
     }
 
@@ -1360,11 +1436,14 @@ public class TroopCombat : MonoBehaviour
 
     private void UpdateRetreat()
     {
-        bool peerVisualOnly = UsesRemoteCombatAuthority();
+        if (UsesRemoteCombatAuthority())
+        {
+            return;
+        }
+
         RtsCampManager campManager = RtsCampManager.Instance;
 
-        if (!peerVisualOnly
-            && campManager != null
+        if (campManager != null
             && retreatPhase == RetreatPhase.ToCamp
             && campManager.HasReachedCampCenter(transform.position, faction))
         {
@@ -1379,7 +1458,7 @@ public class TroopCombat : MonoBehaviour
                 : RetreatPhase.ToCamp;
             if (motor != null)
             {
-                motor.MoveTo(GetRetreatDestination(campManager));
+                IssueRetreatMoveTo(GetRetreatDestination(campManager));
             }
         }
         else if (campManager != null && retreatPhase == RetreatPhase.ToGateInside && campManager.IsAtGateInside(transform.position, faction))
@@ -1387,7 +1466,7 @@ public class TroopCombat : MonoBehaviour
             retreatPhase = RetreatPhase.ToCamp;
             if (motor != null)
             {
-                motor.MoveTo(campManager.GetCampCenter(faction));
+                IssueRetreatMoveTo(campManager.GetCampCenter(faction));
             }
         }
         else if (motor != null && campManager != null)
@@ -1396,28 +1475,22 @@ public class TroopCombat : MonoBehaviour
             {
                 if (!motor.HasDestination && !motor.IsBlockedBySolidObstacle)
                 {
-                    motor.MoveTo(GetRetreatDestination(campManager));
+                    IssueRetreatMoveTo(GetRetreatDestination(campManager));
                 }
                 else if (motor.IsBlockedBySolidObstacle || motor.IsStuck)
                 {
-                    if (!motor.TryRequestDetour())
-                    {
-                        motor.MoveTo(GetRetreatDestination(campManager));
-                    }
+                    TryRecoverRetreatMovement(campManager);
                 }
             }
             else if (!campManager.HasReachedCampCenter(transform.position, faction)
                 && !motor.HasDestination
                 && !motor.IsBlockedBySolidObstacle)
             {
-                motor.MoveTo(campManager.GetCampCenter(faction));
+                IssueRetreatMoveTo(campManager.GetCampCenter(faction));
             }
             else if (motor.IsBlockedBySolidObstacle || motor.IsStuck)
             {
-                if (!motor.TryRequestDetour())
-                {
-                    motor.MoveTo(campManager.GetCampCenter(faction));
-                }
+                TryRecoverRetreatMovement(campManager);
             }
         }
 
@@ -1426,10 +1499,7 @@ public class TroopCombat : MonoBehaviour
             nextRetreatDestinationRefreshTime = Time.time + retreatDestinationRefreshInterval;
             if (motor.IsBlockedBySolidObstacle || motor.IsStuck)
             {
-                if (!motor.TryRequestDetour())
-                {
-                    UpdateRetreatDestination();
-                }
+                TryRecoverRetreatMovement(campManager);
             }
             else
             {
@@ -1437,7 +1507,7 @@ public class TroopCombat : MonoBehaviour
             }
         }
 
-        if (!peerVisualOnly && Time.time >= invulnerableUntil && IsInterceptedByEnemy())
+        if (Time.time >= invulnerableUntil && IsInterceptedByEnemy())
         {
             PermanentDestroy();
         }
@@ -1464,7 +1534,96 @@ public class TroopCombat : MonoBehaviour
             return;
         }
 
-        motor.MoveTo(GetRetreatDestination(campManager));
+        IssueRetreatMoveTo(GetRetreatDestination(campManager));
+    }
+
+    private void IssueRetreatMoveTo(Vector3 destination)
+    {
+        if (motor == null)
+        {
+            return;
+        }
+
+        motor.MoveTo(destination);
+        BroadcastOwnedRetreatDestination(destination);
+    }
+
+    private void BroadcastOwnedRetreatDestination(Vector3 destination)
+    {
+        if (UsesRemoteCombatAuthority() || CurrentState != State.Retreat)
+        {
+            return;
+        }
+
+        SiegePvpSession session = SiegePvpSession.Instance;
+        if (session != null && session.IsMatchRunning)
+        {
+            session.NotifyRetreatDestinationFromAuthority(motor, destination);
+        }
+    }
+
+    private void TryRecoverRetreatMovement(RtsCampManager campManager)
+    {
+        if (motor == null || campManager == null)
+        {
+            return;
+        }
+
+        if (Time.time < nextRetreatUnstuckTime)
+        {
+            return;
+        }
+
+        nextRetreatUnstuckTime = Time.time + 0.3f;
+
+        if (motor.TryEscapeFromSolid())
+        {
+            return;
+        }
+
+        if (motor.TryRequestDetour())
+        {
+            return;
+        }
+
+        Vector3 goal = GetRetreatDestination(campManager);
+        Vector3 recovery = GetRetreatRecoveryDestination(goal);
+        if (!motor.IsWorldPositionClear(recovery))
+        {
+            // Try a few more offsets before committing to a blocked point.
+            for (int i = 0; i < 4; i++)
+            {
+                recovery = GetRetreatRecoveryDestination(goal);
+                if (motor.IsWorldPositionClear(recovery))
+                {
+                    break;
+                }
+            }
+        }
+
+        IssueRetreatMoveTo(recovery);
+    }
+
+    private Vector3 GetRetreatRecoveryDestination(Vector3 goal)
+    {
+        Vector3 toGoal = goal - transform.position;
+        toGoal.y = 0f;
+        if (toGoal.sqrMagnitude < 0.0001f)
+        {
+            toGoal = transform.forward;
+        }
+
+        Vector3 forward = toGoal.normalized;
+        Vector3 tangent = new Vector3(-forward.z, 0f, forward.x);
+        float[] sideMultipliers = { 1f, -1f, 1.5f, -1.5f, 2.5f, -2.5f, 3.5f, -3.5f };
+        int sideIndex = retreatUnstuckAttemptIndex % sideMultipliers.Length;
+        retreatUnstuckAttemptIndex++;
+
+        Vector3 recovery = transform.position
+            + tangent * (4f * sideMultipliers[sideIndex])
+            + forward * 1.25f;
+        recovery.y = transform.position.y;
+        return recovery;
     }
 
     private Vector3 GetRetreatDestination(RtsCampManager campManager)
@@ -1494,7 +1653,12 @@ public class TroopCombat : MonoBehaviour
 
     private void UpdateTroopFacing()
     {
-        if (troopVisuals.Count == 0)
+        if (troopVisuals.Count == 0 || isPermanentlyEliminated || CurrentState == State.Dead)
+        {
+            return;
+        }
+
+        if (networkOwnerPoseHalted && UsesRemoteCombatAuthority())
         {
             return;
         }
@@ -1510,23 +1674,57 @@ public class TroopCombat : MonoBehaviour
             return;
         }
 
-        Vector3 facingDirection = motor.MoveDirection;
-        facingDirection.y = 0f;
+        Vector3 facingDirection;
+        if (CurrentState == State.Retreat)
+        {
+            // Face the retreat goal, not slide/escape MoveDirection. Cut-off recovery was
+            // reversing MoveDirection and spinning the whole remnant before they disappear.
+            facingDirection = GetRetreatFacingDirection();
+        }
+        else
+        {
+            facingDirection = motor.MoveDirection;
+            facingDirection.y = 0f;
+            if (facingDirection.sqrMagnitude < 0.0001f)
+            {
+                Vector3 regimentDelta = transform.position - lastRegimentPosition;
+                regimentDelta.y = 0f;
+                if (regimentDelta.sqrMagnitude < MinimumFacingMovementDistance * MinimumFacingMovementDistance)
+                {
+                    lastRegimentPosition = transform.position;
+                    return;
+                }
+
+                facingDirection = regimentDelta.normalized;
+            }
+        }
+
         if (facingDirection.sqrMagnitude < 0.0001f)
         {
-            Vector3 regimentDelta = transform.position - lastRegimentPosition;
-            regimentDelta.y = 0f;
-            if (regimentDelta.sqrMagnitude < MinimumFacingMovementDistance * MinimumFacingMovementDistance)
-            {
-                lastRegimentPosition = transform.position;
-                return;
-            }
-
-            facingDirection = regimentDelta.normalized;
+            lastRegimentPosition = transform.position;
+            return;
         }
 
         lastRegimentPosition = transform.position;
         ApplyFacingToTroopVisuals(GetTroopFacingRotation(facingDirection));
+    }
+
+    private Vector3 GetRetreatFacingDirection()
+    {
+        RtsCampManager campManager = RtsCampManager.Instance;
+        if (campManager != null)
+        {
+            Vector3 toGoal = GetRetreatDestination(campManager) - transform.position;
+            toGoal.y = 0f;
+            if (toGoal.sqrMagnitude > 0.0001f)
+            {
+                return toGoal;
+            }
+        }
+
+        Vector3 fallback = motor != null ? motor.MoveDirection : transform.forward;
+        fallback.y = 0f;
+        return fallback;
     }
 
     private void EnsureFormationRootLevel()
@@ -1547,6 +1745,11 @@ public class TroopCombat : MonoBehaviour
 
     private void ApplyFacingToTroopVisuals(Quaternion facing)
     {
+        if (isPermanentlyEliminated || CurrentState == State.Dead)
+        {
+            return;
+        }
+
         EnsureFormationRootLevel();
 
         // Yaw each soldier in local space only — never rotate the regiment root.
@@ -1637,6 +1840,8 @@ public class TroopCombat : MonoBehaviour
         currentTarget = null;
         invulnerableUntil = Time.time + retreatInvulnerabilityDuration;
         nextRetreatDestinationRefreshTime = 0f;
+        nextRetreatUnstuckTime = 0f;
+        retreatUnstuckAttemptIndex = 0;
 
         RtsCampManager campManager = RtsCampManager.Instance;
         retreatPhase = campManager != null && campManager.HasGate(faction)
@@ -1651,6 +1856,7 @@ public class TroopCombat : MonoBehaviour
         }
 
         SyncTroopVisualsToHealth(forceMinimum: true);
+        retreatVisualsSyncedToDefeat = true;
         SetFlagHolderDefeatedVisual();
         RegimentEnteredRetreat?.Invoke(this);
         NotifyOwnedCombatAuthorityChanged();
@@ -1737,6 +1943,15 @@ public class TroopCombat : MonoBehaviour
             motor.Stop();
             motor.CanReceiveCommands = false;
             motor.MoveSpeedMultiplier = 1f;
+
+            if (!UsesRemoteCombatAuthority())
+            {
+                SiegePvpSession session = SiegePvpSession.Instance;
+                if (session != null && session.IsMatchRunning)
+                {
+                    session.NotifyStopFromCommander(motor);
+                }
+            }
         }
 
         NotifyOwnedCombatAuthorityChanged();
@@ -1808,25 +2023,52 @@ public class TroopCombat : MonoBehaviour
         SyncTroopVisualsToHealth();
     }
 
+    private void ApplyPermanentDestroyFromNetworkAuthority()
+    {
+        if (!isPermanentlyEliminated && CurrentState != State.Dead)
+        {
+            PermanentDestroy(null);
+            return;
+        }
+
+        if (retreatDeathDisappearCoroutine != null)
+        {
+            return;
+        }
+
+        if (!gameObject.activeSelf)
+        {
+            return;
+        }
+
+        if (HasActiveTroopVisuals())
+        {
+            retreatDeathDisappearCoroutine = StartCoroutine(PlayRetreatDeathDisappearSequence());
+            return;
+        }
+
+        if (!isPermanentlyEliminated)
+        {
+            isPermanentlyEliminated = true;
+            CurrentState = State.Dead;
+        }
+
+        CompletePermanentDestroy();
+    }
+
     private void ApplyActiveStateFromNetworkAuthority(float authorityHealth)
     {
-        if (CurrentState == State.Regroup || CurrentState == State.Retreat || isPermanentlyEliminated)
+        if (isPermanentlyEliminated || CurrentState == State.Dead)
         {
-            isPermanentlyEliminated = false;
-            if (retreatDeathDisappearCoroutine != null)
-            {
-                StopCoroutine(retreatDeathDisappearCoroutine);
-                retreatDeathDisappearCoroutine = null;
-            }
+            return;
+        }
 
-            if (!gameObject.activeSelf)
-            {
-                gameObject.SetActive(true);
-            }
-
+        if (CurrentState == State.Regroup || CurrentState == State.Retreat)
+        {
             CurrentState = State.Idle;
             currentTarget = null;
             invulnerableUntil = 0f;
+            retreatVisualsSyncedToDefeat = false;
             RestoreFlagHolderVisual();
         }
 
@@ -1900,41 +2142,48 @@ public class TroopCombat : MonoBehaviour
         float authoritySnapDistance = 2.5f,
         bool authorityRetreatInvulnerable = false)
     {
-        // Retreat uses HP=0 while still alive — only state code 2 means eliminated.
-        bool authorityDead = authorityStateCode >= 2;
-        bool authorityRegrouping = authorityStateCode == 3;
+        // Retreat uses HP=0 while still alive — only state code 2 means eliminated (regroup is 3).
+        const int networkCombatStateDead = 2;
+        const int networkCombatStateRegroup = 3;
+        bool authorityDead = authorityStateCode == networkCombatStateDead;
+        bool authorityRegrouping = authorityStateCode == networkCombatStateRegroup;
         bool authorityRetreating = authorityStateCode == 1;
 
         if (authorityDead)
         {
-            if (!isPermanentlyEliminated && CurrentState != State.Dead)
-            {
-                PermanentDestroy(null);
-            }
+            ApplyNetworkAuthorityPosition(worldPosition, authoritySnapDistance, hardSnap: true);
+            ApplyPermanentDestroyFromNetworkAuthority();
+            return;
+        }
 
+        if (isPermanentlyEliminated || CurrentState == State.Dead)
+        {
             ApplyNetworkAuthorityPosition(worldPosition, authoritySnapDistance, hardSnap: true);
             return;
         }
 
-        RestoreFromNetworkAuthorityIfAlive(authorityStateCode);
-
         if (authorityRegrouping)
         {
             CompleteRegroupFromNetworkAuthority(authorityHealth);
-            ApplyNetworkAuthorityPosition(worldPosition, authoritySnapDistance, hardSnap: false);
+            ApplyNetworkAuthorityPosition(worldPosition, authoritySnapDistance, hardSnap: true);
             return;
         }
 
         if (authorityRetreating)
         {
-            if (CurrentState != State.Retreat && CurrentState != State.Dead && CurrentState != State.Regroup)
+            if (CurrentState != State.Retreat && CurrentState != State.Regroup)
             {
                 EnterRetreatFromNetworkAuthority();
             }
 
             currentHealth = 0f;
-            SyncTroopVisualsToHealth(forceMinimum: true);
-            SetFlagHolderDefeatedVisual();
+            if (!retreatVisualsSyncedToDefeat)
+            {
+                SyncTroopVisualsToHealth(forceMinimum: true);
+                SetFlagHolderDefeatedVisual();
+                retreatVisualsSyncedToDefeat = true;
+            }
+
             ClearLocalAggressorsTargetingMe();
 
             if (authorityRetreatInvulnerable)
@@ -1950,54 +2199,6 @@ public class TroopCombat : MonoBehaviour
         ApplyNetworkAuthorityPosition(worldPosition, authoritySnapDistance, hardSnap: false);
     }
 
-    private void RestoreFromNetworkAuthorityIfAlive(int authorityStateCode)
-    {
-        if (authorityStateCode >= 2)
-        {
-            return;
-        }
-
-        if (!isPermanentlyEliminated && CurrentState != State.Dead)
-        {
-            return;
-        }
-
-        isPermanentlyEliminated = false;
-        if (retreatDeathDisappearCoroutine != null)
-        {
-            StopCoroutine(retreatDeathDisappearCoroutine);
-            retreatDeathDisappearCoroutine = null;
-        }
-
-        if (!gameObject.activeSelf)
-        {
-            gameObject.SetActive(true);
-        }
-
-        for (int i = 0; i < troopVisuals.Count; i++)
-        {
-            TroopVisualInstance troopVisual = troopVisuals[i];
-            if (troopVisual.Instance != null && !troopVisual.Instance.activeSelf)
-            {
-                troopVisual.Instance.SetActive(true);
-            }
-        }
-
-        activeTroopVisualCount = 0;
-        for (int i = 0; i < troopVisuals.Count; i++)
-        {
-            TroopVisualInstance troopVisual = troopVisuals[i];
-            if (troopVisual.Instance != null && troopVisual.Instance.activeSelf)
-            {
-                activeTroopVisualCount++;
-            }
-        }
-
-        CurrentState = State.Idle;
-        currentTarget = null;
-        invulnerableUntil = 0f;
-    }
-
     private void EnterRetreatFromNetworkAuthority()
     {
         if (UsesRemoteCombatAuthority())
@@ -2007,6 +2208,8 @@ public class TroopCombat : MonoBehaviour
             currentTarget = null;
             invulnerableUntil = Time.time + retreatInvulnerabilityDuration;
             nextRetreatDestinationRefreshTime = 0f;
+            nextRetreatUnstuckTime = 0f;
+            retreatUnstuckAttemptIndex = 0;
 
             RtsCampManager campManager = RtsCampManager.Instance;
             retreatPhase = campManager != null && campManager.HasGate(faction)
@@ -2017,11 +2220,10 @@ public class TroopCombat : MonoBehaviour
             {
                 motor.CanReceiveCommands = false;
                 motor.MoveSpeedMultiplier = retreatMoveSpeedMultiplier;
-                UpdateRetreatDestination();
+                motor.Stop();
             }
 
-            SyncTroopVisualsToHealth(forceMinimum: true);
-            SetFlagHolderDefeatedVisual();
+            SetNetworkOwnerPoseHalted(false);
             ClearLocalAggressorsTargetingMe();
             return;
         }
@@ -2052,12 +2254,23 @@ public class TroopCombat : MonoBehaviour
     {
         if (motor != null)
         {
-            if (!hardSnap && motor.HasActivePath)
+            bool remoteVisual = UsesRemoteCombatAuthority();
+            if (remoteVisual && networkOwnerPoseHalted)
+            {
+                motor.SnapNetworkPosition(worldPosition);
+                NotifyNetworkPositionApplied(hardSnap: true);
+                return;
+            }
+
+            if (!hardSnap && (motor.HasActivePath || motor.HasDestination))
             {
                 Vector3 delta = worldPosition - transform.position;
                 delta.y = 0f;
                 float drift = delta.magnitude;
-                if (drift < Mathf.Max(0.5f, authoritySnapDistance * 0.5f))
+                float driftThreshold = remoteVisual
+                    ? Mathf.Max(1.25f, authoritySnapDistance * 0.75f)
+                    : Mathf.Max(0.5f, authoritySnapDistance * 0.5f);
+                if (drift < driftThreshold)
                 {
                     return;
                 }
@@ -2074,6 +2287,11 @@ public class TroopCombat : MonoBehaviour
                     transform.rotation,
                     forceAuthority: true,
                     authoritySnapDistance: authoritySnapDistance);
+            }
+
+            if (remoteVisual)
+            {
+                NotifyNetworkPositionApplied(hardSnap);
             }
 
             return;
@@ -2301,6 +2519,7 @@ public class TroopCombat : MonoBehaviour
         }
 
         isPermanentlyEliminated = true;
+        retreatVisualsSyncedToDefeat = false;
         CurrentState = State.Dead;
         currentTarget = null;
 
@@ -2310,6 +2529,9 @@ public class TroopCombat : MonoBehaviour
             motor.CanReceiveCommands = false;
             motor.MoveSpeedMultiplier = 1f;
         }
+
+        // Keep soldiers facing whatever they had — only level the root, never re-yaw visuals.
+        EnsureFormationRootLevel();
 
         if (retreatDeathDisappearCoroutine != null)
         {

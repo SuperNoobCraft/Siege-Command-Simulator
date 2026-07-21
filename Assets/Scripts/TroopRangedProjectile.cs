@@ -12,7 +12,8 @@ public class TroopRangedProjectile : MonoBehaviour
     private Vector3 targetPosition;
     private float travelSpeed;
     private float arcHeight;
-    private float traveledDistance;
+    private float flightDuration;
+    private float flightElapsed;
     private float totalDistance;
     private Vector3 previousPosition;
     private bool isPlayerHazard;
@@ -82,9 +83,12 @@ public class TroopRangedProjectile : MonoBehaviour
         targetPosition = target;
         travelSpeed = Mathf.Max(0.01f, speed);
         this.arcHeight = Mathf.Max(0f, arcHeight);
-        traveledDistance = 0f;
+        flightElapsed = 0f;
         totalDistance = GetHorizontalDistance(startPosition, targetPosition);
         totalDistance = Mathf.Max(0.01f, totalDistance);
+        // Higher arcs travel a longer 3D path, so they take slightly longer to land.
+        float pathLength = EstimateArcPathLength(totalDistance, this.arcHeight);
+        flightDuration = Mathf.Max(0.05f, pathLength / travelSpeed);
         previousPosition = startPosition;
         transform.position = startPosition;
         UpdateFacing(startPosition, GetPositionAtProgress(Mathf.Min(0.001f, 1f)));
@@ -122,8 +126,8 @@ public class TroopRangedProjectile : MonoBehaviour
             return;
         }
 
-        traveledDistance += travelSpeed * Time.deltaTime;
-        float progress = Mathf.Clamp01(traveledDistance / totalDistance);
+        flightElapsed += Time.deltaTime;
+        float progress = Mathf.Clamp01(flightElapsed / flightDuration);
         Vector3 currentPosition = GetPositionAtProgress(progress);
         if (!IsValidPosition(currentPosition))
         {
@@ -443,6 +447,28 @@ public class TroopRangedProjectile : MonoBehaviour
         Vector3 linearPosition = Vector3.Lerp(startPosition, targetPosition, progress);
         linearPosition.y += arcHeight * 4f * progress * (1f - progress);
         return linearPosition;
+    }
+
+    /// <summary>
+    /// Arc length of the parabolic path used by <see cref="GetPositionAtProgress"/>
+    /// (horizontal span L, peak offset arcHeight). Flat shots (h≈0) return L.
+    /// </summary>
+    private static float EstimateArcPathLength(float horizontalDistance, float height)
+    {
+        float length = Mathf.Max(0.01f, horizontalDistance);
+        float h = Mathf.Max(0f, height);
+        if (h < 0.0001f)
+        {
+            return length;
+        }
+
+        // Path: x=L*t, y=4h*t*(1-t). Length = ∫₀¹ sqrt(L² + (4h(1-2t))²) dt
+        // = ∫₀¹ sqrt(L² + (4h u)²) du with u from 0..1.
+        float a = length;
+        float b = 4f * h;
+        float root = Mathf.Sqrt(a * a + b * b);
+        float path = 0.5f * (root + ((a * a) / b) * Mathf.Log((b + root) / a));
+        return Mathf.Max(length, path);
     }
 
     private void UpdateFacing(Vector3 from, Vector3 to)

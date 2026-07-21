@@ -339,6 +339,15 @@ public class VotanicWandRtsCommander : MonoBehaviour
             return controllableFaction == TroopCombat.Faction.Friendly;
         }
 
+        if (SiegeMatchSettings.IsSiegePvpMode)
+        {
+            SiegePvpSession session = SiegePvpSession.Instance;
+            if (session != null && session.IsMatchRunning && !session.IsLocallyOwnedTroop(combat))
+            {
+                return false;
+            }
+        }
+
         return combat.TroopFaction == controllableFaction;
     }
 

@@ -21,16 +21,18 @@ public static class RtsGroundUtility
         float yOffset = 0.08f,
         float preferredY = float.NaN)
     {
-        float prefer = float.IsNaN(preferredY) ? point.y : preferredY;
+        // Prefer topmost walkable surface under XZ so UI/paths sit on the field even if
+        // the caller is slightly underground or between overlapping meshes.
+        float prefer = float.IsNaN(preferredY) ? float.NaN : preferredY;
         if (TrySampleGroundY(
                 point.x,
                 point.z,
                 DefaultGroundMask,
-                Mathf.Max(256f, prefer + 64f),
+                Mathf.Max(256f, (float.IsNaN(prefer) ? point.y : prefer) + 64f),
                 yOffset,
                 out float groundY,
                 preferredY: prefer,
-                maxVerticalSnap: 64f))
+                maxVerticalSnap: float.IsNaN(prefer) ? 512f : 64f))
         {
             return new Vector3(point.x, groundY, point.z);
         }
@@ -221,20 +223,22 @@ public static class RtsGroundUtility
             {
                 float verticalDelta = hitY - preferredY;
                 float absDelta = Mathf.Abs(verticalDelta);
-                // Still grounded: stick to the surface near current height.
+                // Stick to the surface nearest current height. Do NOT bias toward lower
+                // hits — that sank units into slopes when multiple ground meshes overlap.
                 if (absDelta <= maxVerticalSnap)
                 {
-                    // Prefer the walkable surface at/below the regiment — not a ledge above.
-                    score = absDelta + (verticalDelta > 0.05f ? 2f : 0f);
+                    score = absDelta;
                 }
                 else if (preferredY > hitY + maxVerticalSnap)
                 {
+                    // Preferred is far above this hit (high drop) — fall onto topmost later.
                     score = 1000f + hits[i].distance;
                 }
                 else
                 {
-                    // Preferred is below this hit (ceiling/overhang) — skip unless nothing else.
-                    score = 5000f + absDelta;
+                    // Preferred is below this hit (unit sunk under the surface) — treat as
+                    // climb-back onto the topmost nearby surface, not as a ceiling skip.
+                    score = 50f + hits[i].distance;
                 }
             }
             else

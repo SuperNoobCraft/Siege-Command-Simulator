@@ -271,8 +271,29 @@ public class RtsUnitHighlight : MonoBehaviour
         wireframeOutline.numCornerVertices = 4;
         wireframeOutline.numCapVertices = 4;
         wireframeOutline.positionCount = cachedLocalFootprintCorners.Length;
-        wireframeOutline.sharedMaterial = new Material(Shader.Find("Sprites/Default"));
+        wireframeOutline.sharedMaterial = CreateOutlineMaterial();
         RefreshProjectedOutlinePositions();
+    }
+
+    private static Material CreateOutlineMaterial()
+    {
+        Shader shader = Shader.Find("Sprites/Default");
+        if (shader == null)
+        {
+            shader = Shader.Find("Unlit/Color");
+        }
+
+        if (shader == null)
+        {
+            shader = Shader.Find("Hidden/Internal-Colored");
+        }
+
+        if (shader == null)
+        {
+            shader = Shader.Find("Legacy Shaders/Particles/Alpha Blended Premultiply");
+        }
+
+        return shader != null ? new Material(shader) : new Material(Shader.Find("Standard"));
     }
 
     private void RefreshProjectedOutlinePositions()
@@ -293,7 +314,12 @@ public class RtsUnitHighlight : MonoBehaviour
             Vector3 world = source.TransformPoint(cachedLocalFootprintCorners[i]);
             if (projectOutlineOntoGround)
             {
-                world = RtsGroundUtility.ProjectPointOntoGround(world, outlineGroundOffset, preferredY: transform.position.y);
+                // No preferredY — always sit on the topmost walkable surface under the corner.
+                world = RtsGroundUtility.ProjectPointOntoGround(world, outlineGroundOffset);
+            }
+            else
+            {
+                world.y = transform.position.y + outlineGroundOffset;
             }
 
             projectedWorldPositions[i] = world;
