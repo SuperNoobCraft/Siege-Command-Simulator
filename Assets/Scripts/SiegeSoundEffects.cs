@@ -67,6 +67,18 @@ public class SiegeSoundEffects : MonoBehaviour
         maxDistance = 22f
     };
 
+    [Tooltip("Looping crackle that rides flaming commander arrows. Keep quiet and short-range for a pass-by whoosh.")]
+    [SerializeField] private SiegeSpatialSoundSettings flamingArrowPassby = new SiegeSpatialSoundSettings
+    {
+        volume = 0.22f,
+        minDistance = 0.6f,
+        maxDistance = 12f,
+        spatialBlend = 1f
+    };
+
+    [Tooltip("How long the flame sound keeps fading after a flaming arrow despawns / misses.")]
+    [SerializeField, Min(0.05f)] private float flamingArrowDespawnFadeSeconds = 1.5f;
+
     [Header("Pooling")]
     [SerializeField, Min(4)] private int pooledSourceCount = 20;
 
@@ -74,6 +86,98 @@ public class SiegeSoundEffects : MonoBehaviour
     private Transform poolRoot;
 
     public SiegeSpatialSoundSettings MarchingSettings => marching;
+
+    public AudioClip FlamingArrowPassbyClip => flamingArrowPassby != null ? flamingArrowPassby.clip : null;
+
+    public SiegeSpatialSoundSettings FlamingArrowPassbySettings => flamingArrowPassby;
+
+    public float FlamingArrowDespawnFadeSeconds => Mathf.Max(0.05f, flamingArrowDespawnFadeSeconds);
+
+    /// <summary>
+    /// Continues an already-playing flaming-arrow AudioSource after the arrow is destroyed.
+    /// Pass a detached host (not created from OnDestroy).
+    /// </summary>
+    public void FadeOutDetachedFlamingArrow(AudioSource detachedSource)
+    {
+        if (detachedSource == null)
+        {
+            return;
+        }
+
+        if (!isActiveAndEnabled || !Application.isPlaying)
+        {
+            Destroy(detachedSource.gameObject);
+            return;
+        }
+
+        EnsurePool();
+        Transform parent = poolRoot != null ? poolRoot : transform;
+        detachedSource.transform.SetParent(parent, worldPositionStays: true);
+        detachedSource.name = "FlamingArrowPassbyLinger";
+
+        float startVolume = detachedSource.volume;
+        if (startVolume <= 0.001f && flamingArrowPassby != null)
+        {
+            startVolume = Mathf.Max(0.05f, flamingArrowPassby.volume);
+            detachedSource.volume = startVolume;
+        }
+
+        StartCoroutine(FadeOutAndDestroy(
+            detachedSource.gameObject,
+            detachedSource,
+            startVolume,
+            FlamingArrowDespawnFadeSeconds));
+    }
+
+    private IEnumerator FadeOutAndDestroy(GameObject lingerObject, AudioSource lingerSource, float startVolume, float fadeSeconds)
+    {
+        float elapsed = 0f;
+        float duration = Mathf.Max(0.05f, fadeSeconds);
+        while (elapsed < duration && lingerSource != null)
+        {
+            elapsed += Time.unscaledDeltaTime;
+            float t = Mathf.Clamp01(elapsed / duration);
+            float eased = 1f - ((1f - t) * (1f - t));
+            lingerSource.volume = startVolume * (1f - eased);
+            yield return null;
+        }
+
+        if (lingerSource != null)
+        {
+            lingerSource.Stop();
+        }
+
+        if (lingerObject != null)
+        {
+            Destroy(lingerObject);
+        }
+    }
+
+    private void CleanupFlamingArrowLingers()
+    {
+        if (poolRoot == null)
+        {
+            return;
+        }
+
+        for (int i = poolRoot.childCount - 1; i >= 0; i--)
+        {
+            Transform child = poolRoot.GetChild(i);
+            if (child == null || !child.name.StartsWith("FlamingArrowPassbyLinger", System.StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (Application.isPlaying)
+            {
+                Destroy(child.gameObject);
+            }
+            else
+            {
+                DestroyImmediate(child.gameObject);
+            }
+        }
+    }
 
     private void Awake()
     {
@@ -88,10 +192,18 @@ public class SiegeSoundEffects : MonoBehaviour
 
     private void OnDestroy()
     {
+        CleanupFlamingArrowLingers();
         if (Instance == this)
         {
             Instance = null;
         }
+    }
+
+    private void OnDisable()
+    {
+        SiegeCommanderArrowHealth.CommanderHitRegistered -= HandleCommanderHit;
+        TroopCombat.MeleeAttackPerformed -= HandleMeleeAttack;
+        CleanupFlamingArrowLingers();
     }
 
     private void OnEnable()
@@ -99,12 +211,6 @@ public class SiegeSoundEffects : MonoBehaviour
         SiegeCommanderArrowHealth.CommanderHitRegistered += HandleCommanderHit;
         TroopCombat.MeleeAttackPerformed += HandleMeleeAttack;
         EnsureRegimentAudioComponents();
-    }
-
-    private void OnDisable()
-    {
-        SiegeCommanderArrowHealth.CommanderHitRegistered -= HandleCommanderHit;
-        TroopCombat.MeleeAttackPerformed -= HandleMeleeAttack;
     }
 
     public void PlayArrowImpact(Vector3 position)
@@ -133,28 +239,33 @@ public class SiegeSoundEffects : MonoBehaviour
 
     public void PlayCannonShot(Vector3 position)
     {
-        PlayAtPosition(cannonShot, position);
+        PlayAtPosition(ResolveOrResources(cannonShot, "SoundEffects/cannonShot"), position);
     }
 
     public void PlayCannonShotAtOrigins(Transform originParent)
     {
-        PlayAtOrigins(cannonShot, originParent);
+        PlayAtOrigins(ResolveOrResources(cannonShot, "SoundEffects/cannonShot"), originParent);
     }
 
     public void PlayCannonLand(Vector3 position)
     {
-        SiegeSpatialSoundSettings settings = explosion.clip != null ? explosion : cannonShot;
+        SiegeSpatialSoundSettings settings = ResolveOrResources(explosion, "SoundEffects/explosion");
+        if (settings.clip == null)
+        {
+            settings = ResolveOrResources(cannonShot, "SoundEffects/cannonShot");
+        }
+
         PlayAtPosition(settings, position);
     }
 
     public void PlayExplosion(Vector3 position)
     {
-        PlayAtPosition(explosion, position);
+        PlayAtPosition(ResolveOrResources(explosion, "SoundEffects/explosion"), position);
     }
 
     public void PlayExplosionAtOrigins(Transform originParent)
     {
-        PlayAtOrigins(explosion, originParent);
+        PlayAtOrigins(ResolveOrResources(explosion, "SoundEffects/explosion"), originParent);
     }
 
     public void PlayMeleeCombat(Vector3 position)
@@ -210,10 +321,25 @@ public class SiegeSoundEffects : MonoBehaviour
             return;
         }
 
-        for (int i = 0; i < originParent.childCount; i++)
+        // Cinematic parents can have dozens of VFX children — playing at every child
+        // exhausts the spatial pool and is needlessly loud. Cap to a few origins.
+        const int maxOrigins = 4;
+        int played = 0;
+        for (int i = 0; i < originParent.childCount && played < maxOrigins; i++)
         {
             Transform child = originParent.GetChild(i);
+            if (child == null || !child.gameObject.activeInHierarchy)
+            {
+                continue;
+            }
+
             PlayAtPosition(settings, child.position);
+            played++;
+        }
+
+        if (played == 0)
+        {
+            PlayAtPosition(settings, originParent.position);
         }
     }
 
@@ -227,6 +353,11 @@ public class SiegeSoundEffects : MonoBehaviour
         PooledSpatialSource pooled = GetAvailablePooledSource();
         if (pooled == null)
         {
+            // Pool busy — still play a one-shot so cannon/explosion never go fully silent.
+            AudioSource.PlayClipAtPoint(
+                settings.clip,
+                position,
+                Mathf.Clamp(settings.volume, 0f, 1f));
             return;
         }
 
@@ -235,6 +366,34 @@ public class SiegeSoundEffects : MonoBehaviour
         ApplySpatialSettings(pooled.Source, settings);
         pooled.Source.PlayOneShot(settings.clip, settings.volume);
         StartCoroutine(ReturnSourceWhenFinished(pooled, settings.clip.length));
+    }
+
+    private static SiegeSpatialSoundSettings ResolveOrResources(SiegeSpatialSoundSettings settings, string resourcesPath)
+    {
+        if (settings == null)
+        {
+            settings = new SiegeSpatialSoundSettings();
+        }
+
+        if (settings.clip != null)
+        {
+            return settings;
+        }
+
+        AudioClip fallback = Resources.Load<AudioClip>(resourcesPath);
+        if (fallback == null)
+        {
+            return settings;
+        }
+
+        return new SiegeSpatialSoundSettings
+        {
+            clip = fallback,
+            volume = settings.volume > 0.01f ? settings.volume : 1f,
+            minDistance = Mathf.Max(0.1f, settings.minDistance),
+            maxDistance = Mathf.Max(1f, settings.maxDistance),
+            spatialBlend = settings.spatialBlend
+        };
     }
 
     private static void ApplySpatialSettings(AudioSource source, SiegeSpatialSoundSettings settings)

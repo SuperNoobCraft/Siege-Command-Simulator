@@ -43,7 +43,7 @@ public class SiegeGameManager : MonoBehaviour
     [SerializeField] private bool pauseTimeOnMatchEnd = true;
     [SerializeField, Min(0f)] private float matchEndPauseDelay = 1.25f;
     [Tooltip("Ignore wand/UI presses briefly after soft restart so the restart click cannot auto-pick a mode.")]
-    [SerializeField, Min(0f)] private float postRestartInputCooldownSeconds = 1.5f;
+    [SerializeField, Min(0f)] private float postRestartInputCooldownSeconds = 0.45f;
 
     [Header("Demo Mode")]
     [Tooltip("Troop movement speed multiplier while playing Demo (Full always uses 100%).")]
@@ -633,7 +633,7 @@ public class SiegeGameManager : MonoBehaviour
         {
             if (projectiles[i] != null)
             {
-                Destroy(projectiles[i].gameObject);
+                projectiles[i].Despawn();
             }
         }
     }

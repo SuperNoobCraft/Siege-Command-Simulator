@@ -75,7 +75,7 @@ public class TroopRangedProjectile : MonoBehaviour
         if (!IsValidPosition(start) || !IsValidPosition(target))
         {
             Debug.LogWarning("TroopRangedProjectile received an invalid start or target position.", this);
-            Destroy(gameObject);
+            Despawn();
             return;
         }
 
@@ -93,6 +93,7 @@ public class TroopRangedProjectile : MonoBehaviour
         transform.position = startPosition;
         UpdateFacing(startPosition, GetPositionAtProgress(Mathf.Min(0.001f, 1f)));
         isInitialized = true;
+        FlamingArrowPassbyAudio.EnsureOn(gameObject);
     }
 
     public void ConfigurePlayerHazard(
@@ -122,7 +123,7 @@ public class TroopRangedProjectile : MonoBehaviour
 
         if (!IsValidPosition(startPosition) || !IsValidPosition(targetPosition))
         {
-            Destroy(gameObject);
+            Despawn();
             return;
         }
 
@@ -131,7 +132,7 @@ public class TroopRangedProjectile : MonoBehaviour
         Vector3 currentPosition = GetPositionAtProgress(progress);
         if (!IsValidPosition(currentPosition))
         {
-            Destroy(gameObject);
+            Despawn();
             return;
         }
 
@@ -159,7 +160,7 @@ public class TroopRangedProjectile : MonoBehaviour
             }
 
             ReportCompleted(currentPosition, hitPlayer: false);
-            Destroy(gameObject);
+            Despawn();
         }
     }
 
@@ -193,7 +194,7 @@ public class TroopRangedProjectile : MonoBehaviour
             hasRegisteredHit = true;
             commanderHealth.RegisterArrowHit(hitPoint);
             ReportCompleted(hitPoint, hitPlayer: true);
-            Destroy(gameObject);
+            Despawn();
             return true;
         }
 
@@ -234,7 +235,7 @@ public class TroopRangedProjectile : MonoBehaviour
             hasRegisteredHit = true;
             commanderHealth.RegisterArrowHit(hitPoint);
             ReportCompleted(hitPoint, hitPlayer: true);
-            Destroy(gameObject);
+            Despawn();
             return;
         }
 
@@ -289,8 +290,14 @@ public class TroopRangedProjectile : MonoBehaviour
         hasRegisteredHit = true;
         commanderHealth.RegisterArrowHit(transform.position);
         ReportCompleted(transform.position, hitPlayer: true);
-        Destroy(gameObject);
+        Despawn();
         return true;
+    }
+
+    public void Despawn()
+    {
+        FlamingArrowPassbyAudio.DetachAndFadeAll(gameObject);
+        Destroy(gameObject);
     }
 
     private void ReportCompleted(Vector3 position, bool hitPlayer)

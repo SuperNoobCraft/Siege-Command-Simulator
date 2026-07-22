@@ -906,7 +906,20 @@ public class EnemyRegimentAI : MonoBehaviour
         unstuckAttemptIndex++;
 
         Vector3 recovery = gateOutside + side * (unstuckOffsetDistance * 0.35f * sideMultipliers[sideIndex]);
-        IssueMoveOrder(recovery);
+        // Prefer stepping forward through the open gate over lateral bounce-backs into camp.
+        recovery += throughGate * Mathf.Max(1.5f, unstuckForwardBias);
+
+        if (motor != null)
+        {
+            motor.TraverseGateCorridor = true;
+            if (motor.TryEscapeFromSolid())
+            {
+                IssueMoveOrder(recovery, forceRepath: true);
+                return;
+            }
+        }
+
+        IssueMoveOrder(recovery, forceRepath: true);
     }
 
     private void RefreshVision()

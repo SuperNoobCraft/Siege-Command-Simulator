@@ -17,7 +17,7 @@ public class SiegeDodgeArrowsSubmenu : MonoBehaviour
     [Tooltip("Hidden while the Dodge Arrows submenu is open (Demo, Full, PVP, etc.). Auto-filled if empty.")]
     [SerializeField] private SiegeDifficultyOption[] mainMenuOptions;
     [Tooltip("After opening/closing the submenu, ignore selection until the pointer is released and this lockout elapses.")]
-    [SerializeField, Min(0f)] private float submenuTransitionInputCooldownSeconds = 0.85f;
+    [SerializeField, Min(0f)] private float submenuTransitionInputCooldownSeconds = 0.3f;
 
     private bool submenuOpen;
     private float selectionUnlockTime;
@@ -239,7 +239,7 @@ public class SiegeDodgeArrowsSubmenu : MonoBehaviour
         }
 
         bool released = !SiegeVrInput.IsPointerHeld();
-        bool forceAfterTimeout = Time.unscaledTime >= selectionUnlockTime + 1.5f;
+        bool forceAfterTimeout = Time.unscaledTime >= selectionUnlockTime + 0.75f;
         if (!released && !forceAfterTimeout)
         {
             return;

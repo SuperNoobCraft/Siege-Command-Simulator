@@ -185,6 +185,9 @@ public class TroopCombat : MonoBehaviour
     private bool hasLockedRegimentGroundY;
     private float lockedRegimentGroundY;
     private Vector3 lockedRegimentGroundXZ;
+    private bool hasLockedDeathPose;
+    private Vector3 lockedDeathPosition;
+    private Quaternion lockedDeathRotation;
 
     public Faction TroopFaction => faction;
     public State CurrentState { get; private set; } = State.Idle;
@@ -275,6 +278,7 @@ public class TroopCombat : MonoBehaviour
 
         isPermanentlyEliminated = false;
         retreatVisualsSyncedToDefeat = false;
+        hasLockedDeathPose = false;
         currentHealth = Mathf.Max(1f, maxHealth);
         currentTarget = null;
         HoldsInCampUntilNextWave = false;
@@ -291,6 +295,7 @@ public class TroopCombat : MonoBehaviour
             motor.Stop();
             motor.CanReceiveCommands = motor.IsCommandUnit;
             motor.MoveSpeedMultiplier = SiegeMatchSettings.ActiveMoveSpeedScale;
+            motor.SuppressLocalSimulation = false;
         }
 
         RestoreFlagHolderVisual();
@@ -669,8 +674,10 @@ public class TroopCombat : MonoBehaviour
 
     private void LateUpdate()
     {
-        if (CurrentState == State.Dead)
+        if (isPermanentlyEliminated || CurrentState == State.Dead)
         {
+            // Hold the corpse rock-steady while troop visuals disappear one-by-one.
+            MaintainLockedDeathPose();
             return;
         }
 
@@ -2043,6 +2050,18 @@ public class TroopCombat : MonoBehaviour
 
         if (HasActiveTroopVisuals())
         {
+            if (!hasLockedDeathPose)
+            {
+                EnsureFormationRootLevel();
+                LockDeathPose();
+            }
+
+            if (motor != null)
+            {
+                motor.Stop();
+                motor.SuppressLocalSimulation = true;
+            }
+
             retreatDeathDisappearCoroutine = StartCoroutine(PlayRetreatDeathDisappearSequence());
             return;
         }
@@ -2151,14 +2170,18 @@ public class TroopCombat : MonoBehaviour
 
         if (authorityDead)
         {
-            ApplyNetworkAuthorityPosition(worldPosition, authoritySnapDistance, hardSnap: true);
+            // Freeze first on the peer, then start disappear — do not keep snapping pose mid-death.
+            if (!isPermanentlyEliminated && CurrentState != State.Dead)
+            {
+                ApplyNetworkAuthorityPosition(worldPosition, authoritySnapDistance, hardSnap: true);
+            }
+
             ApplyPermanentDestroyFromNetworkAuthority();
             return;
         }
 
         if (isPermanentlyEliminated || CurrentState == State.Dead)
         {
-            ApplyNetworkAuthorityPosition(worldPosition, authoritySnapDistance, hardSnap: true);
             return;
         }
 
@@ -2252,6 +2275,11 @@ public class TroopCombat : MonoBehaviour
 
     private void ApplyNetworkAuthorityPosition(Vector3 worldPosition, float authoritySnapDistance, bool hardSnap)
     {
+        if (isPermanentlyEliminated || CurrentState == State.Dead)
+        {
+            return;
+        }
+
         if (motor != null)
         {
             bool remoteVisual = UsesRemoteCombatAuthority();
@@ -2522,16 +2550,19 @@ public class TroopCombat : MonoBehaviour
         retreatVisualsSyncedToDefeat = false;
         CurrentState = State.Dead;
         currentTarget = null;
+        ClearIdleGroundLock();
 
         if (motor != null)
         {
             motor.Stop();
             motor.CanReceiveCommands = false;
             motor.MoveSpeedMultiplier = 1f;
+            motor.SuppressLocalSimulation = true;
         }
 
-        // Keep soldiers facing whatever they had — only level the root, never re-yaw visuals.
+        // Level pitch/roll, then hard-freeze the root for the whole disappear sequence.
         EnsureFormationRootLevel();
+        LockDeathPose();
 
         if (retreatDeathDisappearCoroutine != null)
         {
@@ -2550,6 +2581,52 @@ public class TroopCombat : MonoBehaviour
         NotifyOwnedCombatAuthorityChanged();
     }
 
+    private void LockDeathPose()
+    {
+        lockedDeathPosition = transform.position;
+        lockedDeathRotation = GetAuthoredLevelRotation();
+        transform.rotation = lockedDeathRotation;
+        if (troopVisualRoot != null)
+        {
+            troopVisualRoot.localRotation = Quaternion.identity;
+        }
+
+        hasLockedDeathPose = true;
+    }
+
+    private void MaintainLockedDeathPose()
+    {
+        if (!hasLockedDeathPose)
+        {
+            LockDeathPose();
+        }
+
+        if ((transform.position - lockedDeathPosition).sqrMagnitude > 0.0000001f)
+        {
+            transform.position = lockedDeathPosition;
+        }
+
+        if (Quaternion.Angle(transform.rotation, lockedDeathRotation) > 0.01f)
+        {
+            transform.rotation = lockedDeathRotation;
+        }
+
+        if (troopVisualRoot != null
+            && Quaternion.Angle(troopVisualRoot.localRotation, Quaternion.identity) > 0.01f)
+        {
+            troopVisualRoot.localRotation = Quaternion.identity;
+        }
+
+        if (motor != null)
+        {
+            motor.SuppressLocalSimulation = true;
+            if (motor.HasDestination || motor.HasActivePath)
+            {
+                motor.Stop();
+            }
+        }
+    }
+
     private bool HasActiveTroopVisuals()
     {
         for (int i = 0; i < troopVisuals.Count; i++)
@@ -2566,6 +2643,8 @@ public class TroopCombat : MonoBehaviour
 
     private IEnumerator PlayRetreatDeathDisappearSequence()
     {
+        MaintainLockedDeathPose();
+
         List<int> disappearOrder = BuildRandomRetreatDeathDisappearOrder();
         int disappearCount = disappearOrder.Count;
         if (disappearCount == 0)
@@ -2579,6 +2658,7 @@ public class TroopCombat : MonoBehaviour
         {
             for (int i = 0; i < disappearCount; i++)
             {
+                MaintainLockedDeathPose();
                 HideTroopVisualAt(disappearOrder[i]);
             }
         }
@@ -2587,6 +2667,7 @@ public class TroopCombat : MonoBehaviour
             float interval = span / disappearCount;
             for (int i = 0; i < disappearCount; i++)
             {
+                MaintainLockedDeathPose();
                 HideTroopVisualAt(disappearOrder[i]);
                 if (i < disappearCount - 1)
                 {

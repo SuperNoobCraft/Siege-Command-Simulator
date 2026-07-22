@@ -130,6 +130,57 @@ public static class RtsGroundUtility
     }
 
     /// <summary>
+    /// Movement cliff checks: RTS_Ground (and Terrain) only — never Default/~0 fallbacks.
+    /// Broad fallbacks treat decorative meshes as cliffs and freeze units near gates.
+    /// </summary>
+    public static bool TrySampleWalkableGroundForMovement(
+        float worldX,
+        float worldZ,
+        float preferredY,
+        out float groundY,
+        out Vector3 groundNormal)
+    {
+        groundY = 0f;
+        groundNormal = Vector3.up;
+        float startY = Mathf.Max(256f, preferredY + 64f);
+        Vector3 origin = new Vector3(worldX, startY, worldZ);
+        float maxDistance = startY + 2048f;
+
+        LayerMask groundMask = DefaultGroundMask;
+        int groundLayer = LayerMask.NameToLayer(GroundLayerName);
+        if (groundLayer >= 0)
+        {
+            groundMask = 1 << groundLayer;
+        }
+
+        if (TryFindGroundHit(origin, maxDistance, groundMask, preferredY, 16f, out RaycastHit hit))
+        {
+            // Belt-and-suspenders: reject anything that isn't dedicated walkable ground.
+            if (hit.collider != null
+                && groundLayer >= 0
+                && hit.collider.gameObject.layer != groundLayer)
+            {
+                // Fall through to terrain sample.
+            }
+            else if (hit.collider == null || !ShouldIgnoreGroundCollider(hit.collider))
+            {
+                groundY = hit.point.y;
+                groundNormal = hit.normal.sqrMagnitude > 0.0001f ? hit.normal.normalized : Vector3.up;
+                return true;
+            }
+        }
+
+        if (TrySampleTerrainHeight(worldX, worldZ, out hit))
+        {
+            groundY = hit.point.y;
+            groundNormal = Vector3.up;
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// Legacy overload kept for callers that pass a preferred Y as ray-start bias.
     /// </summary>
     public static bool TrySampleGroundY(
@@ -266,6 +317,20 @@ public static class RtsGroundUtility
 
         int solidLayer = LayerMask.NameToLayer("RTS_Solid");
         if (solidLayer >= 0 && collider.gameObject.layer == solidLayer)
+        {
+            return true;
+        }
+
+        // When RTS_Ground exists, never treat Default-layer props (cannons, debris) as ground —
+        // their steep mesh normals otherwise freeze movement as fake cliffs.
+        int groundLayer = LayerMask.NameToLayer(GroundLayerName);
+        const int defaultLayer = 0;
+        if (groundLayer >= 0 && collider.gameObject.layer == defaultLayer)
+        {
+            return true;
+        }
+
+        if (collider.GetComponentInParent<SiegeCannonSite>() != null)
         {
             return true;
         }

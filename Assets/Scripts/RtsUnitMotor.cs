@@ -39,9 +39,9 @@ public class RtsUnitMotor : MonoBehaviour
     [Tooltip("Steeper than this across the footprint is treated as an unwalkable ledge (gentle hills are fine).")]
     [SerializeField, Range(15f, 80f)] private float maxWalkableSlopeDegrees = 55f;
     [Tooltip("Max vertical rise between current and next center ground samples (blocks cliffs/ledges).")]
-    [SerializeField, Min(0.1f)] private float maxStepHeight = 2f;
+    [SerializeField, Min(0.1f)] private float maxStepHeight = 2.75f;
     [Tooltip("Ground normals steeper than this are treated as unwalkable cliff faces.")]
-    [SerializeField, Range(30f, 85f)] private float maxGroundNormalAngleDegrees = 60f;
+    [SerializeField, Range(30f, 85f)] private float maxGroundNormalAngleDegrees = 72f;
     [Tooltip("Solid casts/overlaps only block within this height band above the regiment plane (ignores gate roofs).")]
     [SerializeField, Min(0.25f)] private float solidBodyHeight = 1.1f;
     [Tooltip("Bottom of the solid-check band above the regiment plane.")]
@@ -91,6 +91,8 @@ public class RtsUnitMotor : MonoBehaviour
     private int radialEscapeAttemptIndex;
     private int overlapStuckFrames;
     private float nextForcedEscapeAttemptTime;
+    private int wallBlockFailFrames;
+    private int solidOverlapConfirmFrames;
 
     private static readonly float[] RadialEscapeAngleOffsets =
     {
@@ -567,21 +569,28 @@ public class RtsUnitMotor : MonoBehaviour
 
         UpdateStuckDetection();
 
-        if (solidObstacleLayers != 0 && IsCurrentlyOverlappingObstacle())
+        bool overlappingSolid = GetSolidQueryMask() != 0 && IsCurrentlyOverlappingObstacle();
+        if (overlappingSolid)
         {
+            solidOverlapConfirmFrames++;
             overlapStuckFrames++;
-            if (overlapStuckFrames >= 2 && Time.time >= nextForcedEscapeAttemptTime)
+            // Only force escape while still committed to a destination and not already hard-stopped.
+            if (overlapStuckFrames >= 3
+                && wallBlockFailFrames < 3
+                && Time.time >= nextForcedEscapeAttemptTime)
             {
-                nextForcedEscapeAttemptTime = Time.time + 0.2f;
+                nextForcedEscapeAttemptTime = Time.time + 0.35f;
                 if (TryEscapeFromSolid())
                 {
                     overlapStuckFrames = 0;
+                    wallBlockFailFrames = 0;
                 }
             }
         }
         else
         {
             overlapStuckFrames = 0;
+            solidOverlapConfirmFrames = 0;
         }
 
         if (IsFollowingPath() && TryAbortPathIfStuck())
@@ -650,21 +659,32 @@ public class RtsUnitMotor : MonoBehaviour
         {
             if (slideAlongWallOnPath && TrySlideAlongWall(direction, stepDistance))
             {
+                wallBlockFailFrames = 0;
                 return;
             }
 
-            if (TryEscapeFromSolid())
+            if (overlappingSolid && TryEscapeFromSolid())
             {
+                wallBlockFailFrames = 0;
                 return;
             }
 
-            AbortPathFollowing();
+            // Real solid: eventually hard-stop. Cliff/false block: clear the flag and keep the path.
+            if (overlappingSolid || solidOverlapConfirmFrames > 0)
+            {
+                HandleConfirmedSolidBlock(keepPathAsDirect: true);
+            }
+            else
+            {
+                IsBlockedBySolidObstacle = false;
+            }
+
             return;
         }
 
-        bool isOverlapping = solidObstacleLayers != 0 && IsCurrentlyOverlappingObstacle();
+        bool isOverlapping = GetSolidQueryMask() != 0 && IsCurrentlyOverlappingObstacle();
         bool movingAwayFromWall = isOverlapping && IsMovingAwayFromObstacle(direction);
-        bool useAvoidance = enableObstacleAvoidance && solidObstacleLayers != 0;
+        bool useAvoidance = enableObstacleAvoidance && GetSolidQueryMask() != 0;
 
         if (isOverlapping)
         {
@@ -776,6 +796,7 @@ public class RtsUnitMotor : MonoBehaviour
             }
 
             IsBlockedBySolidObstacle = false;
+            wallBlockFailFrames = 0;
             // Do not reset stuck tracking here — wall slides / micro-moves must still
             // count as stuck when they fail to advance toward the goal.
         }
@@ -1045,6 +1066,11 @@ public class RtsUnitMotor : MonoBehaviour
         {
             RaycastHit hit = hits[i];
             if (hit.collider == null || IsOwnCollider(hit.collider))
+            {
+                continue;
+            }
+
+            if (!IsMovementBlockingSolidCollider(hit.collider))
             {
                 continue;
             }
@@ -1406,23 +1432,34 @@ public class RtsUnitMotor : MonoBehaviour
 
     private bool TryAbortPathIfStuck()
     {
-        bool overlapping = solidObstacleLayers != 0 && IsCurrentlyOverlappingObstacle();
-        if (overlapping || (IsBlockedBySolidObstacle && pathStuckConfirmCount >= 1))
+        // Confirmed RTS_Solid embedding — peel off the drawn path but keep a direct goal.
+        if (solidOverlapConfirmFrames >= 3)
         {
             Vector3 goal = pathWaypoints.Count > 0 ? pathWaypoints[pathWaypoints.Count - 1] : finalDestination;
-            AbortPathFollowing();
             ConvertPathToDirectMove(goal);
-            TryEscapeFromSolid();
+            if (TryEscapeFromSolid())
+            {
+                wallBlockFailFrames = 0;
+                return true;
+            }
+
+            HandleConfirmedSolidBlock(keepPathAsDirect: false);
             return true;
         }
 
-        if (pathStuckConfirmCount < 2)
+        // Soft stuck with no solid: keep moving toward the goal as a direct order.
+        // Never wipe destination here — that was deleting paths on cliff false-positives.
+        if (pathStuckConfirmCount >= 3)
         {
+            Vector3 goal = pathWaypoints.Count > 0 ? pathWaypoints[pathWaypoints.Count - 1] : finalDestination;
+            ConvertPathToDirectMove(goal);
+            pathStuckConfirmCount = 0;
+            ResetStuckTracking();
+            IsBlockedBySolidObstacle = false;
             return false;
         }
 
-        AbortPathFollowing();
-        return true;
+        return false;
     }
 
     private void AbortPathFollowing()
@@ -1436,10 +1473,52 @@ public class RtsUnitMotor : MonoBehaviour
         PathFollowingAborted?.Invoke(this);
     }
 
+    private void HandleConfirmedSolidBlock(bool keepPathAsDirect)
+    {
+        wallBlockFailFrames++;
+        IsBlockedBySolidObstacle = true;
+
+        if (keepPathAsDirect && IsFollowingPath() && wallBlockFailFrames < 4)
+        {
+            Vector3 goal = pathWaypoints.Count > 0 ? pathWaypoints[pathWaypoints.Count - 1] : finalDestination;
+            ConvertPathToDirectMove(goal);
+            return;
+        }
+
+        if (wallBlockFailFrames >= 3 || (stopImmediatelyOnWallHit && solidOverlapConfirmFrames >= 2))
+        {
+            HaltAgainstSolid();
+        }
+    }
+
+    /// <summary>
+    /// Hard stop against a confirmed RTS_Solid. Clears path/destination so we don't jitter forever.
+    /// </summary>
+    private void HaltAgainstSolid()
+    {
+        bool hadPath = HasActivePath;
+        ClearMovement();
+        IsBlockedBySolidObstacle = true;
+        wallBlockFailFrames = 0;
+        solidOverlapConfirmFrames = 0;
+        overlapStuckFrames = 0;
+        if (hadPath)
+        {
+            PathFollowingAborted?.Invoke(this);
+        }
+    }
+
     private bool IsInWallEscapeGrace => wallEscapeGraceDuration > 0f && Time.time < wallEscapeGraceEndTime;
 
     private void StopOnWall()
     {
+        bool overlappingSolid = GetSolidQueryMask() != 0 && IsCurrentlyOverlappingObstacle();
+        bool solidAhead = overlappingSolid
+            || TryGetAheadSolidHit(
+                MoveDirection.sqrMagnitude > 0.0001f ? MoveDirection : GetGoalDirection(),
+                Mathf.Max(0.35f, obstacleLookaheadDistance * 0.45f),
+                out _);
+
         if (IsFollowingPath())
         {
             if (slideAlongWallOnPath)
@@ -1454,19 +1533,26 @@ public class RtsUnitMotor : MonoBehaviour
                 if (TrySlideAlongWall(slideDirection, stepDistance))
                 {
                     IsBlockedBySolidObstacle = false;
+                    wallBlockFailFrames = 0;
                     return;
                 }
             }
 
-            if (TryEscapeFromSolid())
+            if (overlappingSolid && TryEscapeFromSolid())
             {
+                wallBlockFailFrames = 0;
                 return;
             }
 
-            AbortPathFollowing();
-            if (TryEscapeFromSolid())
+            if (solidAhead)
             {
-                return;
+                HandleConfirmedSolidBlock(keepPathAsDirect: true);
+            }
+            else
+            {
+                // Cliff / ground false positive — keep the path, don't delete it.
+                IsBlockedBySolidObstacle = false;
+                wallBlockFailFrames = 0;
             }
 
             return;
@@ -1484,31 +1570,36 @@ public class RtsUnitMotor : MonoBehaviour
             if (TrySlideAlongWall(slideDirection, stepDistance))
             {
                 IsBlockedBySolidObstacle = false;
+                wallBlockFailFrames = 0;
                 return;
             }
         }
 
-        if (TryEscapeFromSolid())
+        if (overlappingSolid && TryEscapeFromSolid())
         {
+            wallBlockFailFrames = 0;
             return;
         }
 
-        if (!IsFollowingPath()
+        if (!overlappingSolid
             && Time.time >= nextDetourAttemptTime
             && TryInsertDetourWaypoint(GetGoalDirection()))
         {
             nextDetourAttemptTime = Time.time + stuckDetectionTime * 0.5f;
             IsBlockedBySolidObstacle = false;
+            wallBlockFailFrames = 0;
             return;
         }
 
-        bool shouldClearMovement = stopImmediatelyOnWallHit && !enableObstacleAvoidance;
-        if (shouldClearMovement)
+        if (solidAhead)
         {
-            ClearMovement();
+            HandleConfirmedSolidBlock(keepPathAsDirect: false);
+            return;
         }
 
-        IsBlockedBySolidObstacle = true;
+        // No confirmed solid — do not clear the order on a cliff false-positive.
+        IsBlockedBySolidObstacle = false;
+        wallBlockFailFrames = 0;
     }
 
     private bool IsPositionClear(Vector3 worldPosition)
@@ -1570,6 +1661,8 @@ public class RtsUnitMotor : MonoBehaviour
         wallEscapeGraceEndTime = 0f;
         pathStuckConfirmCount = 0;
         overlapStuckFrames = 0;
+        wallBlockFailFrames = 0;
+        solidOverlapConfirmFrames = 0;
         ResetStuckTracking();
     }
 
@@ -1664,15 +1757,21 @@ public class RtsUnitMotor : MonoBehaviour
             }
         }
 
+        // Gate corridor: only RTS_Solid may block. Cliff/ground-normal probes falsely reject
+        // archways and Default-layer props that are not walkable ground.
+        if (TraverseGateCorridor)
+        {
+            return false;
+        }
+
         return !IsFormationGroundWalkable(nextPosition, halfExtents);
     }
 
     private bool IsFormationGroundWalkable(Vector3 nextPosition, Vector3 halfExtents)
     {
-        // Use a compact probe radius — solidThicknessPadding is for wall hits only and made
-        // slope probes falsely fail across gentle hills with a wide formation.
-        float probeRadiusX = Mathf.Max(0.2f, Mathf.Min(halfExtents.x, fallbackCastHalfExtents.x));
-        float probeRadiusZ = Mathf.Max(0.2f, Mathf.Min(halfExtents.z, fallbackCastHalfExtents.z));
+        // Compact probe — wall padding made slope probes falsely fail across gentle hills.
+        float probeRadiusX = Mathf.Max(0.15f, Mathf.Min(halfExtents.x * 0.65f, fallbackCastHalfExtents.x));
+        float probeRadiusZ = Mathf.Max(0.15f, Mathf.Min(halfExtents.z * 0.65f, fallbackCastHalfExtents.z));
         Vector3[] probes =
         {
             Vector3.zero,
@@ -1682,50 +1781,38 @@ public class RtsUnitMotor : MonoBehaviour
             new Vector3(-probeRadiusX, 0f, -probeRadiusZ)
         };
 
-        bool hasCenter = false;
-        float centerY = nextPosition.y;
-        // Cliffs only. Gentle hills must not freeze movement — TroopCombat owns Y snap.
-        float cliffStep = Mathf.Max(1.5f, maxStepHeight);
-        float cliffNormalAngle = Mathf.Clamp(Mathf.Max(maxGroundNormalAngleDegrees, 55f), 45f, 85f);
+        // Loose cliffs only — TroopCombat owns Y snap; false ledge hits were deleting paths.
+        float cliffStep = Mathf.Max(2.75f, maxStepHeight * 1.25f);
+        float cliffNormalAngle = Mathf.Clamp(Mathf.Max(maxGroundNormalAngleDegrees, 72f), 65f, 85f);
         if (TraverseGateCorridor)
         {
-            cliffStep = Mathf.Max(cliffStep, 3f);
-            cliffNormalAngle = Mathf.Max(cliffNormalAngle, 70f);
+            cliffStep = Mathf.Max(cliffStep, 4f);
+            cliffNormalAngle = Mathf.Max(cliffNormalAngle, 78f);
         }
 
-        if (!RtsGroundUtility.TrySampleGround(
+        if (!RtsGroundUtility.TrySampleWalkableGroundForMovement(
                 nextPosition.x,
                 nextPosition.z,
-                RtsGroundUtility.DefaultGroundMask,
-                256f,
-                0f,
-                out float nextCenterGroundY,
-                out Vector3 nextCenterNormal,
                 preferredY: nextPosition.y,
-                maxVerticalSnap: 16f))
+                out float nextCenterGroundY,
+                out Vector3 nextCenterNormal))
         {
             // Missing ground under center — allow move (mesh gaps) rather than freeze.
             return true;
         }
 
-        hasCenter = true;
-        centerY = nextCenterGroundY;
-
+        // Center normal only. Corner normals often graze rock skirts / mesh seams.
         if (Vector3.Angle(nextCenterNormal, Vector3.up) > cliffNormalAngle)
         {
             return false;
         }
 
-        if (RtsGroundUtility.TrySampleGround(
+        if (RtsGroundUtility.TrySampleWalkableGroundForMovement(
                 transform.position.x,
                 transform.position.z,
-                RtsGroundUtility.DefaultGroundMask,
-                256f,
-                0f,
-                out float currentGroundY,
-                out _,
                 preferredY: transform.position.y,
-                maxVerticalSnap: 16f))
+                out float currentGroundY,
+                out _))
         {
             // Only block a true ledge climb — descending is always fine.
             if (nextCenterGroundY - currentGroundY > cliffStep)
@@ -1734,38 +1821,31 @@ public class RtsUnitMotor : MonoBehaviour
             }
         }
 
-        // Corner checks: only reject when a corner sits on a near-vertical cliff face or a
-        // much higher ledge than the formation center. Mild slopes across the footprint are OK.
+        // Corners: height ledges only (no normal test). Require 2+ bad corners so one
+        // foot on a curb doesn't freeze the whole regiment.
+        int raisedCorners = 0;
+        float cornerLedge = cliffStep * 1.2f;
         for (int i = 1; i < probes.Length; i++)
         {
             float x = nextPosition.x + probes[i].x;
             float z = nextPosition.z + probes[i].z;
-            if (!RtsGroundUtility.TrySampleGround(
+            if (!RtsGroundUtility.TrySampleWalkableGroundForMovement(
                     x,
                     z,
-                    RtsGroundUtility.DefaultGroundMask,
-                    256f,
-                    0f,
+                    preferredY: nextCenterGroundY,
                     out float groundY,
-                    out Vector3 groundNormal,
-                    preferredY: centerY,
-                    maxVerticalSnap: 16f))
+                    out _))
             {
                 continue;
             }
 
-            if (Vector3.Angle(groundNormal, Vector3.up) > cliffNormalAngle)
+            if (groundY - nextCenterGroundY > cornerLedge)
             {
-                return false;
-            }
-
-            if (groundY - centerY > cliffStep)
-            {
-                return false;
+                raisedCorners++;
             }
         }
 
-        return hasCenter;
+        return raisedCorners < 2;
     }
 
     private bool IsCurrentlyOverlappingObstacle()
@@ -1817,6 +1897,11 @@ public class RtsUnitMotor : MonoBehaviour
                 continue;
             }
 
+            if (!IsMovementBlockingSolidCollider(overlap))
+            {
+                continue;
+            }
+
             if (!IsSolidColliderBlockingHorizontalMove(overlap, castCenter))
             {
                 continue;
@@ -1862,32 +1947,34 @@ public class RtsUnitMotor : MonoBehaviour
 
     private LayerMask GetSolidQueryMask()
     {
-        LayerMask mask = solidObstacleLayers;
-        if (mask == 0)
+        // Authoritative: only RTS_Solid blocks movement. Inspector masks that also include
+        // Default/Everything make cannons and props act like walls.
+        return RtsGroundUtility.DefaultSolidMask;
+    }
+
+    /// <summary>
+    /// Final gate for solid hits — layer mask alone is not enough if children are mis-tagged.
+    /// </summary>
+    private static bool IsMovementBlockingSolidCollider(Collider collider)
+    {
+        if (collider == null || !collider.enabled || !collider.gameObject.activeInHierarchy)
         {
-            return mask;
+            return false;
         }
 
-        // Never treat walkable ground / unit volumes as solid blockers (breaks slopes if mask is broad).
-        int groundLayer = LayerMask.NameToLayer("RTS_Ground");
-        if (groundLayer >= 0)
+        int solidLayer = LayerMask.NameToLayer("RTS_Solid");
+        if (solidLayer >= 0 && collider.gameObject.layer != solidLayer)
         {
-            mask &= ~(1 << groundLayer);
+            return false;
         }
 
-        int unitLayer = RtsGroundUtility.UnitLayer;
-        if (unitLayer >= 0)
+        // Cannons / occupation volumes must never act as walls even if mis-layered.
+        if (collider.GetComponentInParent<SiegeCannonSite>() != null)
         {
-            mask &= ~(1 << unitLayer);
+            return false;
         }
 
-        int ignoreRaycast = LayerMask.NameToLayer("Ignore Raycast");
-        if (ignoreRaycast >= 0)
-        {
-            mask &= ~(1 << ignoreRaycast);
-        }
-
-        return mask;
+        return true;
     }
 
     private float GetNearestObstacleDistance(Vector3 castCenter, Vector3 halfExtents, Vector3 direction, float maxDistance)
@@ -1917,6 +2004,11 @@ public class RtsUnitMotor : MonoBehaviour
         {
             RaycastHit hit = hits[i];
             if (hit.collider == null || IsOwnCollider(hit.collider))
+            {
+                continue;
+            }
+
+            if (!IsMovementBlockingSolidCollider(hit.collider))
             {
                 continue;
             }
@@ -1970,6 +2062,7 @@ public class RtsUnitMotor : MonoBehaviour
                     QueryTriggerInteraction.Ignore)
                 && hit.collider != null
                 && !IsOwnCollider(hit.collider)
+                && IsMovementBlockingSolidCollider(hit.collider)
                 && IsSolidHitBlockingHorizontalMove(hit, castCenter)
                 && hit.distance < maxDistance - 0.001f)
             {
@@ -2005,6 +2098,7 @@ public class RtsUnitMotor : MonoBehaviour
             Collider overlap = overlaps[i];
             if (overlap != null
                 && !IsOwnCollider(overlap)
+                && IsMovementBlockingSolidCollider(overlap)
                 && IsSolidColliderBlockingHorizontalMove(overlap, castCenter))
             {
                 return true;
@@ -2029,7 +2123,7 @@ public class RtsUnitMotor : MonoBehaviour
     /// </summary>
     private bool IsSolidColliderBlockingHorizontalMove(Collider collider, Vector3 probeCenter)
     {
-        if (collider == null)
+        if (!IsMovementBlockingSolidCollider(collider))
         {
             return false;
         }
@@ -2083,7 +2177,7 @@ public class RtsUnitMotor : MonoBehaviour
 
     private bool IsSolidHitBlockingHorizontalMove(RaycastHit hit, Vector3 castCenter)
     {
-        if (hit.collider == null)
+        if (!IsMovementBlockingSolidCollider(hit.collider))
         {
             return false;
         }

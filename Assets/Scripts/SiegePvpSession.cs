@@ -320,7 +320,7 @@ public class SiegePvpSession : MonoBehaviour
         }
 
         bool released = !SiegeVrInput.IsPointerHeld();
-        bool forceAfterTimeout = Time.unscaledTime >= modeSelectUnlockTime + 1.5f;
+        bool forceAfterTimeout = Time.unscaledTime >= modeSelectUnlockTime + 0.75f;
         if (!released && !forceAfterTimeout)
         {
             return;
@@ -429,7 +429,7 @@ public class SiegePvpSession : MonoBehaviour
 
         // Defer mode-select unlock until pointer release + short lockout, so the same
         // cancel click cannot immediately confirm Demo / Full / Dodge.
-        modeSelectUnlockTime = Time.unscaledTime + 0.85f;
+        modeSelectUnlockTime = Time.unscaledTime + 0.3f;
         pendingShowModeSelectAfterRelease = true;
 
         if (logNetworkMessages)
@@ -2300,7 +2300,7 @@ public class SiegePvpSession : MonoBehaviour
         }
 
         // After cleanup / restart, still defer mode buttons until pointer is up.
-        modeSelectUnlockTime = Mathf.Max(modeSelectUnlockTime, Time.unscaledTime + 0.35f);
+        modeSelectUnlockTime = Mathf.Max(modeSelectUnlockTime, Time.unscaledTime + 0.25f);
         pendingShowModeSelectAfterRelease = true;
 
         if (SiegeMatchUi.Instance != null)

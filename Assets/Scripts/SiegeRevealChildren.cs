@@ -188,8 +188,17 @@ public class SiegeRevealChildren : MonoBehaviour
             return;
         }
 
-        Transform shotOrigin = cannonShotAudioOrigin != null ? cannonShotAudioOrigin : cannonFireEffectsParent;
-        soundEffects.PlayCannonShotAtOrigins(shotOrigin);
+        Transform shotOrigin = cannonShotAudioOrigin != null
+            ? cannonShotAudioOrigin
+            : (cannonFireEffectsParent != null ? cannonFireEffectsParent : transform);
+        if (shotOrigin.childCount > 0)
+        {
+            soundEffects.PlayCannonShotAtOrigins(shotOrigin);
+        }
+        else
+        {
+            soundEffects.PlayCannonShot(shotOrigin.position);
+        }
     }
 
     private void PlayCannonFireExplosionSound()
@@ -200,7 +209,15 @@ public class SiegeRevealChildren : MonoBehaviour
             return;
         }
 
-        soundEffects.PlayExplosionAtOrigins(cannonFireEffectsParent);
+        Transform origin = cannonFireEffectsParent != null ? cannonFireEffectsParent : transform;
+        if (origin.childCount > 0)
+        {
+            soundEffects.PlayExplosionAtOrigins(origin);
+        }
+        else
+        {
+            soundEffects.PlayExplosion(origin.position);
+        }
     }
 
     private void PlayOverrunExplosionSound()
@@ -211,7 +228,15 @@ public class SiegeRevealChildren : MonoBehaviour
             return;
         }
 
-        soundEffects.PlayExplosionAtOrigins(cannonOverrunEffectsParent);
+        Transform origin = cannonOverrunEffectsParent != null ? cannonOverrunEffectsParent : transform;
+        if (origin.childCount > 0)
+        {
+            soundEffects.PlayExplosionAtOrigins(origin);
+        }
+        else
+        {
+            soundEffects.PlayExplosion(origin.position);
+        }
     }
 
     private void StopCannonFireSequence()
