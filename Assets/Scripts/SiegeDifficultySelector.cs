@@ -50,6 +50,14 @@ public class SiegeDifficultySelector : MonoBehaviour
             return;
         }
 
+        SiegeCreditsPanel creditsPanel = SiegeCreditsPanel.Instance;
+        if (creditsPanel != null && creditsPanel.BlocksSelection)
+        {
+            ClearHighlight();
+            hoveredOption = null;
+            return;
+        }
+
         if (!SiegeVrInput.IsGameplayInputAllowed())
         {
             ClearHighlight();
@@ -62,6 +70,32 @@ public class SiegeDifficultySelector : MonoBehaviour
 
         if (!SiegeVrInput.WasPointerPressedThisFrame() || hoveredOption == null)
         {
+            return;
+        }
+
+        if (hoveredOption.OpensCreditsPanel)
+        {
+            SiegeCreditsPanel credits = SiegeCreditsPanel.Instance;
+            if (credits != null)
+            {
+                credits.OpenPanel();
+            }
+            else
+            {
+                Debug.LogWarning("Credits selected but SiegeCreditsPanel is missing from the scene.");
+            }
+
+            return;
+        }
+
+        if (hoveredOption.IsCreditsBackButton)
+        {
+            SiegeCreditsPanel credits = SiegeCreditsPanel.Instance;
+            if (credits != null)
+            {
+                credits.ClosePanel();
+            }
+
             return;
         }
 

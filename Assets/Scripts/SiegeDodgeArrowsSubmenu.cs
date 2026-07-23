@@ -78,6 +78,13 @@ public class SiegeDodgeArrowsSubmenu : MonoBehaviour
         AutoBindOptionsIfNeeded();
         BeginTransitionInputLock();
         submenuOpen = true;
+
+        SiegeCreditsPanel credits = SiegeCreditsPanel.Instance;
+        if (credits != null && credits.IsOpen)
+        {
+            credits.ClosePanel();
+        }
+
         ApplySubmenuLayout();
 
         if (SiegeMatchUi.Instance != null)
@@ -126,7 +133,17 @@ public class SiegeDodgeArrowsSubmenu : MonoBehaviour
                 continue;
             }
 
-            bool show = option.IsDodgeSubmenuChoice ? submenuOpen : !submenuOpen;
+            bool show;
+            if (option.OpensCreditsPanel || option.IsCreditsBackButton)
+            {
+                // Owned by SiegeCreditsPanel — hide while Dodge submenu is open.
+                show = false;
+            }
+            else
+            {
+                show = option.IsDodgeSubmenuChoice ? submenuOpen : !submenuOpen;
+            }
+
             SetOptionFullyVisible(option, show);
         }
     }

@@ -87,7 +87,10 @@ public class TroopCombat : MonoBehaviour
     [SerializeField] private bool faceTargetWhileFighting = true;
 
     [Header("Combat Movement")]
-    [SerializeField, Range(0f, 1f)] private float combatMoveSpeedPercentage = 0.2f;
+    [Tooltip("Speed at full enemy footprint overlap (0 = standstill).")]
+    [SerializeField, Range(0f, 1f)] private float combatMoveSpeedPercentage = 0f;
+    [Tooltip("Speed as soon as any enemy overlap begins (before scaling down further with more overlap).")]
+    [SerializeField, Range(0f, 1f)] private float combatOverlapStartSpeedPercentage = 0.5f;
     [SerializeField] private bool scaleCombatSpeedByEnemyOverlap = true;
     [SerializeField, Min(0f)] private float combatOverlapSmoothingSpeed = 8f;
     [SerializeField] private Collider footprintCollider;
@@ -623,6 +626,10 @@ public class TroopCombat : MonoBehaviour
         retreatDestinationRefreshInterval = Mathf.Max(0.05f, retreatDestinationRefreshInterval);
         retreatDeathDisappearSpan = Mathf.Max(0f, retreatDeathDisappearSpan);
         combatMoveSpeedPercentage = Mathf.Clamp01(combatMoveSpeedPercentage);
+        combatOverlapStartSpeedPercentage = Mathf.Clamp(
+            combatOverlapStartSpeedPercentage,
+            combatMoveSpeedPercentage,
+            1f);
         combatOverlapSmoothingSpeed = Mathf.Max(0f, combatOverlapSmoothingSpeed);
         selectionVolumeHeight = Mathf.Max(0.5f, selectionVolumeHeight);
         selectionVolumeXZScale = Mathf.Max(0.5f, selectionVolumeXZScale);
@@ -1092,7 +1099,7 @@ public class TroopCombat : MonoBehaviour
 
         if (!scaleCombatSpeedByEnemyOverlap)
         {
-            return combatMoveSpeedPercentage;
+            return combatOverlapStartSpeedPercentage;
         }
 
         float targetOverlap = GetEnemyOverlapRatio();
@@ -1101,7 +1108,15 @@ public class TroopCombat : MonoBehaviour
             targetOverlap,
             combatOverlapSmoothingSpeed * Time.deltaTime);
 
-        return Mathf.Lerp(1f, combatMoveSpeedPercentage, smoothedCombatOverlap);
+        // No contact yet — full march speed. Any overlap drops into the combat band
+        // starting at combatOverlapStartSpeedPercentage, then down to the min with more overlap.
+        if (smoothedCombatOverlap <= 0.001f)
+        {
+            return 1f;
+        }
+
+        float startSpeed = Mathf.Max(combatOverlapStartSpeedPercentage, combatMoveSpeedPercentage);
+        return Mathf.Lerp(startSpeed, combatMoveSpeedPercentage, smoothedCombatOverlap);
     }
 
     private float GetEnemyOverlapRatio()

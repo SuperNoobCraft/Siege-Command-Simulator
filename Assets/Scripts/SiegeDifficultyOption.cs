@@ -13,6 +13,10 @@ public class SiegeDifficultyOption : MonoBehaviour
     [SerializeField] private bool opensDodgeArrowsSubmenu;
     [Tooltip("Returns from the Dodge Arrows submenu to the main mode select.")]
     [SerializeField] private bool isSubmenuBackButton;
+    [Tooltip("Main-menu Credits button opens the credits text panel.")]
+    [SerializeField] private bool opensCreditsPanel;
+    [Tooltip("Returns from the Credits panel to the main mode select.")]
+    [SerializeField] private bool isCreditsBackButton;
     [Header("Siege PVP tuning (Attacker stalls for cannons; Defender tries to stop them)")]
     [Tooltip("Off: use SiegeGameManager duration/speed. On: use the values below when this button is selected.")]
     [SerializeField] private bool useCustomPvpTuning = false;
@@ -26,6 +30,9 @@ public class SiegeDifficultyOption : MonoBehaviour
     public SiegeGameMode GameMode => gameMode;
     public bool OpensDodgeArrowsSubmenu => opensDodgeArrowsSubmenu;
     public bool IsSubmenuBackButton => isSubmenuBackButton;
+    public bool OpensCreditsPanel => opensCreditsPanel;
+    public bool IsCreditsBackButton => isCreditsBackButton;
+    public bool IsCreditsPanelChoice => isCreditsBackButton;
     public bool IsDodgeSubmenuChoice =>
         isSubmenuBackButton
         || gameMode == SiegeGameMode.DodgeArrowsEndless
