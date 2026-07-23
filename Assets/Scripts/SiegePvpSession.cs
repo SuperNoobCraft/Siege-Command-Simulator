@@ -1646,6 +1646,12 @@ public class SiegePvpSession : MonoBehaviour
                     && (motor.HasActivePath || motor.HasDestination)
                     && horizontalErrorSqr >= haltResyncSqr;
 
+                // Peer frozen on a cliff reject while owner keeps advancing — hard catch-up.
+                float peerCatchUpSqr = Mathf.Max(0.65f * 0.65f, haltResyncSqr * 0.35f);
+                bool peerLaggingBehindMovingOwner = ownerHasPath
+                    && ownerAdvancing
+                    && horizontalErrorSqr >= peerCatchUpSqr;
+
                 if (peerDriftedWhileOwnerStopped)
                 {
                     if (motor.HasActivePath || motor.HasDestination)
@@ -1661,6 +1667,26 @@ public class SiegePvpSession : MonoBehaviour
 
                     motor.SnapNetworkPosition(remotePos);
 
+                    if (hasAuthority && troop != null)
+                    {
+                        troop.ApplyNetworkCombatAuthority(
+                            authorityHealth,
+                            authorityState,
+                            remotePos,
+                            authoritySnapDistance,
+                            ownerRetreatInvulnerable);
+                    }
+                    else if (troop != null)
+                    {
+                        troop.NotifyNetworkPositionApplied(hardSnap: true);
+                    }
+
+                    continue;
+                }
+
+                if (peerLaggingBehindMovingOwner)
+                {
+                    motor.SnapNetworkPosition(remotePos);
                     if (hasAuthority && troop != null)
                     {
                         troop.ApplyNetworkCombatAuthority(

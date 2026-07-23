@@ -221,12 +221,33 @@ public class TroopCombat : MonoBehaviour
     public bool IsRetreating => CurrentState == State.Retreat;
     public bool IsPermanentlyEliminated => isPermanentlyEliminated;
     public bool IsRetreatInvulnerable => CurrentState == State.Retreat && Time.time < invulnerableUntil;
-    public bool IsTraversingGate =>
-        CurrentState == State.Retreat
-        && retreatPhase != RetreatPhase.ToCamp
-        && RtsCampManager.Instance != null
-        && RtsCampManager.Instance.HasGate(faction)
-        && RtsCampManager.Instance.IsNearGateForOpening(transform.position, faction);
+    public bool IsTraversingGate
+    {
+        get
+        {
+            if (CurrentState != State.Retreat)
+            {
+                return false;
+            }
+
+            RtsCampManager camps = RtsCampManager.Instance;
+            if (camps == null || !camps.HasGate(faction))
+            {
+                return false;
+            }
+
+            // Still approaching / inside the corridor waypoints.
+            if (retreatPhase != RetreatPhase.ToCamp
+                && camps.IsNearGateForOpening(transform.position, faction))
+            {
+                return true;
+            }
+
+            // After the inside waypoint they switch to ToCamp — keep the gate open until
+            // they are physically clear of the arch, or they get crushed by the close.
+            return camps.IsInGatePassage(transform.position, faction);
+        }
+    }
     public bool HoldsInCampUntilNextWave { get; private set; }
     public bool IsRegrouping => CurrentState == State.Regroup;
     public float CombatMoveSpeedMultiplier => GetCombatMoveSpeedMultiplier();
@@ -1074,17 +1095,25 @@ public class TroopCombat : MonoBehaviour
         }
 
         float baseMultiplier;
-        switch (CurrentState)
+        if (regimentAi != null && regimentAi.IsExitingGate)
         {
-            case State.Retreat:
-                baseMultiplier = retreatMoveSpeedMultiplier;
-                break;
-            case State.Fight:
-                baseMultiplier = GetCombatMoveSpeedMultiplier();
-                break;
-            default:
-                baseMultiplier = 1f;
-                break;
+            // Full march speed through the gate — never apply Fight slowdown here.
+            baseMultiplier = 1f;
+        }
+        else
+        {
+            switch (CurrentState)
+            {
+                case State.Retreat:
+                    baseMultiplier = retreatMoveSpeedMultiplier;
+                    break;
+                case State.Fight:
+                    baseMultiplier = GetCombatMoveSpeedMultiplier();
+                    break;
+                default:
+                    baseMultiplier = 1f;
+                    break;
+            }
         }
 
         motor.MoveSpeedMultiplier = baseMultiplier * SiegeMatchSettings.ActiveMoveSpeedScale;
@@ -1286,6 +1315,20 @@ public class TroopCombat : MonoBehaviour
 
     private void UpdateCombat()
     {
+        // Gate exit must not enter Fight — ranged units especially acquire through walls and
+        // combat slowdown (often 0%) freezes them in ExitingGate with the gate held open.
+        if (regimentAi != null && regimentAi.IsExitingGate)
+        {
+            currentTarget = null;
+            if (CurrentState == State.Fight)
+            {
+                CurrentState = State.Idle;
+            }
+
+            smoothedCombatOverlap = 0f;
+            return;
+        }
+
         if (currentTarget != null && !currentTarget.CanBeTargetedBy(this))
         {
             currentTarget = null;
@@ -2310,8 +2353,9 @@ public class TroopCombat : MonoBehaviour
                 Vector3 delta = worldPosition - transform.position;
                 delta.y = 0f;
                 float drift = delta.magnitude;
+                // Tight while pathing so a locally stuck peer cannot trail the owner for long.
                 float driftThreshold = remoteVisual
-                    ? Mathf.Max(1.25f, authoritySnapDistance * 0.75f)
+                    ? Mathf.Max(0.55f, authoritySnapDistance * 0.35f)
                     : Mathf.Max(0.5f, authoritySnapDistance * 0.5f);
                 if (drift < driftThreshold)
                 {

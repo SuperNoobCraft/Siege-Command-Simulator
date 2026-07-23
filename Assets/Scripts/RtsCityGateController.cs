@@ -18,6 +18,8 @@ public class RtsCityGateController : MonoBehaviour
     [SerializeField, Min(0.05f)] private float troopScanInterval = 0.15f;
     [Tooltip("When open this far (0-1), solid colliders on the gate are disabled so troops can pass.")]
     [SerializeField, Range(0.1f, 1f)] private float passableOpenAmount = 0.35f;
+    [Tooltip("Keep the gate fully open at least this long after the last troop no longer needs it.")]
+    [SerializeField, Min(0f)] private float closeHoldSeconds = 1.25f;
 
     [Header("Corridor Solids")]
     [Tooltip("Also disable RTS_Solid colliders near the gate opening (static roofs/arches not parented to the moving gate).")]
@@ -30,6 +32,7 @@ public class RtsCityGateController : MonoBehaviour
     private float currentOpenAmount;
     private float nextTroopScanTime;
     private bool shouldBeOpen;
+    private float keepOpenUntilTime;
     private Collider[] gateColliders;
     private bool[] gateColliderWasEnabled;
     private bool gateCollidersPassable;
@@ -58,6 +61,7 @@ public class RtsCityGateController : MonoBehaviour
     {
         currentOpenAmount = 0f;
         shouldBeOpen = false;
+        keepOpenUntilTime = 0f;
         nextTroopScanTime = 0f;
 
         if (gateTransform != null)
@@ -85,6 +89,7 @@ public class RtsCityGateController : MonoBehaviour
         moveSpeed = Mathf.Max(0.1f, moveSpeed);
         troopScanInterval = Mathf.Max(0.05f, troopScanInterval);
         passableOpenAmount = Mathf.Clamp(passableOpenAmount, 0.1f, 1f);
+        closeHoldSeconds = Mathf.Max(0f, closeHoldSeconds);
         corridorSolidRadius = Mathf.Max(0.5f, corridorSolidRadius);
         corridorSolidHeight = Mathf.Max(1f, corridorSolidHeight);
     }
@@ -94,7 +99,16 @@ public class RtsCityGateController : MonoBehaviour
         if (Time.time >= nextTroopScanTime)
         {
             nextTroopScanTime = Time.time + troopScanInterval;
-            shouldBeOpen = EvaluateShouldBeOpen();
+            bool needsOpen = EvaluateShouldBeOpen();
+            if (needsOpen)
+            {
+                shouldBeOpen = true;
+                keepOpenUntilTime = Time.time + closeHoldSeconds;
+            }
+            else if (Time.time >= keepOpenUntilTime)
+            {
+                shouldBeOpen = false;
+            }
         }
 
         float targetOpenAmount = shouldBeOpen ? 1f : 0f;

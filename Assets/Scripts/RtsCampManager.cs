@@ -370,6 +370,54 @@ public class RtsCampManager : MonoBehaviour
         return gate != null && IsWithinHorizontalRadius(worldPosition, gate.position, gateOpenRadius);
     }
 
+    /// <summary>
+    /// True while a regiment is still under/through the gate arch (tighter than <see cref="gateOpenRadius"/>).
+    /// Used so retreat can keep the gate open after switching to the camp phase at the inside waypoint.
+    /// </summary>
+    public bool IsInGatePassage(Vector3 worldPosition, TroopCombat.Faction faction)
+    {
+        if (!HasGate(faction))
+        {
+            return false;
+        }
+
+        Vector3 inside = GetGateInsidePosition(faction);
+        Vector3 outside = GetGateOutsidePosition(faction);
+        float passageRadius = Mathf.Max(gateArrivalRadius * 2.75f, 3.5f);
+
+        if (IsWithinHorizontalRadius(worldPosition, outside, passageRadius)
+            || IsWithinHorizontalRadius(worldPosition, inside, passageRadius))
+        {
+            return true;
+        }
+
+        Transform gate = GetGateTransform(faction);
+        if (gate != null && IsWithinHorizontalRadius(worldPosition, gate.position, passageRadius))
+        {
+            return true;
+        }
+
+        Vector3 span = outside - inside;
+        span.y = 0f;
+        float spanLength = span.magnitude;
+        if (spanLength < 0.05f)
+        {
+            return false;
+        }
+
+        Vector3 direction = span / spanLength;
+        Vector3 fromInside = worldPosition - inside;
+        fromInside.y = 0f;
+        float along = Vector3.Dot(fromInside, direction);
+        if (along < -passageRadius * 0.35f || along > spanLength + passageRadius * 0.35f)
+        {
+            return false;
+        }
+
+        Vector3 closest = inside + direction * Mathf.Clamp(along, 0f, spanLength);
+        return IsWithinHorizontalRadius(worldPosition, closest, passageRadius);
+    }
+
     private Transform GetCampTransform(TroopCombat.Faction faction)
     {
         return faction == TroopCombat.Faction.Friendly ? friendlyCamp : enemyCamp;

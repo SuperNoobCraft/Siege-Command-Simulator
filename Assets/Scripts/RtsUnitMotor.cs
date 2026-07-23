@@ -83,6 +83,8 @@ public class RtsUnitMotor : MonoBehaviour
     private readonly List<Vector3> pathWaypoints = new List<Vector3>();
     private int pathWaypointIndex;
     private float wallEscapeGraceEndTime;
+    private float cliffFalsePositiveGraceEndTime;
+    private int nonSolidPathBlockFrames;
     private Vector3 stuckSamplePosition;
     private float stuckSampleTime;
     private float stuckSampleGoalDistance;
@@ -669,14 +671,14 @@ public class RtsUnitMotor : MonoBehaviour
                 return;
             }
 
-            // Real solid: eventually hard-stop. Cliff/false block: clear the flag and keep the path.
+            // Real solid: eventually hard-stop. Cliff/false block: recover past the reject loop.
             if (overlappingSolid || solidOverlapConfirmFrames > 0)
             {
                 HandleConfirmedSolidBlock(keepPathAsDirect: true);
             }
             else
             {
-                IsBlockedBySolidObstacle = false;
+                RecoverFromNonSolidPathBlock();
             }
 
             return;
@@ -797,6 +799,7 @@ public class RtsUnitMotor : MonoBehaviour
 
             IsBlockedBySolidObstacle = false;
             wallBlockFailFrames = 0;
+            nonSolidPathBlockFrames = 0;
             // Do not reset stuck tracking here — wall slides / micro-moves must still
             // count as stuck when they fail to advance toward the goal.
         }
@@ -1449,11 +1452,13 @@ public class RtsUnitMotor : MonoBehaviour
 
         // Soft stuck with no solid: keep moving toward the goal as a direct order.
         // Never wipe destination here — that was deleting paths on cliff false-positives.
-        if (pathStuckConfirmCount >= 3)
+        if (pathStuckConfirmCount >= 2)
         {
             Vector3 goal = pathWaypoints.Count > 0 ? pathWaypoints[pathWaypoints.Count - 1] : finalDestination;
+            cliffFalsePositiveGraceEndTime = Time.time + 0.55f;
             ConvertPathToDirectMove(goal);
             pathStuckConfirmCount = 0;
+            nonSolidPathBlockFrames = 0;
             ResetStuckTracking();
             IsBlockedBySolidObstacle = false;
             return false;
@@ -1509,6 +1514,42 @@ public class RtsUnitMotor : MonoBehaviour
     }
 
     private bool IsInWallEscapeGrace => wallEscapeGraceDuration > 0f && Time.time < wallEscapeGraceEndTime;
+    private bool IsInCliffFalsePositiveGrace => Time.time < cliffFalsePositiveGraceEndTime;
+
+    private void RecoverFromNonSolidPathBlock()
+    {
+        nonSolidPathBlockFrames++;
+        IsBlockedBySolidObstacle = false;
+        wallBlockFailFrames = 0;
+
+        // After a few rejected cliff/ground frames, briefly ignore ground probes and skip ahead
+        // so dual-sim MP doesn't freeze the owner while the peer keeps marching the same PATH.
+        if (nonSolidPathBlockFrames < 3)
+        {
+            return;
+        }
+
+        nonSolidPathBlockFrames = 0;
+        cliffFalsePositiveGraceEndTime = Time.time + 0.55f;
+
+        if (IsFollowingPath() && pathWaypointIndex < pathWaypoints.Count - 1)
+        {
+            if (TryAdvanceToNextPathWaypoint())
+            {
+                SkipDegeneratePathSegments();
+                ResetStuckTracking();
+                return;
+            }
+        }
+
+        Vector3 goal = pathWaypoints.Count > 0 ? pathWaypoints[pathWaypoints.Count - 1] : finalDestination;
+        if (IsFollowingPath())
+        {
+            ConvertPathToDirectMove(goal);
+        }
+
+        ResetStuckTracking();
+    }
 
     private void StopOnWall()
     {
@@ -1534,6 +1575,7 @@ public class RtsUnitMotor : MonoBehaviour
                 {
                     IsBlockedBySolidObstacle = false;
                     wallBlockFailFrames = 0;
+                    nonSolidPathBlockFrames = 0;
                     return;
                 }
             }
@@ -1541,18 +1583,18 @@ public class RtsUnitMotor : MonoBehaviour
             if (overlappingSolid && TryEscapeFromSolid())
             {
                 wallBlockFailFrames = 0;
+                nonSolidPathBlockFrames = 0;
                 return;
             }
 
             if (solidAhead)
             {
+                nonSolidPathBlockFrames = 0;
                 HandleConfirmedSolidBlock(keepPathAsDirect: true);
             }
             else
             {
-                // Cliff / ground false positive — keep the path, don't delete it.
-                IsBlockedBySolidObstacle = false;
-                wallBlockFailFrames = 0;
+                RecoverFromNonSolidPathBlock();
             }
 
             return;
@@ -1571,6 +1613,7 @@ public class RtsUnitMotor : MonoBehaviour
             {
                 IsBlockedBySolidObstacle = false;
                 wallBlockFailFrames = 0;
+                nonSolidPathBlockFrames = 0;
                 return;
             }
         }
@@ -1578,6 +1621,7 @@ public class RtsUnitMotor : MonoBehaviour
         if (overlappingSolid && TryEscapeFromSolid())
         {
             wallBlockFailFrames = 0;
+            nonSolidPathBlockFrames = 0;
             return;
         }
 
@@ -1588,18 +1632,19 @@ public class RtsUnitMotor : MonoBehaviour
             nextDetourAttemptTime = Time.time + stuckDetectionTime * 0.5f;
             IsBlockedBySolidObstacle = false;
             wallBlockFailFrames = 0;
+            nonSolidPathBlockFrames = 0;
             return;
         }
 
         if (solidAhead)
         {
+            nonSolidPathBlockFrames = 0;
             HandleConfirmedSolidBlock(keepPathAsDirect: false);
             return;
         }
 
-        // No confirmed solid — do not clear the order on a cliff false-positive.
-        IsBlockedBySolidObstacle = false;
-        wallBlockFailFrames = 0;
+        // No confirmed solid — cliff false-positive on a direct order.
+        RecoverFromNonSolidPathBlock();
     }
 
     private bool IsPositionClear(Vector3 worldPosition)
@@ -1659,9 +1704,11 @@ public class RtsUnitMotor : MonoBehaviour
         IsBlockedBySolidObstacle = false;
         IsStuck = false;
         wallEscapeGraceEndTime = 0f;
+        cliffFalsePositiveGraceEndTime = 0f;
         pathStuckConfirmCount = 0;
         overlapStuckFrames = 0;
         wallBlockFailFrames = 0;
+        nonSolidPathBlockFrames = 0;
         solidOverlapConfirmFrames = 0;
         ResetStuckTracking();
     }
@@ -1757,9 +1804,9 @@ public class RtsUnitMotor : MonoBehaviour
             }
         }
 
-        // Gate corridor: only RTS_Solid may block. Cliff/ground-normal probes falsely reject
-        // archways and Default-layer props that are not walkable ground.
-        if (TraverseGateCorridor)
+        // Gate corridor / brief cliff-grace: only RTS_Solid may block. Cliff/ground-normal
+        // probes falsely reject archways, mesh seams, and path chords that the peer already cleared.
+        if (TraverseGateCorridor || IsInCliffFalsePositiveGrace)
         {
             return false;
         }
@@ -1955,7 +2002,7 @@ public class RtsUnitMotor : MonoBehaviour
     /// <summary>
     /// Final gate for solid hits — layer mask alone is not enough if children are mis-tagged.
     /// </summary>
-    private static bool IsMovementBlockingSolidCollider(Collider collider)
+    private bool IsMovementBlockingSolidCollider(Collider collider)
     {
         if (collider == null || !collider.enabled || !collider.gameObject.activeInHierarchy)
         {
@@ -1972,6 +2019,16 @@ public class RtsUnitMotor : MonoBehaviour
         if (collider.GetComponentInParent<SiegeCannonSite>() != null)
         {
             return false;
+        }
+
+        // Gate traffic: other regiments must not cork the corridor (stacked camp spawns).
+        if (TraverseGateCorridor)
+        {
+            RtsUnitMotor otherMotor = collider.GetComponentInParent<RtsUnitMotor>();
+            if (otherMotor != null && otherMotor != this)
+            {
+                return false;
+            }
         }
 
         return true;

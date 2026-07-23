@@ -72,6 +72,11 @@ public class EnemyRegimentAI : MonoBehaviour
     [Tooltip("Width of the corridor treated as a direct blocking path to the cannon.")]
     [SerializeField, Min(0.5f)] private float directPathBlockWidth = 3.5f;
 
+    [Header("Gate Exit Spread")]
+    [Tooltip("After reaching the gate outside waypoint, regiments fan out this far so stacks are easier to see and select.")]
+    [SerializeField, Min(0f)] private float gateExitSpreadRadius = 4.5f;
+    [SerializeField, Min(0.35f)] private float gateExitSpreadArrivalRadius = 1.1f;
+
     [Header("Obstacle Recovery")]
     [SerializeField, Min(0.1f)] private float unstuckRetryInterval = 0.25f;
     [SerializeField, Min(0.5f)] private float unstuckOffsetDistance = 4f;
@@ -98,6 +103,8 @@ public class EnemyRegimentAI : MonoBehaviour
     private Vector2 formationJitter;
     private float advanceSweepSign;
     private bool useAdvanceLateralSweep;
+    private bool gateSpreadPending;
+    private Vector3 gateSpreadDestination;
     private bool hasCachedObjectiveDestination;
     private bool isHoldingAtObjective;
     private Vector3 cachedObjectiveDestination;
@@ -386,6 +393,7 @@ public class EnemyRegimentAI : MonoBehaviour
         combat.SetHoldInCampUntilNextWave(false);
         hasEnteredBattlefield = true;
         stagingToGateAfterRegroup = true;
+        gateSpreadPending = false;
         phase = AiPhase.ExitingGate;
         if (motor != null)
         {
@@ -521,6 +529,7 @@ public class EnemyRegimentAI : MonoBehaviour
         combat.SetHoldInCampUntilNextWave(false);
         hasEnteredBattlefield = true;
         stagingToGateAfterRegroup = SiegeMatchSettings.IsSiegePvpMode;
+        gateSpreadPending = false;
         phase = AiPhase.ExitingGate;
         nextDecisionTime = 0f;
         nextDestinationRefreshTime = 0f;
@@ -670,7 +679,8 @@ public class EnemyRegimentAI : MonoBehaviour
             return;
         }
 
-        if (campManager.IsAtGateOutside(transform.position, TroopCombat.Faction.Enemy))
+        if (campManager.IsAtGateOutside(transform.position, TroopCombat.Faction.Enemy)
+            || HasPassedGateOutside(campManager))
         {
             FinishGateExit();
             return;
@@ -678,7 +688,7 @@ public class EnemyRegimentAI : MonoBehaviour
 
         if (!campManager.IsAtGateInside(transform.position, TroopCombat.Faction.Enemy))
         {
-            IssueMoveOrder(campManager.GetGateInsidePosition(TroopCombat.Faction.Enemy));
+            IssueGateCorridorMove(campManager.GetGateInsidePosition(TroopCombat.Faction.Enemy));
             return;
         }
 
@@ -694,7 +704,7 @@ public class EnemyRegimentAI : MonoBehaviour
             return;
         }
 
-        IssueMoveOrder(campManager.GetGateOutsidePosition(TroopCombat.Faction.Enemy));
+        IssueGateCorridorMove(campManager.GetGateOutsidePosition(TroopCombat.Faction.Enemy));
     }
 
     private void UpdateGateExit()
@@ -707,13 +717,20 @@ public class EnemyRegimentAI : MonoBehaviour
         RtsCampManager campManager = RtsCampManager.Instance;
         if (campManager == null)
         {
-            FinishGateExit();
+            CompleteGateExitAfterSpread();
             return;
         }
 
-        if (campManager.IsAtGateOutside(transform.position, TroopCombat.Faction.Enemy))
+        if (gateSpreadPending)
         {
-            FinishGateExit();
+            UpdateGateSpread(campManager);
+            return;
+        }
+
+        if (campManager.IsAtGateOutside(transform.position, TroopCombat.Faction.Enemy)
+            || HasPassedGateOutside(campManager))
+        {
+            BeginGateOutsideSpreadOrFinish(campManager);
             return;
         }
 
@@ -741,16 +758,197 @@ public class EnemyRegimentAI : MonoBehaviour
             // If the gate just opened, re-issue the outside move instead of bouncing back to camp.
             if (gate != null && gate.IsPassable && campManager.IsAtGateInside(transform.position, TroopCombat.Faction.Enemy))
             {
-                IssueMoveOrder(campManager.GetGateOutsidePosition(TroopCombat.Faction.Enemy));
+                IssueGateCorridorMove(campManager.GetGateOutsidePosition(TroopCombat.Faction.Enemy));
                 return;
             }
 
             TryRecoverFromObstacle(campManager);
         }
+        else
+        {
+            // Slow units can stall with a live destination that never reaches outside.
+            TryForceGateExitProgress(campManager);
+        }
+    }
+
+    private void TryForceGateExitProgress(RtsCampManager campManager)
+    {
+        if (campManager == null || motor == null || gateSpreadPending)
+        {
+            return;
+        }
+
+        if (!motor.HasDestination && !motor.HasActivePath)
+        {
+            return;
+        }
+
+        Vector3 outside = campManager.GetGateOutsidePosition(TroopCombat.Faction.Enemy);
+        float toOutside = GetHorizontalDistance(transform.position, outside);
+        if (toOutside < 0.05f)
+        {
+            return;
+        }
+
+        // Re-assert corridor move periodically so objective-arrival / Fight slowdowns cannot strand us.
+        if (Time.time >= nextUnstuckAttemptTime)
+        {
+            nextUnstuckAttemptTime = Time.time + Mathf.Max(0.35f, unstuckRetryInterval);
+            if (motor != null)
+            {
+                motor.TraverseGateCorridor = true;
+            }
+
+            IssueGateCorridorMove(outside);
+        }
+    }
+
+    private void UpdateGateSpread(RtsCampManager campManager)
+    {
+        float arrivalSqr = gateExitSpreadArrivalRadius * gateExitSpreadArrivalRadius;
+        if (GetHorizontalDistanceSqr(transform.position, gateSpreadDestination) <= arrivalSqr)
+        {
+            CompleteGateExitAfterSpread();
+            return;
+        }
+
+        if (motor != null && (motor.IsBlockedBySolidObstacle || motor.IsStuck))
+        {
+            TryUnstuckGateExit(campManager);
+            return;
+        }
+
+        if (motor != null && !motor.HasDestination && !motor.HasActivePath)
+        {
+            IssueGateSpreadMove(gateSpreadDestination);
+        }
+    }
+
+    private void BeginGateOutsideSpreadOrFinish(RtsCampManager campManager)
+    {
+        // Keep corridor grace until spread completes — trailing units still need a clear archway.
+        if (motor != null)
+        {
+            motor.TraverseGateCorridor = true;
+        }
+
+        if (gateExitSpreadRadius > 0.05f)
+        {
+            gateSpreadDestination = BuildGateOutsideSpreadDestination(campManager);
+            float arrivalSqr = gateExitSpreadArrivalRadius * gateExitSpreadArrivalRadius;
+            if (GetHorizontalDistanceSqr(transform.position, gateSpreadDestination) > arrivalSqr)
+            {
+                gateSpreadPending = true;
+                IssueGateCorridorMove(gateSpreadDestination);
+                return;
+            }
+        }
+
+        CompleteGateExitAfterSpread();
+    }
+
+    private void IssueGateCorridorMove(Vector3 destination)
+    {
+        if (motor == null)
+        {
+            return;
+        }
+
+        destination.y = transform.position.y;
+        tacticalDestination = destination;
+        if (motor != null)
+        {
+            motor.TraverseGateCorridor = true;
+        }
+
+        // Bypass IssueMoveOrder's cannon objectiveArrivalRadius — gate inside/outside are often
+        // closer than that, which stopped archers forever right at the threshold.
+        motor.MoveTo(destination);
+    }
+
+    private void IssueGateSpreadMove(Vector3 destination)
+    {
+        IssueGateCorridorMove(destination);
+    }
+
+    private Vector3 BuildGateOutsideSpreadDestination(RtsCampManager campManager)
+    {
+        Vector3 gateOutside = campManager.GetGateOutsidePosition(TroopCombat.Faction.Enemy);
+        Vector3 gateInside = campManager.GetGateInsidePosition(TroopCombat.Faction.Enemy);
+        Vector3 exitDirection = gateOutside - gateInside;
+        exitDirection.y = 0f;
+        if (exitDirection.sqrMagnitude < 0.0001f)
+        {
+            exitDirection = transform.forward;
+        }
+
+        exitDirection.Normalize();
+        Vector3 lateral = new Vector3(-exitDirection.z, 0f, exitDirection.x);
+
+        // Stable per-regiment fan using the same formation slot assigned at Awake.
+        float slotT = (formationSlot % 8) / 7f;
+        float lateralSign = slotT * 2f - 1f;
+        float radius = gateExitSpreadRadius * formationRadiusMultiplier;
+        float lateralOffset = lateralSign * radius;
+        float forwardOffset = Mathf.Lerp(0.6f, radius * 0.55f, Mathf.Abs(lateralSign));
+
+        Vector3 destination = gateOutside
+            + lateral * lateralOffset
+            + exitDirection * forwardOffset;
+
+        if (formationJitterRadius > 0f)
+        {
+            destination += new Vector3(formationJitter.x, 0f, formationJitter.y) * (formationJitterRadius * 0.35f);
+        }
+
+        destination.y = transform.position.y;
+        return destination;
+    }
+
+    /// <summary>
+    /// True when the regiment has crossed beyond the outside waypoint along the exit axis
+    /// (misses the small arrival sphere but is clearly clear of the gate).
+    /// </summary>
+    private bool HasPassedGateOutside(RtsCampManager campManager)
+    {
+        if (campManager == null)
+        {
+            return false;
+        }
+
+        Vector3 gateOutside = campManager.GetGateOutsidePosition(TroopCombat.Faction.Enemy);
+        Vector3 gateInside = campManager.GetGateInsidePosition(TroopCombat.Faction.Enemy);
+        Vector3 exitDirection = gateOutside - gateInside;
+        exitDirection.y = 0f;
+        if (exitDirection.sqrMagnitude < 0.0001f)
+        {
+            return false;
+        }
+
+        exitDirection.Normalize();
+        Vector3 fromOutside = transform.position - gateOutside;
+        fromOutside.y = 0f;
+        float alongExit = Vector3.Dot(fromOutside, exitDirection);
+        float lateral = Vector3.Cross(exitDirection, fromOutside).magnitude;
+        float openRadius = campManager.GateArrivalRadius * 2.5f;
+        return alongExit >= 0.35f && lateral <= openRadius;
     }
 
     private void FinishGateExit()
     {
+        RtsCampManager campManager = RtsCampManager.Instance;
+        if (campManager != null)
+        {
+            BeginGateOutsideSpreadOrFinish(campManager);
+            return;
+        }
+
+        CompleteGateExitAfterSpread();
+    }
+
+    private void CompleteGateExitAfterSpread()
+    {
+        gateSpreadPending = false;
         if (motor != null)
         {
             motor.TraverseGateCorridor = false;
@@ -908,6 +1106,13 @@ public class EnemyRegimentAI : MonoBehaviour
         Vector3 recovery = gateOutside + side * (unstuckOffsetDistance * 0.35f * sideMultipliers[sideIndex]);
         // Prefer stepping forward through the open gate over lateral bounce-backs into camp.
         recovery += throughGate * Mathf.Max(1.5f, unstuckForwardBias);
+
+        if (gateSpreadPending)
+        {
+            recovery = gateSpreadDestination + side * (unstuckOffsetDistance * 0.25f * sideMultipliers[sideIndex]);
+            recovery += throughGate * 0.75f;
+            recovery.y = transform.position.y;
+        }
 
         if (motor != null)
         {
