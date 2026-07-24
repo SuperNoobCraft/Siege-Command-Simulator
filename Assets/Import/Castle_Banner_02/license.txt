@@ -1,0 +1,11 @@
+Model Information:
+* title:	Castle_Banner_02
+* source:	https://sketchfab.com/3d-models/castle-banner-02-5b22ed76c9b1449e9b61857c2791ac1c
+* author:	BlackSpire (https://sketchfab.com/blackspire)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Castle_Banner_02" (https://sketchfab.com/3d-models/castle-banner-02-5b22ed76c9b1449e9b61857c2791ac1c) by BlackSpire (https://sketchfab.com/blackspire) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
