@@ -79,15 +79,16 @@ public class SiegePvpSession : MonoBehaviour
     [SerializeField, Range(0.1f, 2f)] private float moveSpeedScale = 1f;
     [Tooltip("Owner is canon for their faction. Peer follows the same PATH locally; POSE only soft-corrects XZ drift.")]
     [SerializeField] private bool enablePoseCorrection = true;
-    [SerializeField, Min(0.05f)] private float poseSyncIntervalSeconds = 0.12f;
+    [Tooltip("How often owned regiment poses are broadcast. ~13 units max — keep this frequent to avoid mid-path teleports.")]
+    [SerializeField, Min(0.04f)] private float poseSyncIntervalSeconds = 0.05f;
     [SerializeField, Range(8, 48)] private int maxSyncedPathPoints = 28;
     [Tooltip("Douglas-Peucker epsilon (m) when a drawn path must be shortened for the network.")]
     [SerializeField, Min(0.05f)] private float pathNetworkSimplifyEpsilon = 0.35f;
-    [Tooltip("Hard-snap peer XZ when horizontal error exceeds this (meters).")]
-    [SerializeField, Min(0.25f)] private float authoritySnapDistance = 2.5f;
+    [Tooltip("Hard-snap peer XZ when horizontal error exceeds this (meters). Keep low so corrections stay small.")]
+    [SerializeField, Min(0.25f)] private float authoritySnapDistance = 1.15f;
     [Tooltip("When the owner stops on a drawn path, snap the peer if drift exceeds this (meters).")]
-    [SerializeField, Min(0.25f)] private float pathHaltResyncDistance = 1.25f;
-    [SerializeField, Range(4, 20)] private int maxPoseUnitsPerPacket = 12;
+    [SerializeField, Min(0.25f)] private float pathHaltResyncDistance = 0.75f;
+    [SerializeField, Range(4, 20)] private int maxPoseUnitsPerPacket = 14;
 
     [Header("Prompts")]
     [SerializeField] private string selectedPrompt = "Siege PVP selected. Press Ready when both players are connected.";
@@ -100,6 +101,17 @@ public class SiegePvpSession : MonoBehaviour
     [Tooltip("When enabled, pressing Ready starts PVP without a second machine (for editor/host-only tests). Off by default.")]
     [SerializeField] private bool allowSoloTesting = false;
     [SerializeField] private bool logDefenderTeleport = true;
+
+    [Header("Remote Opponent Avatar")]
+    [Tooltip("Body shown when looking at the Host (Attacker). Client machines use this for their remote opponent.")]
+    [SerializeField] private GameObject hostOpponentBodyPrefab;
+    [Tooltip("Body shown when looking at the Client (Defender). Host machines use this for their remote opponent.")]
+    [SerializeField] private GameObject clientOpponentBodyPrefab;
+    [SerializeField] private Vector3 remoteBodyLocalPosition = new Vector3(0f, -1.55f, 0f);
+    [SerializeField] private Vector3 remoteBodyLocalEulerAngles = Vector3.zero;
+    [SerializeField] private Vector3 remoteBodyLocalScale = Vector3.one;
+    [Tooltip("When a body prefab is set, hide Votanic floating head/hand meshes (nametag stays).")]
+    [SerializeField] private bool hideFloatingPartsWhenBodyAttached = true;
 
     private LocalRole resolvedRole = LocalRole.Attacker;
     private LobbyPhase lobbyPhase = LobbyPhase.Idle;
@@ -178,6 +190,82 @@ public class SiegePvpSession : MonoBehaviour
         || pendingShowModeSelectAfterRelease
         || Time.unscaledTime < modeSelectUnlockTime;
 
+    /// <summary>Remote peer head transform (for cosmetic aim / avatar attach). Null if not connected.</summary>
+    public Transform TryGetRemoteOpponentHead()
+    {
+        vGear_NetworkUser remote = TryGetRemoteNetworkUser();
+        return remote != null ? remote.head : null;
+    }
+
+    public bool TryGetRemoteOpponentAimPosition(out Vector3 worldPosition)
+    {
+        worldPosition = Vector3.zero;
+        Transform head = TryGetRemoteOpponentHead();
+        if (head == null)
+        {
+            return false;
+        }
+
+        worldPosition = head.position;
+        return IsFinite(worldPosition);
+    }
+
+    private vGear_NetworkUser TryGetRemoteNetworkUser()
+    {
+        if (networking == null)
+        {
+            return null;
+        }
+
+        try
+        {
+            foreach (vGear_NetworkUser user in networking.GetAllNetworkUsers())
+            {
+                if (user != null && user.userID != networking.networkID)
+                {
+                    return user;
+                }
+            }
+        }
+        catch (Exception)
+        {
+        }
+
+        return null;
+    }
+
+    private static bool IsFinite(Vector3 value)
+    {
+        return float.IsFinite(value.x) && float.IsFinite(value.y) && float.IsFinite(value.z);
+    }
+
+    private void EnsureRemoteOpponentVisualsConfigured()
+    {
+        if (networking == null)
+        {
+            networking = FindObjectOfType<vGear_Networking>();
+        }
+
+        if (networking == null)
+        {
+            return;
+        }
+
+        SiegeRemoteOpponentVisuals visuals = networking.GetComponent<SiegeRemoteOpponentVisuals>();
+        if (visuals == null)
+        {
+            visuals = networking.gameObject.AddComponent<SiegeRemoteOpponentVisuals>();
+        }
+
+        visuals.ConfigureFromSession(
+            hostOpponentBodyPrefab,
+            clientOpponentBodyPrefab,
+            remoteBodyLocalPosition,
+            remoteBodyLocalEulerAngles,
+            remoteBodyLocalScale,
+            hideFloatingPartsWhenBodyAttached);
+    }
+
     private void Awake()
     {
         Instance = this;
@@ -194,6 +282,7 @@ public class SiegePvpSession : MonoBehaviour
 
         ResolveRole();
         PullDefaultsFromGameManager();
+        EnsureRemoteOpponentVisualsConfigured();
     }
 
     private void PullDefaultsFromGameManager()
@@ -265,6 +354,7 @@ public class SiegePvpSession : MonoBehaviour
         ResolveRole();
         PullDefaultsFromGameManager();
         EnsureWandBound();
+        EnsureRemoteOpponentVisualsConfigured();
         if (autoConnectOnStart)
         {
             TryAutoConnect();
@@ -676,6 +766,12 @@ public class SiegePvpSession : MonoBehaviour
                 break;
             case "DMG":
                 HandleRemoteDamage(parts, p);
+                break;
+            case "VOLLEY":
+                HandleRemoteVolley(parts, p);
+                break;
+            case "HAZARD":
+                HandleRemoteCastleHazard(parts, p);
                 break;
             case "FX":
                 HandleRemoteFx(parts, p);
@@ -1363,7 +1459,7 @@ public class SiegePvpSession : MonoBehaviour
             return;
         }
 
-        nextPoseSyncTime = Time.time + Mathf.Max(0.05f, poseSyncIntervalSeconds);
+        nextPoseSyncTime = Time.time + Mathf.Max(0.04f, poseSyncIntervalSeconds);
 
         TroopCombat.Faction ownedFaction = IsDefender
             ? TroopCombat.Faction.Enemy
@@ -1646,11 +1742,15 @@ public class SiegePvpSession : MonoBehaviour
                     && (motor.HasActivePath || motor.HasDestination)
                     && horizontalErrorSqr >= haltResyncSqr;
 
-                // Peer frozen on a cliff reject while owner keeps advancing — hard catch-up.
-                float peerCatchUpSqr = Mathf.Max(0.65f * 0.65f, haltResyncSqr * 0.35f);
+                // Peer frozen / lagging while owner keeps advancing — correct early with soft
+                // blends; only hard-snap when error is already large (avoids mid-path teleports).
+                float peerSoftCatchUpSqr = 0.35f * 0.35f;
+                float peerHardCatchUpSqr = Mathf.Max(
+                    authoritySnapDistance * authoritySnapDistance,
+                    haltResyncSqr);
                 bool peerLaggingBehindMovingOwner = ownerHasPath
                     && ownerAdvancing
-                    && horizontalErrorSqr >= peerCatchUpSqr;
+                    && horizontalErrorSqr >= peerSoftCatchUpSqr;
 
                 if (peerDriftedWhileOwnerStopped)
                 {
@@ -1686,7 +1786,19 @@ public class SiegePvpSession : MonoBehaviour
 
                 if (peerLaggingBehindMovingOwner)
                 {
-                    motor.SnapNetworkPosition(remotePos);
+                    if (horizontalErrorSqr >= peerHardCatchUpSqr)
+                    {
+                        motor.SnapNetworkPosition(remotePos);
+                    }
+                    else
+                    {
+                        motor.ApplyNetworkPose(
+                            remotePos,
+                            motor.transform.rotation,
+                            forceAuthority: true,
+                            authoritySnapDistance: Mathf.Min(authoritySnapDistance, 0.85f));
+                    }
+
                     if (hasAuthority && troop != null)
                     {
                         troop.ApplyNetworkCombatAuthority(
@@ -1698,7 +1810,7 @@ public class SiegePvpSession : MonoBehaviour
                     }
                     else if (troop != null)
                     {
-                        troop.NotifyNetworkPositionApplied(hardSnap: true);
+                        troop.NotifyNetworkPositionApplied(hardSnap: horizontalErrorSqr >= peerHardCatchUpSqr);
                     }
 
                     continue;
@@ -2054,6 +2166,206 @@ public class SiegePvpSession : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// Owner fired a ranged volley — peer should spawn the same arrow FX (damage is separate via DMG).
+    /// </summary>
+    public void NotifyRangedVolley(TroopCombat attacker, TroopCombat victim, int arrowCount)
+    {
+        if (!matchRunning || attacker == null || victim == null || !IsLocallyOwnedTroop(attacker))
+        {
+            return;
+        }
+
+        RtsUnitMotor attackerMotor = attacker.GetComponent<RtsUnitMotor>();
+        RtsUnitMotor victimMotor = victim.GetComponent<RtsUnitMotor>();
+        int attackerIndex = ResolveSyncIndex(attackerMotor);
+        int victimIndex = ResolveSyncIndex(victimMotor);
+        if (attackerIndex < 0 || victimIndex < 0)
+        {
+            return;
+        }
+
+        string token = string.IsNullOrEmpty(localInstanceToken) ? "local" : localInstanceToken;
+        Send(string.Format(
+            CultureInfo.InvariantCulture,
+            "SP|VOLLEY|{0}|{1}|{2}|{3}",
+            token,
+            attackerIndex,
+            victimIndex,
+            Mathf.Max(1, arrowCount)));
+    }
+
+    private void HandleRemoteVolley(string[] parts, int payloadStart)
+    {
+        // SP|VOLLEY|token|attackerIndex|victimIndex|arrowCount
+        if (parts.Length < payloadStart + 3)
+        {
+            return;
+        }
+
+        if (!int.TryParse(parts[payloadStart], NumberStyles.Integer, CultureInfo.InvariantCulture, out int attackerIndex)
+            || !int.TryParse(parts[payloadStart + 1], NumberStyles.Integer, CultureInfo.InvariantCulture, out int victimIndex)
+            || !int.TryParse(parts[payloadStart + 2], NumberStyles.Integer, CultureInfo.InvariantCulture, out int arrowCount))
+        {
+            return;
+        }
+
+        RtsUnitMotor attackerMotor = FindMotorBySyncIndex(attackerIndex);
+        RtsUnitMotor victimMotor = FindMotorBySyncIndex(victimIndex);
+        if (attackerMotor == null || victimMotor == null)
+        {
+            return;
+        }
+
+        // Owner already spawned locally — only the peer needs FX.
+        if (IsLocallyOwnedMotor(attackerMotor))
+        {
+            return;
+        }
+
+        TroopCombat attacker = attackerMotor.GetComponent<TroopCombat>();
+        TroopCombat victim = victimMotor.GetComponent<TroopCombat>();
+        if (attacker == null || victim == null || !attacker.HasRangedAttack)
+        {
+            return;
+        }
+
+        attacker.SpawnRangedAttackVolleyVisual(victim, arrowCount);
+    }
+
+    /// <summary>
+    /// Legacy peer FX for castle flaming arrows. Defender now spawns cosmetics locally
+    /// (aimed at the remote attacker head), so this is only a fallback for older peers.
+    /// </summary>
+    public void NotifyCastleHazardArrow(
+        Vector3 start,
+        Vector3 target,
+        float speed,
+        float arcHeight,
+        bool enableOutline,
+        Color outlineColor,
+        float outlineScale)
+    {
+        if (!matchRunning || IsDefender)
+        {
+            return;
+        }
+
+        string token = string.IsNullOrEmpty(localInstanceToken) ? "local" : localInstanceToken;
+        Send(string.Format(
+            CultureInfo.InvariantCulture,
+            "SP|HAZARD|{0}|{1:0.###},{2:0.###},{3:0.###}|{4:0.###},{5:0.###},{6:0.###}|{7:0.##}|{8:0.##}|{9}|{10:0.###},{11:0.###},{12:0.###},{13:0.###}|{14:0.##}",
+            token,
+            start.x,
+            start.y,
+            start.z,
+            target.x,
+            target.y,
+            target.z,
+            speed,
+            arcHeight,
+            enableOutline ? 1 : 0,
+            outlineColor.r,
+            outlineColor.g,
+            outlineColor.b,
+            outlineColor.a,
+            outlineScale));
+    }
+
+    private void HandleRemoteCastleHazard(string[] parts, int payloadStart)
+    {
+        // Defender owns cosmetic castle arrows locally — ignore legacy HAZARD packets to avoid doubles.
+        if (IsDefender)
+        {
+            return;
+        }
+
+        // SP|HAZARD|token|sx,sy,sz|tx,ty,tz|speed|arc|outline|r,g,b,a|outlineScale
+        if (parts.Length < payloadStart + 5)
+        {
+            return;
+        }
+
+        string[] startParts = parts[payloadStart].Split(',');
+        string[] targetParts = parts[payloadStart + 1].Split(',');
+        if (startParts.Length < 3
+            || targetParts.Length < 3
+            || !TryParseFloat(startParts[0], out float sx)
+            || !TryParseFloat(startParts[1], out float sy)
+            || !TryParseFloat(startParts[2], out float sz)
+            || !TryParseFloat(targetParts[0], out float tx)
+            || !TryParseFloat(targetParts[1], out float ty)
+            || !TryParseFloat(targetParts[2], out float tz)
+            || !TryParseFloat(parts[payloadStart + 2], out float speed)
+            || !TryParseFloat(parts[payloadStart + 3], out float arc))
+        {
+            return;
+        }
+
+        bool enableOutline = parts.Length > payloadStart + 4
+            && int.TryParse(parts[payloadStart + 4], NumberStyles.Integer, CultureInfo.InvariantCulture, out int outlineFlag)
+            && outlineFlag != 0;
+
+        Color outlineColor = new Color(1f, 0.15f, 0.05f, 1f);
+        float outlineScale = 1.14f;
+        if (parts.Length > payloadStart + 5)
+        {
+            string[] colorParts = parts[payloadStart + 5].Split(',');
+            if (colorParts.Length >= 4
+                && TryParseFloat(colorParts[0], out float r)
+                && TryParseFloat(colorParts[1], out float g)
+                && TryParseFloat(colorParts[2], out float b)
+                && TryParseFloat(colorParts[3], out float a))
+            {
+                outlineColor = new Color(r, g, b, a);
+            }
+        }
+
+        if (parts.Length > payloadStart + 6)
+        {
+            TryParseFloat(parts[payloadStart + 6], out outlineScale);
+        }
+
+        GameObject prefab = ResolveCastleArrowPrefab();
+        if (prefab == null)
+        {
+            return;
+        }
+
+        // Visual-only: do NOT ConfigurePlayerHazard — would hit the defender's local commander rig.
+        TroopRangedProjectile projectile = TroopRangedProjectile.Launch(
+            prefab,
+            new Vector3(sx, sy, sz),
+            new Vector3(tx, ty, tz),
+            speed,
+            arc);
+
+        if (projectile != null && enableOutline)
+        {
+            projectile.ApplyVisualOutlineOnly(outlineColor, outlineScale);
+        }
+
+        SiegeSoundEffects soundEffects = SiegeSoundEffects.Instance;
+        if (soundEffects != null)
+        {
+            soundEffects.PlayArrowShoot(new Vector3(sx, sy, sz));
+        }
+    }
+
+    private static GameObject ResolveCastleArrowPrefab()
+    {
+        CastleArcherGuards[] guards = FindObjectsOfType<CastleArcherGuards>(true);
+        for (int i = 0; i < guards.Length; i++)
+        {
+            if (guards[i] != null && guards[i].ArrowPrefab != null)
+            {
+                return guards[i].ArrowPrefab;
+            }
+        }
+
+        return null;
+    }
+
     private void HandleRemoteDamage(string[] parts, int payloadStart)
     {
         // SP|DMG|token|victimIndex|amount|isRanged|attackerIndex|flags
@@ -2107,6 +2419,14 @@ public class SiegePvpSession : MonoBehaviour
         applyingRemotePath = true;
         try
         {
+            // Peer-owned archers never run UpdateCombat here — spawn FX when their damage arrives
+            // in case VOLLEY was dropped. Owner already spawned locally and skips via ownership.
+            if (isRanged && attacker != null && attacker.HasRangedAttack && !IsLocallyOwnedTroop(attacker))
+            {
+                int visualCount = Mathf.Max(1, Mathf.RoundToInt(Mathf.Max(1, attacker.ActiveUnitCount) * 0.35f));
+                attacker.SpawnRangedAttackVolleyVisual(victim, visualCount);
+            }
+
             if (!isRanged && !suppressCounter && attacker != null)
             {
                 victim.TryPerformImmediateMeleeCounter(attacker, suppressCounterReply: true);

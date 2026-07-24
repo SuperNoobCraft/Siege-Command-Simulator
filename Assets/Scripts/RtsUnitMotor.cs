@@ -471,7 +471,7 @@ public class RtsUnitMotor : MonoBehaviour
         Vector3 current = transform.position;
         float horizontalDeltaSqr = HorizontalDistanceSqr(current, flat);
         // Wider deadzone while idle so pose sync doesn't creep stopped units.
-        float deadzone = hasDestination ? 0.3f : 0.75f;
+        float deadzone = hasDestination ? 0.18f : 0.55f;
         float deadzoneSqr = deadzone * deadzone;
         if (horizontalDeltaSqr < deadzoneSqr)
         {
@@ -487,7 +487,10 @@ public class RtsUnitMotor : MonoBehaviour
         }
         else
         {
-            float blend = forceAuthority ? 0.55f : 0.35f;
+            // Stronger pull while moving so frequent poses erase drift before it becomes a teleport.
+            float blend = forceAuthority
+                ? (hasDestination ? 0.72f : 0.55f)
+                : (hasDestination ? 0.45f : 0.35f);
             next.x = Mathf.Lerp(current.x, flat.x, blend);
             next.z = Mathf.Lerp(current.z, flat.z, blend);
         }

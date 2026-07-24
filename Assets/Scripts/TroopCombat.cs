@@ -177,6 +177,7 @@ public class TroopCombat : MonoBehaviour
     private bool networkOwnerPoseHalted;
     private Vector3 lastRegimentPosition;
     private float smoothedCombatOverlap;
+    private float nextNetworkVolleyVisualTime;
     private const float MinimumFacingMovementDistance = 0.02f;
     private readonly List<TroopVisualInstance> troopVisuals = new List<TroopVisualInstance>();
     private int activeTroopVisualCount;
@@ -1395,7 +1396,7 @@ public class TroopCombat : MonoBehaviour
         nextAttackTime = Time.time + Mathf.Max(0.05f, attackProfile.Cooldown);
         if (attackProfile.IsRanged)
         {
-            SpawnRangedAttackVolley(currentTarget);
+            SpawnRangedAttackVolley(currentTarget, notifyNetwork: true);
         }
         else
         {
@@ -1424,16 +1425,51 @@ public class TroopCombat : MonoBehaviour
         target.TakeDamage(amount, this, isRangedAttack);
     }
 
-    private void SpawnRangedAttackVolley(TroopCombat target)
+    private void SpawnRangedAttackVolley(TroopCombat target, bool notifyNetwork)
     {
         if (rangedProjectilePrefab == null || target == null)
         {
             return;
         }
 
-        int arrowCount = Mathf.Max(1, Mathf.RoundToInt(activeTroopVisualCount * rangedProjectileFrequency));
-        List<Vector3> launchPoints = GetRangedLaunchPoints(arrowCount);
-        Vector3 targetCenter = target.transform.position;
+        int arrowCount = Mathf.Max(1, Mathf.RoundToInt(Mathf.Max(1, activeTroopVisualCount) * rangedProjectileFrequency));
+        SpawnRangedAttackVolleyVisual(target, arrowCount);
+
+        if (notifyNetwork)
+        {
+            SiegePvpSession session = SiegePvpSession.Instance;
+            if (session != null && session.IsMatchRunning)
+            {
+                session.NotifyRangedVolley(this, target, arrowCount);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Visual-only volley (local or peer FX). Damage is applied separately via combat / DMG sync.
+    /// </summary>
+    public void SpawnRangedAttackVolleyVisual(TroopCombat target, int arrowCount)
+    {
+        if (rangedProjectilePrefab == null || target == null)
+        {
+            return;
+        }
+
+        // VOLLEY + DMG can both request FX on the peer — keep one volley per shot window.
+        if (Time.unscaledTime < nextNetworkVolleyVisualTime
+            && UsesRemoteCombatAuthority())
+        {
+            return;
+        }
+
+        if (UsesRemoteCombatAuthority())
+        {
+            nextNetworkVolleyVisualTime = Time.unscaledTime + 0.12f;
+        }
+
+        int count = Mathf.Max(1, arrowCount);
+        List<Vector3> launchPoints = GetRangedLaunchPoints(count);
+        Vector3 targetCenter = ResolveRangedAimPoint(target);
         float spreadRadius = rangedProjectileDispersion * rangedProjectileMaxSpreadRadius;
 
         for (int i = 0; i < launchPoints.Count; i++)
@@ -1445,17 +1481,31 @@ public class TroopCombat : MonoBehaviour
                 targetCenter.z + impactOffset.y);
 
             Vector3 launchPoint = launchPoints[i];
-            launchPoint.y += rangedProjectileLaunchHeight;
-
-            float arrowArc = Random.Range(rangedProjectileMinArcHeight, rangedProjectileMaxArcHeight);
-
             TroopRangedProjectile.Launch(
                 rangedProjectilePrefab,
                 launchPoint,
                 impactPoint,
                 rangedProjectileSpeed,
-                arrowArc);
+                Random.Range(rangedProjectileMinArcHeight, rangedProjectileMaxArcHeight));
         }
+    }
+
+    private Vector3 ResolveRangedAimPoint(TroopCombat target)
+    {
+        Vector3 aim = target.transform.position;
+        if (RtsGroundUtility.TrySampleWalkableGroundForMovement(
+                aim.x,
+                aim.z,
+                preferredY: aim.y,
+                out float groundY,
+                out _))
+        {
+            aim.y = groundY;
+        }
+
+        // Aim at roughly chest height so arcs stay visible above ground.
+        aim.y += Mathf.Max(0.35f, rangedProjectileLaunchHeight * 0.35f);
+        return aim;
     }
 
     private List<Vector3> GetRangedLaunchPoints(int desiredCount)
@@ -1469,12 +1519,12 @@ public class TroopCombat : MonoBehaviour
                 continue;
             }
 
-            availablePoints.Add(troopVisual.Instance.transform.position);
+            availablePoints.Add(ResolveRangedLaunchPoint(troopVisual.Instance.transform.position));
         }
 
         if (availablePoints.Count == 0)
         {
-            availablePoints.Add(transform.position);
+            availablePoints.Add(ResolveRangedLaunchPoint(transform.position));
         }
 
         ShuffleLaunchPoints(availablePoints);
@@ -1486,6 +1536,40 @@ public class TroopCombat : MonoBehaviour
         }
 
         return selectedPoints;
+    }
+
+    private Vector3 ResolveRangedLaunchPoint(Vector3 worldPoint)
+    {
+        Vector3 launch = worldPoint;
+        if (RtsGroundUtility.TrySampleWalkableGroundForMovement(
+                launch.x,
+                launch.z,
+                preferredY: launch.y,
+                out float groundY,
+                out _))
+        {
+            launch.y = groundY + rangedProjectileLaunchHeight;
+        }
+        else
+        {
+            // Before ground projection / if visuals are still at a bad Y, prefer regiment root.
+            float fallbackY = transform.position.y + rangedProjectileLaunchHeight;
+            if (!IsFinite(launch.y) || Mathf.Abs(launch.y - transform.position.y) > 25f)
+            {
+                launch.y = fallbackY;
+            }
+            else
+            {
+                launch.y += rangedProjectileLaunchHeight;
+            }
+        }
+
+        return launch;
+    }
+
+    private static bool IsFinite(float value)
+    {
+        return !float.IsNaN(value) && !float.IsInfinity(value);
     }
 
     private static void ShuffleLaunchPoints(List<Vector3> points)
@@ -2355,8 +2439,8 @@ public class TroopCombat : MonoBehaviour
                 float drift = delta.magnitude;
                 // Tight while pathing so a locally stuck peer cannot trail the owner for long.
                 float driftThreshold = remoteVisual
-                    ? Mathf.Max(0.55f, authoritySnapDistance * 0.35f)
-                    : Mathf.Max(0.5f, authoritySnapDistance * 0.5f);
+                    ? Mathf.Max(0.28f, authoritySnapDistance * 0.22f)
+                    : Mathf.Max(0.35f, authoritySnapDistance * 0.35f);
                 if (drift < driftThreshold)
                 {
                     return;

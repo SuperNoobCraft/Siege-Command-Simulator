@@ -49,6 +49,22 @@ public class CastleArcherGuards : MonoBehaviour
     [Tooltip("Radius of the runtime sphere used to detect commander hits. Arrows do not need prefab colliders.")]
     [SerializeField, Min(0.01f)] private float playerHazardHitRadius = 0.1f;
 
+    [Header("Siege PVP Harassment")]
+    [Tooltip("PVP uses this profile instead of the slower Full-mode regiment harassment. Progress still ramps over the PVP match duration.")]
+    [SerializeField] private PlayerHarassmentProfile pvpHarassment = new PlayerHarassmentProfile
+    {
+        minTimeGap = 10f,
+        shotChance = 0.55f,
+        minScaledTimeGap = 3.25f,
+        maxScaledChance = 0.95f,
+        matchDurationReferenceSeconds = 180f,
+        gapScaleStrength = 1.15f,
+        chanceScaleStrength = 1.1f,
+        shotSpreadRadius = 1.75f,
+        archersPerVolley = 3,
+        firstShotDelay = 2f
+    };
+
     [Header("Dodge Arrows Mode")]
     [Tooltip("Regiment targeting is disabled. Min Time Gap is the global interval between volleys (not per archer). Archers Per Volley is the maximum archers that may fire each interval (actual count is random from 1 to that max).")]
     [SerializeField] private PlayerHarassmentProfile dodgeArrowsHarassment = new PlayerHarassmentProfile
@@ -130,6 +146,12 @@ public class CastleArcherGuards : MonoBehaviour
 
     private void RegisterPlayerHitRig()
     {
+        // Defender cosmetic arrows aim at the remote attacker — never bind hit detection there.
+        if (IsPvpDefenderCosmeticHarassment())
+        {
+            return;
+        }
+
         Transform player = ResolvePlayerTarget();
         if (player == null)
         {
@@ -178,6 +200,7 @@ public class CastleArcherGuards : MonoBehaviour
         projectileLaunchHeight = Mathf.Max(0f, projectileLaunchHeight);
         ValidateHarassmentProfile(dodgeArrowsHarassment);
         ValidateHarassmentProfile(dodgeArrowsEndlessHarassment);
+        ValidateHarassmentProfile(pvpHarassment);
         dodgeArrowsDecoyShotChance = Mathf.Clamp01(dodgeArrowsDecoyShotChance);
         dodgeArrowsProjectile.Validate();
         endlessAbsoluteMinVolleyGap = Mathf.Max(0.05f, endlessAbsoluteMinVolleyGap);
@@ -236,12 +259,17 @@ public class CastleArcherGuards : MonoBehaviour
 
         float shotChance = GetActiveHarassmentProfile().GetScaledShotChance(GetMatchProgress());
         bool shouldFire = shotChance > 0f && Random.value <= shotChance;
-        ScheduleNextPlayerHarassmentRoll();
 
+        // Failed rolls used to wait the full gap (early PVP felt like ~1 shot/minute).
+        // Retry sooner on a miss so the configured gap is closer to actual volley spacing.
         if (!shouldFire)
         {
+            float retryGap = GetActiveHarassmentProfile().GetScaledTimeGap(GetMatchProgress()) * 0.4f;
+            nextPlayerHarassmentRollTime = Time.time + Mathf.Max(0.5f, retryGap);
             return;
         }
+
+        ScheduleNextPlayerHarassmentRoll();
 
         Transform player = ResolvePlayerTarget();
         if (player == null)
@@ -347,18 +375,29 @@ public class CastleArcherGuards : MonoBehaviour
             return false;
         }
 
-        // In Siege PVP only the Attacker (command tower) is harassed.
-        // The Defender is teleported away — never shoot the local peer as "commander".
+        // Siege PVP: Attacker gets real commander hits; Defender fires cosmetic arrows
+        // at the remote attacker so they can see the volleys from the city viewpoint.
         if (SiegeMatchSettings.IsSiegePvpMode)
         {
             SiegePvpSession pvp = SiegePvpSession.Instance;
-            if (pvp == null || !pvp.IsMatchRunning || pvp.IsDefender)
+            if (pvp == null || !pvp.IsMatchRunning)
             {
                 return false;
             }
         }
 
         return true;
+    }
+
+    private static bool IsPvpDefenderCosmeticHarassment()
+    {
+        if (!SiegeMatchSettings.IsSiegePvpMode)
+        {
+            return false;
+        }
+
+        SiegePvpSession pvp = SiegePvpSession.Instance;
+        return pvp != null && pvp.IsMatchRunning && pvp.IsDefender;
     }
 
     private void TryRefreshPlayerHitBinding()
@@ -384,7 +423,17 @@ public class CastleArcherGuards : MonoBehaviour
             return dodgeArrowsEndlessHarassment;
         }
 
-        return IsDodgeArrowsMode() ? dodgeArrowsHarassment : regimentHarassmentProfile;
+        if (IsDodgeArrowsMode())
+        {
+            return dodgeArrowsHarassment;
+        }
+
+        if (SiegeMatchSettings.IsSiegePvpMode)
+        {
+            return pvpHarassment;
+        }
+
+        return regimentHarassmentProfile;
     }
 
     private bool IsDodgeArrowsMode()
@@ -601,10 +650,15 @@ public class CastleArcherGuards : MonoBehaviour
         hasStillnessSample = false;
         CacheArcherSlots();
 
-        if (IsDodgeArrowsMode())
+        if (IsDodgeArrowsMode() || SiegeMatchSettings.IsSiegePvpMode)
         {
             PlayerHarassmentProfile profile = GetActiveHarassmentProfile();
             nextPlayerHarassmentRollTime = Time.time + Mathf.Max(0f, profile.firstShotDelay);
+            if (!IsDodgeArrowsMode())
+            {
+                ScheduleRegimentArcherCooldowns();
+            }
+
             return;
         }
 
@@ -686,17 +740,39 @@ public class CastleArcherGuards : MonoBehaviour
             return;
         }
 
-        TroopRangedProjectile.LaunchPlayerHazard(
-            arrowPrefab,
-            launchPoint,
-            aimPoint,
-            GetProjectileSpeed(),
-            GetProjectileArcHeight(),
-            playerHitLayers,
-            playerHazardHitRadius,
-            enablePlayerShotOutline,
-            playerShotOutlineColor,
-            playerShotOutlineScale);
+        // Defender: visual-only volley toward the remote attacker (no hit detection).
+        // Attacker keeps real hazard hits locally — defender generates its own cosmetics
+        // from the remote head pose so volleys stay visible even if net FX drops.
+        if (IsPvpDefenderCosmeticHarassment())
+        {
+            TroopRangedProjectile cosmetic = TroopRangedProjectile.Launch(
+                arrowPrefab,
+                launchPoint,
+                aimPoint,
+                GetProjectileSpeed(),
+                GetProjectileArcHeight());
+            if (cosmetic != null)
+            {
+                // Slightly larger / outlined so the volley reads from the city viewpoint.
+                float outlineScale = Mathf.Max(1.25f, playerShotOutlineScale * 1.15f);
+                cosmetic.ApplyVisualOutlineOnly(playerShotOutlineColor, outlineScale);
+                cosmetic.transform.localScale *= 1.35f;
+            }
+        }
+        else
+        {
+            TroopRangedProjectile.LaunchPlayerHazard(
+                arrowPrefab,
+                launchPoint,
+                aimPoint,
+                GetProjectileSpeed(),
+                GetProjectileArcHeight(),
+                playerHitLayers,
+                playerHazardHitRadius,
+                enablePlayerShotOutline,
+                playerShotOutlineColor,
+                playerShotOutlineScale);
+        }
 
         SiegeSoundEffects soundEffects = SiegeSoundEffects.Instance;
         if (soundEffects != null)
@@ -704,6 +780,8 @@ public class CastleArcherGuards : MonoBehaviour
             soundEffects.PlayArrowShoot(launchPoint);
         }
     }
+
+    public GameObject ArrowPrefab => arrowPrefab;
 
     private void CacheArcherSlots()
     {
@@ -903,6 +981,19 @@ public class CastleArcherGuards : MonoBehaviour
 
     private Transform ResolvePlayerTarget()
     {
+        if (IsPvpDefenderCosmeticHarassment())
+        {
+            SiegePvpSession pvp = SiegePvpSession.Instance;
+            Transform remoteHead = pvp != null ? pvp.TryGetRemoteOpponentHead() : null;
+            if (remoteHead != null)
+            {
+                return remoteHead;
+            }
+
+            // No remote avatar yet — skip this volley rather than aiming at the local defender.
+            return null;
+        }
+
         if (playerTarget != null)
         {
             return playerTarget;
@@ -913,6 +1004,22 @@ public class CastleArcherGuards : MonoBehaviour
 
     private Vector3 ResolvePlayerAimOrigin(Transform player)
     {
+        if (IsPvpDefenderCosmeticHarassment())
+        {
+            if (player != null)
+            {
+                return player.position;
+            }
+
+            SiegePvpSession pvp = SiegePvpSession.Instance;
+            if (pvp != null && pvp.TryGetRemoteOpponentAimPosition(out Vector3 remoteAim))
+            {
+                return remoteAim;
+            }
+
+            return Vector3.zero;
+        }
+
         SiegeCommanderArrowHealth health = SiegeCommanderArrowHealth.Instance;
         if (health != null && health.TryGetHurtboxAimPoint(out Vector3 hurtboxPoint))
         {

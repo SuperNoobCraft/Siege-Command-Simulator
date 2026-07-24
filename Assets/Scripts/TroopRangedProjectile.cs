@@ -114,6 +114,12 @@ public class TroopRangedProjectile : MonoBehaviour
         }
     }
 
+    /// <summary>Cosmetic outline for peer-synced castle arrows (no hit detection).</summary>
+    public void ApplyVisualOutlineOnly(Color outlineColor, float outlineScale)
+    {
+        ApplyPlayerHazardOutline(outlineColor, outlineScale);
+    }
+
     private void Update()
     {
         if (!isInitialized)

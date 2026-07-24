@@ -89,7 +89,21 @@ public class VGearNetworkConfigLoader : MonoBehaviour
             return;
         }
 
+        EnsureRemoteOpponentVisuals();
         ApplyConfigFromDisk();
+    }
+
+    private void EnsureRemoteOpponentVisuals()
+    {
+        if (networking == null)
+        {
+            return;
+        }
+
+        if (networking.GetComponent<SiegeRemoteOpponentVisuals>() == null)
+        {
+            networking.gameObject.AddComponent<SiegeRemoteOpponentVisuals>();
+        }
     }
 
     [ContextMenu("Reload Network Config Now")]
