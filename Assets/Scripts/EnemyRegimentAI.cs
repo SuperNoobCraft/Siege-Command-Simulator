@@ -113,6 +113,9 @@ public class EnemyRegimentAI : MonoBehaviour
     private readonly List<TroopCombat> visibleEnemies = new List<TroopCombat>();
     private bool siegePvpPlayerControlled;
     private bool stagingToGateAfterRegroup;
+    private bool hasSiegePvpFormationDestination;
+    private Vector3 siegePvpFormationDestination;
+    private bool siegePvpFormingUp;
 
     public AssignedWave WaveAssignment => assignedWave;
     public int AssignedWaveNumber => (int)assignedWave;
@@ -160,6 +163,9 @@ public class EnemyRegimentAI : MonoBehaviour
         visibleEnemies.Clear();
         siegePvpPlayerControlled = false;
         stagingToGateAfterRegroup = false;
+        hasSiegePvpFormationDestination = false;
+        siegePvpFormingUp = false;
+        gateSpreadPending = false;
 
         if (motor != null)
         {
@@ -184,6 +190,22 @@ public class EnemyRegimentAI : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// Pre-match formation slot (XZ only — Y is ignored; <see cref="RtsUnitMotor.MoveTo"/> stays on ground).
+    /// After the gate exit, the regiment marches here before player control.
+    /// </summary>
+    public void SetSiegePvpFormationDestination(Vector3 worldPoint)
+    {
+        siegePvpFormationDestination = new Vector3(worldPoint.x, 0f, worldPoint.z);
+        hasSiegePvpFormationDestination = true;
+
+        if (phase == AiPhase.WaitingAtGateOutside
+            || (hasEnteredBattlefield && phase != AiPhase.ExitingGate && !gateSpreadPending))
+        {
+            BeginSiegePvpFormationMove();
+        }
+    }
+
     private void RefreshSiegePvpCommandPermissions()
     {
         if (!siegePvpPlayerControlled || motor == null || !motor.IsCommandUnit || combat == null)
@@ -192,22 +214,27 @@ public class EnemyRegimentAI : MonoBehaviour
         }
 
         SiegePvpSession session = SiegePvpSession.Instance;
-        if (session != null && session.IsMatchRunning && session.IsLocallyOwnedTroop(combat))
+        bool matchLive = session != null
+            && session.IsMatchRunning
+            && session.IsLocallyOwnedTroop(combat);
+        if (!matchLive)
         {
-            motor.CanReceiveCommands = combat.CurrentState != TroopCombat.State.Dead
-                && !combat.IsRetreating
-                && !combat.IsRegrouping;
+            // Countdown / peer view: AI owns movement until GO.
+            motor.CanReceiveCommands = false;
             return;
         }
 
-        motor.CanReceiveCommands = phase == AiPhase.WaitingAtGateOutside
-            || (hasEnteredBattlefield && phase != AiPhase.ExitingGate && phase != AiPhase.WaitingInCamp);
+        motor.CanReceiveCommands = combat.CurrentState != TroopCombat.State.Dead
+            && !combat.IsRetreating
+            && !combat.IsRegrouping;
     }
 
     public void ClearSiegePvpControl()
     {
         siegePvpPlayerControlled = false;
         stagingToGateAfterRegroup = false;
+        hasSiegePvpFormationDestination = false;
+        siegePvpFormingUp = false;
         if (motor != null && !SiegeMatchSettings.IsSiegePvpMode)
         {
             motor.CanReceiveCommands = false;
@@ -353,6 +380,21 @@ public class EnemyRegimentAI : MonoBehaviour
             return;
         }
 
+        if (siegePvpFormingUp)
+        {
+            // GO unlocks player control even if the regiment is still walking into formation.
+            if (session != null && session.IsMatchRunning)
+            {
+                siegePvpFormingUp = false;
+            }
+            else
+            {
+                UpdateSiegePvpFormationMove();
+                RefreshSiegePvpCommandPermissions();
+                return;
+            }
+        }
+
         if (phase == AiPhase.WaitingAtGateOutside || phase == AiPhase.WaitingInCamp)
         {
             RefreshSiegePvpCommandPermissions();
@@ -368,6 +410,45 @@ public class EnemyRegimentAI : MonoBehaviour
         }
 
         RefreshSiegePvpCommandPermissions();
+    }
+
+    private void UpdateSiegePvpFormationMove()
+    {
+        if (!hasSiegePvpFormationDestination || motor == null)
+        {
+            siegePvpFormingUp = false;
+            return;
+        }
+
+        float arrivalRadius = Mathf.Max(1.25f, gateExitSpreadArrivalRadius);
+        if (GetHorizontalDistanceSqr(transform.position, siegePvpFormationDestination)
+            <= arrivalRadius * arrivalRadius)
+        {
+            siegePvpFormingUp = false;
+            phase = AiPhase.WaitingAtGateOutside;
+            motor.Stop();
+            return;
+        }
+
+        if (!motor.HasDestination && !motor.HasActivePath)
+        {
+            motor.MoveTo(siegePvpFormationDestination);
+        }
+    }
+
+    private void BeginSiegePvpFormationMove()
+    {
+        if (!hasSiegePvpFormationDestination || motor == null)
+        {
+            return;
+        }
+
+        gateSpreadPending = false;
+        siegePvpFormingUp = true;
+        phase = AiPhase.Advancing;
+        motor.TraverseGateCorridor = false;
+        motor.CanReceiveCommands = false;
+        motor.MoveTo(siegePvpFormationDestination);
     }
 
     private void HandleRegimentRegroupCompleted(TroopCombat regiment)
@@ -832,6 +913,13 @@ public class EnemyRegimentAI : MonoBehaviour
             motor.TraverseGateCorridor = true;
         }
 
+        // PVP formation points replace the random gate fan — march straight to the assigned slot.
+        if (hasSiegePvpFormationDestination)
+        {
+            CompleteGateExitAfterSpread();
+            return;
+        }
+
         if (gateExitSpreadRadius > 0.05f)
         {
             gateSpreadDestination = BuildGateOutsideSpreadDestination(campManager);
@@ -956,17 +1044,20 @@ public class EnemyRegimentAI : MonoBehaviour
 
         if (SiegeMatchSettings.IsSiegePvpMode || stagingToGateAfterRegroup)
         {
+            if (hasSiegePvpFormationDestination)
+            {
+                BeginSiegePvpFormationMove();
+                return;
+            }
+
             phase = AiPhase.WaitingAtGateOutside;
             stagingToGateAfterRegroup = false;
             if (motor != null)
             {
                 motor.Stop();
-                if (motor.IsCommandUnit)
-                {
-                    motor.CanReceiveCommands = true;
-                }
             }
 
+            RefreshSiegePvpCommandPermissions();
             return;
         }
 

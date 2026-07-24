@@ -1200,7 +1200,7 @@ public class TroopCombat : MonoBehaviour
         return Mathf.Clamp01(totalOverlapArea / selfArea);
     }
 
-    private bool TryGetFootprintBoundsXZ(out Vector2 center, out Vector2 halfExtents)
+    public bool TryGetFootprintBoundsXZ(out Vector2 center, out Vector2 halfExtents)
     {
         center = Vector2.zero;
         halfExtents = Vector2.zero;
@@ -1222,6 +1222,19 @@ public class TroopCombat : MonoBehaviour
             return true;
         }
 
+        return false;
+    }
+
+    /// <summary>XZ footprint size (full width/depth) for editor gizmos and layout helpers.</summary>
+    public bool TryGetFootprintSizeXZ(out Vector2 size)
+    {
+        if (TryGetFootprintBoundsXZ(out _, out Vector2 halfExtents))
+        {
+            size = halfExtents * 2f;
+            return true;
+        }
+
+        size = Vector2.zero;
         return false;
     }
 

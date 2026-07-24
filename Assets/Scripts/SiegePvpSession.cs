@@ -73,8 +73,9 @@ public class SiegePvpSession : MonoBehaviour
     [SerializeField] private int networkPort = 7777;
 
     [Header("Match Defaults")]
+    [Tooltip("Seconds after both players Ready before GO. Defender regiments use this time to exit the gate and reach formation points.")]
+    [SerializeField, Min(0f)] private float preMatchCountdownSeconds = 10f;
     [Tooltip("Runtime cache. Filled from SiegeGameManager on play/select unless a PVP button has Use Custom Pvp Tuning.")]
-    [SerializeField, Min(0f)] private float preMatchCountdownSeconds = 5f;
     [SerializeField, Min(30f)] private float matchDurationSeconds = 180f;
     [SerializeField, Range(0.1f, 2f)] private float moveSpeedScale = 1f;
     [Tooltip("Owner is canon for their faction. Peer follows the same PATH locally; POSE only soft-corrects XZ drift.")]
@@ -89,6 +90,16 @@ public class SiegePvpSession : MonoBehaviour
     [Tooltip("When the owner stops on a drawn path, snap the peer if drift exceeds this (meters).")]
     [SerializeField, Min(0.25f)] private float pathHaltResyncDistance = 0.75f;
     [SerializeField, Range(4, 20)] private int maxPoseUnitsPerPacket = 14;
+
+    [Header("Defender Formation (countdown)")]
+    [Tooltip("Go-to points for the two PVP infantry regiments (non-ranged IncludeInSiegePvp). Assigned by sorted name. Only XZ is used — Y is ignored and units stay on ground.")]
+    [SerializeField] private Transform[] defenderInfantryFormationPoints = new Transform[2];
+    [Tooltip("Go-to points for the two PVP archer regiments (ranged IncludeInSiegePvp). Assigned by sorted name. Only XZ is used — Y is ignored and units stay on ground.")]
+    [SerializeField] private Transform[] defenderArcherFormationPoints = new Transform[2];
+    [SerializeField] private bool drawFormationFootprintGizmos = true;
+    [SerializeField] private Color infantryFormationGizmoColor = new Color(0.25f, 0.8f, 1f, 0.9f);
+    [SerializeField] private Color archerFormationGizmoColor = new Color(1f, 0.55f, 0.15f, 0.9f);
+    [SerializeField] private Vector2 fallbackFormationFootprintSize = new Vector2(6f, 6f);
 
     [Header("Prompts")]
     [SerializeField] private string selectedPrompt = "Siege PVP selected. Press Ready when both players are connected.";
@@ -1000,12 +1011,219 @@ public class SiegePvpSession : MonoBehaviour
         }
 
         EnemyWaveController.Instance.DeployAllForSiegePvp();
+        AssignDefenderFormationWaypoints();
 
         if (logNetworkMessages)
         {
-            Debug.Log("SiegePvp defender regiments exiting gate during countdown.", this);
+            Debug.Log("SiegePvp defender regiments exiting gate toward formation points during countdown.", this);
         }
     }
+
+    /// <summary>
+    /// Map IncludeInSiegePvp regiments to infantry/archer formation Transforms (sorted by name for host/client parity).
+    /// </summary>
+    private void AssignDefenderFormationWaypoints()
+    {
+        List<EnemyRegimentAI> infantry = new List<EnemyRegimentAI>(2);
+        List<EnemyRegimentAI> archers = new List<EnemyRegimentAI>(2);
+
+        EnemyRegimentAI[] enemies = FindObjectsOfType<EnemyRegimentAI>(true);
+        for (int i = 0; i < enemies.Length; i++)
+        {
+            EnemyRegimentAI regiment = enemies[i];
+            if (regiment == null || !regiment.IncludeInSiegePvp || !regiment.isActiveAndEnabled)
+            {
+                continue;
+            }
+
+            TroopCombat combat = regiment.GetComponent<TroopCombat>();
+            if (combat == null || combat.TroopFaction != TroopCombat.Faction.Enemy)
+            {
+                continue;
+            }
+
+            if (combat.HasRangedAttack)
+            {
+                archers.Add(regiment);
+            }
+            else
+            {
+                infantry.Add(regiment);
+            }
+        }
+
+        infantry.Sort(CompareRegimentName);
+        archers.Sort(CompareRegimentName);
+
+        AssignFormationPoints(infantry, defenderInfantryFormationPoints, "infantry");
+        AssignFormationPoints(archers, defenderArcherFormationPoints, "archer");
+    }
+
+    private void AssignFormationPoints(
+        List<EnemyRegimentAI> regiments,
+        Transform[] points,
+        string label)
+    {
+        if (regiments == null || regiments.Count == 0)
+        {
+            return;
+        }
+
+        int pointCount = points != null ? points.Length : 0;
+        for (int i = 0; i < regiments.Count; i++)
+        {
+            Transform point = i < pointCount ? points[i] : null;
+            if (point == null)
+            {
+                if (logNetworkMessages)
+                {
+                    Debug.LogWarning(
+                        "SiegePvp missing " + label + " formation point [" + i + "] for '"
+                        + regiments[i].name + "'.",
+                        this);
+                }
+
+                continue;
+            }
+
+            regiments[i].SetSiegePvpFormationDestination(FlattenWaypointXZ(point.position));
+            if (logNetworkMessages)
+            {
+                Debug.Log(
+                    "SiegePvp " + label + " '" + regiments[i].name + "' -> formation '"
+                    + point.name + "'.",
+                    this);
+            }
+        }
+    }
+
+    private static Vector3 FlattenWaypointXZ(Vector3 worldPoint)
+    {
+        return new Vector3(worldPoint.x, 0f, worldPoint.z);
+    }
+
+    private static int CompareRegimentName(EnemyRegimentAI a, EnemyRegimentAI b)
+    {
+        string nameA = a != null ? a.name : string.Empty;
+        string nameB = b != null ? b.name : string.Empty;
+        return string.CompareOrdinal(nameA, nameB);
+    }
+
+#if UNITY_EDITOR
+    private void OnDrawGizmos()
+    {
+        if (!drawFormationFootprintGizmos)
+        {
+            return;
+        }
+
+        DrawFormationFootprintGizmos();
+    }
+
+    private void DrawFormationFootprintGizmos()
+    {
+        CollectPvpDefenderRegiments(out List<EnemyRegimentAI> infantry, out List<EnemyRegimentAI> archers);
+        DrawFormationGroupGizmos(infantry, defenderInfantryFormationPoints, infantryFormationGizmoColor, "Inf");
+        DrawFormationGroupGizmos(archers, defenderArcherFormationPoints, archerFormationGizmoColor, "Arch");
+    }
+
+    private void DrawFormationGroupGizmos(
+        List<EnemyRegimentAI> regiments,
+        Transform[] points,
+        Color color,
+        string labelPrefix)
+    {
+        if (points == null)
+        {
+            return;
+        }
+
+        for (int i = 0; i < points.Length; i++)
+        {
+            Transform point = points[i];
+            if (point == null)
+            {
+                continue;
+            }
+
+            Vector2 size = fallbackFormationFootprintSize;
+            string label = labelPrefix + " " + (i + 1);
+            if (regiments != null && i < regiments.Count && regiments[i] != null)
+            {
+                TroopCombat combat = regiments[i].GetComponent<TroopCombat>();
+                if (combat != null && combat.TryGetFootprintSizeXZ(out Vector2 footprintSize))
+                {
+                    size = footprintSize;
+                }
+
+                label += "\n" + regiments[i].name;
+            }
+
+            Vector3 center = point.position;
+            DrawFootprintSquareGizmo(center, size, color);
+            UnityEditor.Handles.color = color;
+            UnityEditor.Handles.Label(center + Vector3.up * 0.35f, label);
+        }
+    }
+
+    private static void DrawFootprintSquareGizmo(Vector3 center, Vector2 sizeXZ, Color color)
+    {
+        float halfX = Mathf.Max(0.25f, sizeXZ.x) * 0.5f;
+        float halfZ = Mathf.Max(0.25f, sizeXZ.y) * 0.5f;
+        float y = center.y;
+
+        Vector3 bl = new Vector3(center.x - halfX, y, center.z - halfZ);
+        Vector3 br = new Vector3(center.x + halfX, y, center.z - halfZ);
+        Vector3 tr = new Vector3(center.x + halfX, y, center.z + halfZ);
+        Vector3 tl = new Vector3(center.x - halfX, y, center.z + halfZ);
+
+        Gizmos.color = color;
+        Gizmos.DrawLine(bl, br);
+        Gizmos.DrawLine(br, tr);
+        Gizmos.DrawLine(tr, tl);
+        Gizmos.DrawLine(tl, bl);
+
+        // Thin filled pad so the occupied area reads clearly from above.
+        Color fill = color;
+        fill.a = Mathf.Clamp01(color.a * 0.18f);
+        Gizmos.color = fill;
+        Gizmos.DrawCube(new Vector3(center.x, y, center.z), new Vector3(halfX * 2f, 0.05f, halfZ * 2f));
+    }
+
+    private void CollectPvpDefenderRegiments(out List<EnemyRegimentAI> infantry, out List<EnemyRegimentAI> archers)
+    {
+        infantry = new List<EnemyRegimentAI>(2);
+        archers = new List<EnemyRegimentAI>(2);
+
+        EnemyRegimentAI[] enemies = FindObjectsOfType<EnemyRegimentAI>();
+        for (int i = 0; i < enemies.Length; i++)
+        {
+            EnemyRegimentAI regiment = enemies[i];
+            if (regiment == null || !regiment.IncludeInSiegePvp)
+            {
+                continue;
+            }
+
+            TroopCombat combat = regiment.GetComponent<TroopCombat>();
+            if (combat == null || combat.TroopFaction != TroopCombat.Faction.Enemy)
+            {
+                continue;
+            }
+
+            if (combat.HasRangedAttack)
+            {
+                archers.Add(regiment);
+            }
+            else
+            {
+                infantry.Add(regiment);
+            }
+        }
+
+        infantry.Sort(CompareRegimentName);
+        archers.Sort(CompareRegimentName);
+    }
+#endif
 
     private void BeginGameplay()
     {
@@ -2234,8 +2452,8 @@ public class SiegePvpSession : MonoBehaviour
     }
 
     /// <summary>
-    /// Legacy peer FX for castle flaming arrows. Defender now spawns cosmetics locally
-    /// (aimed at the remote attacker head), so this is only a fallback for older peers.
+    /// Attacker fired a castle flaming arrow — send the same start/target/speed/arc so the
+    /// defender can spawn a visual-only copy and watch the dodge in sync.
     /// </summary>
     public void NotifyCastleHazardArrow(
         Vector3 start,
@@ -2274,8 +2492,8 @@ public class SiegePvpSession : MonoBehaviour
 
     private void HandleRemoteCastleHazard(string[] parts, int payloadStart)
     {
-        // Defender owns cosmetic castle arrows locally — ignore legacy HAZARD packets to avoid doubles.
-        if (IsDefender)
+        // Attacker already spawned the real hazard locally; only the peer needs the visual.
+        if (IsAttacker)
         {
             return;
         }
@@ -2340,9 +2558,15 @@ public class SiegePvpSession : MonoBehaviour
             speed,
             arc);
 
-        if (projectile != null && enableOutline)
+        if (projectile != null)
         {
-            projectile.ApplyVisualOutlineOnly(outlineColor, outlineScale);
+            float visualScale = Mathf.Max(1.25f, outlineScale * 1.15f);
+            if (enableOutline)
+            {
+                projectile.ApplyVisualOutlineOnly(outlineColor, visualScale);
+            }
+
+            projectile.transform.localScale *= 1.35f;
         }
 
         SiegeSoundEffects soundEffects = SiegeSoundEffects.Instance;
