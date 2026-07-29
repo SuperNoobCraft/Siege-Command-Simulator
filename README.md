@@ -8,8 +8,7 @@
 Siege Command Simulator is a game created by Jim Tze Lau under HKU Visioneers during July 2026. It is designed to be played in the Cave Automatic Virtual Environment (CAVE), tested on DASECave and LEDCave located in the Human-System Interaction Simulation (HIS) Lab of the University of Hong Kong. It is developed with Unity 2021.3.452c1 via the VotanicXR plugin.
 
 ### Brief Overview
-
-Siege Command Simulator is a real-time strategy game where you play as a commander of a medieval siege. The player stands inside the CAVE on a virtual platform overseeing the battlefield. The main goal of the player is to command your troops to reposition such that you can defend your cannons from the defenders of the siege until your cannons are ready to be fired. If the cannons survive until the countdown ends, the player wins. If the enemy troops destroy the cannons, the player loses. 
+Siege Command Simulator is a CAVE-based immersive command simulator where players direct troops while physically dodging incoming attacks from the battlefield. The player stands inside the CAVE on a virtual platform overseeing the battlefield. The main goal of the player is to command your troops to reposition such that you can defend your cannons from the defenders of the siege until your cannons are ready to be fired. If the cannons survive until the countdown ends, the player wins. If the enemy troops destroy the cannons, the player loses. 
 
 ---
 
