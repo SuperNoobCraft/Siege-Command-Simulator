@@ -35,6 +35,12 @@ public static class SiegeVrInput
             return false;
         }
 
+        // Keyboard fallback for CAVE / broken controller: treat Enter as a pointer press.
+        if (Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.KeypadEnter))
+        {
+            return true;
+        }
+
         if (SiegePlayEnvironment.IsDesktopInput)
         {
             if (Input.GetMouseButtonDown(0))

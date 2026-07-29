@@ -13,8 +13,19 @@ public class SiegeDifficultySelector : MonoBehaviour
     [SerializeField] private float maxRayDistance = 120f;
     [SerializeField] private string selectCommandName = "Grab";
 
+    [Header("Keyboard fallback (CAVE / no controller)")]
+    [SerializeField] private bool enableKeyboardNavigation = true;
+    [SerializeField] private KeyCode navUpKey = KeyCode.UpArrow;
+    [SerializeField] private KeyCode navDownKey = KeyCode.DownArrow;
+    [SerializeField] private KeyCode navLeftKey = KeyCode.LeftArrow;
+    [SerializeField] private KeyCode navRightKey = KeyCode.RightArrow;
+    [SerializeField] private bool preferKeyboardSelectionWhenSet = true;
+
     private SiegeDifficultyOption hoveredOption;
     private SiegeDifficultyOption lastHighlightedOption;
+    private SiegeDifficultyOption keyboardSelectedOption;
+    private bool keyboardStartResolved;
+    private bool pendingKeyboardReSelect;
 
     private void Awake()
     {
@@ -31,6 +42,9 @@ public class SiegeDifficultySelector : MonoBehaviour
         {
             ClearHighlight();
             hoveredOption = null;
+            keyboardSelectedOption = null;
+            keyboardStartResolved = false;
+            pendingKeyboardReSelect = false;
             return;
         }
 
@@ -39,6 +53,9 @@ public class SiegeDifficultySelector : MonoBehaviour
         {
             ClearHighlight();
             hoveredOption = null;
+            keyboardSelectedOption = null;
+            keyboardStartResolved = false;
+            pendingKeyboardReSelect = false;
             return;
         }
 
@@ -47,6 +64,9 @@ public class SiegeDifficultySelector : MonoBehaviour
         {
             ClearHighlight();
             hoveredOption = null;
+            keyboardSelectedOption = null;
+            keyboardStartResolved = false;
+            pendingKeyboardReSelect = false;
             return;
         }
 
@@ -55,6 +75,9 @@ public class SiegeDifficultySelector : MonoBehaviour
         {
             ClearHighlight();
             hoveredOption = null;
+            keyboardSelectedOption = null;
+            keyboardStartResolved = false;
+            pendingKeyboardReSelect = false;
             return;
         }
 
@@ -62,13 +85,66 @@ public class SiegeDifficultySelector : MonoBehaviour
         {
             ClearHighlight();
             hoveredOption = null;
+            keyboardSelectedOption = null;
+            keyboardStartResolved = false;
+            pendingKeyboardReSelect = false;
             return;
         }
 
-        Ray ray = BuildSelectionRay();
-        UpdateHoveredOption(ray);
+        bool keyboardConfirmPressedThisFrame = IsKeyboardConfirmPressedThisFrame();
+        bool pointerPressedThisFrame = SiegeVrInput.WasPointerPressedThisFrame();
 
-        if (!SiegeVrInput.WasPointerPressedThisFrame() || hoveredOption == null)
+        // If the click came from wand/mouse/controller (not keyboard), override any keyboard hover.
+        if (enableKeyboardNavigation && pointerPressedThisFrame && !keyboardConfirmPressedThisFrame)
+        {
+            keyboardSelectedOption = null;
+            keyboardStartResolved = false;
+            pendingKeyboardReSelect = false;
+        }
+
+        if (pendingKeyboardReSelect)
+        {
+            keyboardSelectedOption = null;
+            keyboardStartResolved = false;
+            pendingKeyboardReSelect = false;
+        }
+
+        // If keyboard navigation is enabled and we already have a selected element, keep
+        // highlighting it even if the pointer ray isn't hitting anything.
+        bool usingKeyboardSelection = enableKeyboardNavigation
+            && preferKeyboardSelectionWhenSet
+            && keyboardSelectedOption != null;
+
+        // Process arrow navigation first (only on key-down).
+        if (enableKeyboardNavigation)
+        {
+            bool moved = TryHandleKeyboardNavigation();
+            if (moved)
+            {
+                usingKeyboardSelection = true;
+            }
+        }
+
+        if (!usingKeyboardSelection)
+        {
+            keyboardSelectedOption = null;
+            keyboardStartResolved = false;
+
+            Ray ray = BuildSelectionRay();
+            UpdateHoveredOption(ray);
+        }
+        else
+        {
+            hoveredOption = keyboardSelectedOption;
+            if (hoveredOption != null && hoveredOption != lastHighlightedOption)
+            {
+                lastHighlightedOption?.SetHighlighted(false);
+                hoveredOption.SetHighlighted(true);
+                lastHighlightedOption = hoveredOption;
+            }
+        }
+
+        if (!pointerPressedThisFrame || hoveredOption == null)
         {
             return;
         }
@@ -85,6 +161,7 @@ public class SiegeDifficultySelector : MonoBehaviour
                 Debug.LogWarning("Credits selected but SiegeCreditsPanel is missing from the scene.");
             }
 
+            pendingKeyboardReSelect = true;
             return;
         }
 
@@ -96,6 +173,7 @@ public class SiegeDifficultySelector : MonoBehaviour
                 credits.ClosePanel();
             }
 
+            pendingKeyboardReSelect = true;
             return;
         }
 
@@ -111,6 +189,7 @@ public class SiegeDifficultySelector : MonoBehaviour
                 Debug.LogWarning("Dodge Arrows submenu selected but SiegeDodgeArrowsSubmenu is missing from the scene.");
             }
 
+            pendingKeyboardReSelect = true;
             return;
         }
 
@@ -122,6 +201,7 @@ public class SiegeDifficultySelector : MonoBehaviour
                 submenu.CloseSubmenu();
             }
 
+            pendingKeyboardReSelect = true;
             return;
         }
 
@@ -212,5 +292,146 @@ public class SiegeDifficultySelector : MonoBehaviour
             lastHighlightedOption.SetHighlighted(false);
             lastHighlightedOption = null;
         }
+    }
+
+    private static bool IsKeyboardConfirmPressedThisFrame()
+    {
+        return Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.KeypadEnter);
+    }
+
+    private bool TryHandleKeyboardNavigation()
+    {
+        if (keyboardStartResolved == false)
+        {
+            ResolveKeyboardStartOptionIfAny();
+            keyboardStartResolved = true;
+        }
+
+        if (keyboardSelectedOption == null)
+        {
+            // No selection yet, can't navigate.
+            return false;
+        }
+
+        Vector2 direction = Vector2.zero;
+        bool pressed = false;
+
+        if (Input.GetKeyDown(navUpKey))
+        {
+            direction = new Vector2(0f, 1f);
+            pressed = true;
+        }
+        else if (Input.GetKeyDown(navDownKey))
+        {
+            direction = new Vector2(0f, -1f);
+            pressed = true;
+        }
+        else if (Input.GetKeyDown(navLeftKey))
+        {
+            direction = new Vector2(-1f, 0f);
+            pressed = true;
+        }
+        else if (Input.GetKeyDown(navRightKey))
+        {
+            direction = new Vector2(1f, 0f);
+            pressed = true;
+        }
+
+        if (!pressed)
+        {
+            return false;
+        }
+
+        SiegeKeyboardUiNavLink link = keyboardSelectedOption.GetComponentInChildren<SiegeKeyboardUiNavLink>(true);
+        if (link == null)
+        {
+            return false;
+        }
+
+        SiegeDifficultyOption neighbor = link.GetNeighbor(direction);
+        if (neighbor == null)
+        {
+            return false;
+        }
+
+        SetKeyboardSelectedOption(neighbor);
+        return true;
+    }
+
+    private void ResolveKeyboardStartOptionIfAny()
+    {
+        // Prefer an explicitly marked start element.
+        SiegeDifficultyOption[] all = FindObjectsOfType<SiegeDifficultyOption>(true);
+        if (all == null || all.Length == 0)
+        {
+            return;
+        }
+
+        for (int i = 0; i < all.Length; i++)
+        {
+            SiegeDifficultyOption option = all[i];
+            if (option == null)
+            {
+                continue;
+            }
+
+            SiegeKeyboardUiNavLink nav = option.GetComponentInChildren<SiegeKeyboardUiNavLink>(true);
+            if (nav != null && nav.IsKeyboardStart)
+            {
+                if (TrySetKeyboardSelectedOption(option))
+                {
+                    return;
+                }
+            }
+        }
+
+        // Fallback: first enabled option in the scene.
+        for (int i = 0; i < all.Length; i++)
+        {
+            SiegeDifficultyOption option = all[i];
+            if (option == null)
+            {
+                continue;
+            }
+
+            // If the collider is disabled the option won't receive pointer input.
+            // Keyboard can still select it, but using only active elements avoids surprises.
+            if (option.gameObject.activeInHierarchy)
+            {
+                if (TrySetKeyboardSelectedOption(option))
+                {
+                    return;
+                }
+            }
+        }
+    }
+
+    private void SetKeyboardSelectedOption(SiegeDifficultyOption option)
+    {
+        TrySetKeyboardSelectedOption(option);
+    }
+
+    private bool TrySetKeyboardSelectedOption(SiegeDifficultyOption option)
+    {
+        if (option == null)
+        {
+            return false;
+        }
+
+        // Don't switch to hidden options when submenu hides UI.
+        if (!option.gameObject.activeInHierarchy)
+        {
+            return false;
+        }
+
+        keyboardSelectedOption = option;
+        if (keyboardSelectedOption != lastHighlightedOption)
+        {
+            lastHighlightedOption?.SetHighlighted(false);
+            keyboardSelectedOption.SetHighlighted(true);
+            lastHighlightedOption = keyboardSelectedOption;
+        }
+
+        return true;
     }
 }

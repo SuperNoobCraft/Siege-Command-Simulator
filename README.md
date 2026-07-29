@@ -55,7 +55,7 @@ In a siege, there is always an attacking commander and a defending commander. Al
 
 ### Launching the Game
 
-This game is intended for CAVE only, and is not tested for PC environment or HMD environment. In the CAVE machines, find in the root of the game a file named `Siege Command Simulator_[CAVE][XR].bat`, double click to launch.
+This game is intended for CAVE only, and is not tested for PC environment or HMD environment. In the CAVE machines, find in the root of the game a file named `Siege Command Simulator_[CAVE][XR].bat`, double click to launch. Make sure the controller is turned on when playing this game. Alternatively, you can use arrow keys and the Enter key to navigate the main menu, though the Demo, Full, and Siege PvP modes require a controller to be played properly, keyboard shortcuts are useful for quick testing and for launching dodge the arrows without needing a controller.
 
 ### Multiplayer
 After booting up the game for the first time on both machines, you should find `network-config.json` (sometimes `network-configc.json` or `network-configh.json`) in the same folder as the `SiegeCommandSimulator.exe`. Open the file on both machines and configure to match one of the following, depending on whether the machine is the host or the client (under normal circumstances, the DASECave should always be the host, and the LEDCave should always be the client):

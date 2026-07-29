@@ -48,6 +48,18 @@ public class SiegeCreditsPanel : MonoBehaviour
     private void Update()
     {
         TryClearPendingSelectionLock();
+
+        if (!panelOpen || BlocksSelection)
+        {
+            return;
+        }
+
+        // Credits is read-only content. Any confirm/click should dismiss it so keyboard
+        // fallback does not depend on the lone Back button being selected.
+        if (SiegeVrInput.WasPointerPressedThisFrame())
+        {
+            ClosePanel();
+        }
     }
 
     private void OnValidate()
