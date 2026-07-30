@@ -1,0 +1,163 @@
+1
+00:00:01,955 --> 00:00:04,264
+Siege Command Simulator is created by
+
+2
+00:00:04,266 --> 00:00:07,594
+Jim Tze Lau using Unity and VoltanicXR.
+
+3
+00:00:08,605 --> 00:00:10,355
+In this game, you command troops
+
+4
+00:00:10,355 --> 00:00:12,595
+to siege down an enemy city.
+
+5
+00:00:12,596 --> 00:00:14,515
+You'll command your troops by drawing
+
+6
+00:00:14,516 --> 00:00:16,355
+a line to tell them where to go.
+
+7
+00:00:16,356 --> 00:00:18,355
+In the CAVE environment,
+
+8
+00:00:18,356 --> 00:00:19,475
+this is as easy as
+
+9
+00:00:19,476 --> 00:00:20,565
+pointing and dragging.
+
+10
+00:00:21,285 --> 00:00:23,434
+Troops automatically fight with enemy
+
+11
+00:00:23,435 --> 00:00:25,195
+troops when they are within range,
+
+12
+00:00:25,196 --> 00:00:26,635
+and retreat automatically
+
+13
+00:00:26,636 --> 00:00:27,195
+when they are
+
+14
+00:00:27,196 --> 00:00:28,195
+defeated.
+
+15
+00:00:28,385 --> 00:00:30,214
+If they retreat successfully,
+
+16
+00:00:30,216 --> 00:00:32,054
+they will regroup at camp.
+
+17
+00:00:32,055 --> 00:00:34,054
+If they are cut off during retreat,
+
+18
+00:00:34,055 --> 00:00:35,945
+they are eliminated permanently.
+
+19
+00:00:37,085 --> 00:00:39,314
+Demo mode is recommended for beginners
+
+20
+00:00:39,315 --> 00:00:41,314
+because in the full mode units
+
+21
+00:00:41,315 --> 00:00:42,994
+move faster and there are more
+
+22
+00:00:42,995 --> 00:00:43,994
+enemy troops.
+
+23
+00:00:45,185 --> 00:00:46,774
+Every once in a while, the
+
+24
+00:00:46,775 --> 00:00:48,664
+enemy will shut arrows at you.
+
+25
+00:00:49,604 --> 00:00:51,755
+You must dodge these arrows physically
+
+26
+00:00:51,756 --> 00:00:53,405
+in the CAVE by moving around.
+
+27
+00:00:54,725 --> 00:00:56,875
+If you only want to dodge the arrows,
+
+28
+00:00:56,875 --> 00:00:58,875
+you can try out the timed challenge,
+
+29
+00:00:58,875 --> 00:00:59,515
+where you have three
+
+30
+00:00:59,515 --> 00:01:00,475
+hit points and need to
+
+31
+00:01:00,475 --> 00:01:01,884
+survive for thirty seconds.
+
+32
+00:01:02,884 --> 00:01:05,194
+Or endless survival, where you only
+
+33
+00:01:05,195 --> 00:01:06,715
+have one hit point and need to
+
+34
+00:01:06,716 --> 00:01:08,204
+survive for as long as you can.
+
+35
+00:01:09,084 --> 00:01:10,995
+There is also a multiplayer mode,
+
+36
+00:01:10,996 --> 00:01:13,314
+where one player plays in the DASE
+
+37
+00:01:13,316 --> 00:01:15,075
+CAVE as the attacker trying to
+
+38
+00:01:15,076 --> 00:01:17,155
+protect the cannons, and another
+
+39
+00:01:17,156 --> 00:01:19,394
+player plays in the LED CAVE as
+
+40
+00:01:19,396 --> 00:01:21,075
+the defender trying to destroy the
+
+41
+00:01:21,076 --> 00:01:22,075
+cannons.
