@@ -85,7 +85,7 @@ After saving the updated file, launch the game first on the host machine, wait f
 ---
 
 ## Credits
-- Creator: Jim Tze Lau (Hogan) aka SuperNoobCraft
+- Creator: Jim Tze Lau (Hogan)
 - Supervised by Ms. Bo Hui, HKU Visioneers
 - Playtesters: Rafi, Joshua Chow, Josiah Chan
 - Castle and Troop Models: Blackspire@Sketchfab
