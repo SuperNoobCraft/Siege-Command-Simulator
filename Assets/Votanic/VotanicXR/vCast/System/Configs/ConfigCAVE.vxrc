@@ -4,7 +4,6 @@
     "System": {
         "Type": "CAVE",
         "ApplicationDirectory": "%VOTANIC_PATH%/Apps/",
-		"CenterOffset": [ 0, 0, 0 ],
         "PanoramicAngle": 360.0,
         "IOScanOrder": [
             "OpenVR",
@@ -74,7 +73,17 @@
                 "VRPNAxes": []
             },
             "Tracker": {
-                "VRPNTracker": []
+                "VRPNTracker": [
+                    {
+                        "Name": "HandTracker",
+                        "Equipment": "TrackerServer",
+                        "Address": "HandTracker@localhost",
+                        "Channel": 0,
+                        "Forward": "",
+                        "Up": "",
+                        "Right": ""
+                    }
+                ]
             }
         },
         "Equipment": [
@@ -143,6 +152,7 @@
                     "Null"
                 ],
                 "EnableTracking": true,
+                "EnableScreenWarning": true,
                 "TrackPosition": true,
                 "TrackRotation": true,
                 "PosOffset": [
@@ -189,6 +199,7 @@
                     "Null"
                 ],
                 "EnableTracking": true,
+                "EnableScreenWarning": true,
                 "TrackPosition": true,
                 "TrackRotation": true,
                 "PosOffset": [
@@ -203,6 +214,54 @@
                 ],
                 "LostTracking": {
                     "LostTransform": "Faraway",
+                    "Retry": 100,
+                    "CustomPosition": [
+                        0.0,
+                        0.0,
+                        0.0
+                    ],
+                    "CustomRotation": [
+                        0.0,
+                        0.0,
+                        0.0
+                    ]
+                }
+            },
+            {
+                "Name": "Hand2",
+                "Parent": "User",
+                "Position": [
+                    0.0,
+                    0.0,
+                    0.0
+                ],
+                "Rotation": [
+                    0.0,
+                    0.0,
+                    0.0
+                ],
+                "Controller": "LeftHandCube",
+                "Sensor": "Null",
+                "Tracker": [
+                    "HandTracker",
+                    "HandTracker"
+                ],
+                "EnableTracking": true,
+                "EnableScreenWarning": true,
+                "TrackPosition": true,
+                "TrackRotation": true,
+                "PosOffset": [
+                    0.0,
+                    0.0,
+                    0.0
+                ],
+                "RotOffset": [
+                    0.0,
+                    0.0,
+                    0.0
+                ],
+                "LostTracking": {
+                    "LostTransform": "Idle",
                     "Retry": 100,
                     "CustomPosition": [
                         0.0,
