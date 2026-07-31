@@ -1,6 +1,7 @@
 # Siege Command Simulator
 ---
-Voiceover Trailer
+Voiceover Trailer: https://youtu.be/emaOAygFlzM
+
 Cinematic Trailer: https://youtu.be/jxcJ2IsbopQ
 ---
 
