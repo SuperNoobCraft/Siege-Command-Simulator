@@ -240,7 +240,7 @@
                     0.0,
                     0.0
                 ],
-                "Controller": "LeftHandCube",
+                "Controller": "Null",
                 "Sensor": "Null",
                 "Tracker": [
                     "HandTracker",
