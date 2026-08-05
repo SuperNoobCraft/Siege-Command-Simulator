@@ -7,12 +7,16 @@ using UnityEngine;
 [DisallowMultipleComponent]
 public class SiegeDifficultyOption : MonoBehaviour
 {
-    [Tooltip("Demo, Full, Siege PVP, Timed Dodge Arrows, or Endless Dodge Arrows. Timed/Endless/Back are submenu choices — leave Opens Submenu unchecked on those.")]
+    [Tooltip("Demo, Full, Siege PVP, Timed Dodge Arrows, or Endless Dodge Arrows. Demo/Full are Defend the Cannons submenu choices; Timed/Endless/Back are Dodge submenu choices.")]
     [SerializeField] private SiegeGameMode gameMode = SiegeGameMode.Demo;
     [Tooltip("Main-menu Dodge Arrows button opens the Timed / Endless submenu instead of starting immediately.")]
     [SerializeField] private bool opensDodgeArrowsSubmenu;
+    [Tooltip("Main-menu Defend the Cannons button opens the Demo / Full submenu instead of starting immediately.")]
+    [SerializeField] private bool opensDefendCannonsSubmenu;
     [Tooltip("Returns from the Dodge Arrows submenu to the main mode select.")]
     [SerializeField] private bool isSubmenuBackButton;
+    [Tooltip("Returns from the Defend the Cannons submenu to the main mode select.")]
+    [SerializeField] private bool isDefendCannonsSubmenuBackButton;
     [Tooltip("Main-menu Credits button opens the credits text panel.")]
     [SerializeField] private bool opensCreditsPanel;
     [Tooltip("Returns from the Credits panel to the main mode select.")]
@@ -29,7 +33,9 @@ public class SiegeDifficultyOption : MonoBehaviour
 
     public SiegeGameMode GameMode => gameMode;
     public bool OpensDodgeArrowsSubmenu => opensDodgeArrowsSubmenu;
+    public bool OpensDefendCannonsSubmenu => opensDefendCannonsSubmenu;
     public bool IsSubmenuBackButton => isSubmenuBackButton;
+    public bool IsDefendCannonsSubmenuBackButton => isDefendCannonsSubmenuBackButton;
     public bool OpensCreditsPanel => opensCreditsPanel;
     public bool IsCreditsBackButton => isCreditsBackButton;
     public bool IsCreditsPanelChoice => isCreditsBackButton;
@@ -37,6 +43,11 @@ public class SiegeDifficultyOption : MonoBehaviour
         isSubmenuBackButton
         || gameMode == SiegeGameMode.DodgeArrowsEndless
         || (gameMode == SiegeGameMode.DodgeArrows && !opensDodgeArrowsSubmenu);
+    public bool IsDefendCannonsSubmenuChoice =>
+        !opensDefendCannonsSubmenu
+        && (isDefendCannonsSubmenuBackButton
+            || gameMode == SiegeGameMode.Demo
+            || gameMode == SiegeGameMode.Full);
     public bool UseCustomPvpTuning => useCustomPvpTuning;
     public float PvpMatchDurationSeconds => pvpMatchDurationSeconds;
     public float PvpMoveSpeedScale => pvpMoveSpeedScale;
@@ -89,6 +100,15 @@ public class SiegeDifficultyOption : MonoBehaviour
 
         pvpMatchDurationSeconds = Mathf.Max(30f, pvpMatchDurationSeconds);
         pvpMoveSpeedScale = Mathf.Clamp(pvpMoveSpeedScale, 0.1f, 2f);
+
+        if (!Application.isPlaying)
+        {
+            SiegeMatchUi matchUi = FindObjectOfType<SiegeMatchUi>();
+            if (matchUi != null)
+            {
+                matchUi.RefreshEditorPreview();
+            }
+        }
     }
 
     public bool TryGetHitCollider(out Collider collider)

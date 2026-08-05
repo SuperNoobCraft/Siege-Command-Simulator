@@ -13,6 +13,8 @@ public class SiegeMatchUi : MonoBehaviour
     public enum EditorPreviewMode
     {
         SelectingDifficulty,
+        DefendCannonsSubmenu,
+        DodgeArrowsSubmenu,
         Credits,
         Playing,
         Victory,
@@ -72,13 +74,14 @@ public class SiegeMatchUi : MonoBehaviour
     [SerializeField, Min(0f)] private float restartDelaySeconds = 2f;
 
     [Header("Messages")]
-    [SerializeField] private string difficultySelectPrompt = "Select Demo, Full, Dodge Arrows, or Siege PVP.";
+    [SerializeField] private string difficultySelectPrompt = "Select Defend the Cannons, Dodge Arrows, or Siege PVP.";
     [Tooltip("Shown on the networking client / CAVE defender at mode select. PVP works here; other modes are tuned for DASE Cave.")]
     [SerializeField] private string caveClientEnvironmentNote =
-        "Note: Demo, Full, and Dodge Arrows are designed for DASE Cave. For the intended full experience, use the other CAVE.";
+        "Note: Defend the Cannons and Dodge Arrows are designed for DASE Cave. For the intended full experience, use the other CAVE.";
     [SerializeField] private string openingStatus = "Defend the cannons.";
     [SerializeField] private string dodgeArrowsOpeningStatus = "Dodge the arrows until your cannons are ready!";
     [SerializeField] private string dodgeArrowsSubmenuPrompt = "Dodge Arrows — choose Timed or Endless Survival.";
+    [SerializeField] private string defendCannonsSubmenuPrompt = "Defend the Cannons — choose Demo or Full.";
     [SerializeField] private string creditsPanelPrompt = "Credits";
     [SerializeField] private string dodgeArrowsEndlessOpeningStatus = "Endless Survival — dodge as long as you can. One hit ends the run.";
     [SerializeField] private string dodgeArrowsEndlessHudFormat = "Time {0:0.00}s";
@@ -154,6 +157,7 @@ public class SiegeMatchUi : MonoBehaviour
     {
         Instance = this;
         EnsureDodgeArrowsSubmenuExists();
+        EnsureDefendCannonsSubmenuExists();
         EnsureCreditsPanelExists();
         ResolveMissingWorldLabels();
         ResolvePresentationTargets();
@@ -538,9 +542,16 @@ public class SiegeMatchUi : MonoBehaviour
         }
 
         awaitingRestart = false;
-        if (SiegeDodgeArrowsSubmenu.Instance != null)
+        SiegeDodgeArrowsSubmenu dodgeSubmenu = SiegeDodgeArrowsSubmenu.Instance;
+        if (dodgeSubmenu != null && dodgeSubmenu.IsSubmenuOpen)
         {
-            SiegeDodgeArrowsSubmenu.Instance.CloseSubmenu();
+            dodgeSubmenu.CloseSubmenu();
+        }
+
+        SiegeDefendCannonsSubmenu defendSubmenu = SiegeDefendCannonsSubmenu.Instance;
+        if (defendSubmenu != null && defendSubmenu.IsSubmenuOpen)
+        {
+            defendSubmenu.CloseSubmenu();
         }
 
         if (SiegeCreditsPanel.Instance != null)
@@ -564,6 +575,12 @@ public class SiegeMatchUi : MonoBehaviour
     {
         ResolvePresentationTargets();
         EnsureModeSelectStatusVisible(dodgeArrowsSubmenuPrompt);
+    }
+
+    public void ShowDefendCannonsSubmenuPrompt()
+    {
+        ResolvePresentationTargets();
+        EnsureModeSelectStatusVisible(defendCannonsSubmenuPrompt);
     }
 
     public void ShowCreditsPanelPrompt()
@@ -908,6 +925,14 @@ public class SiegeMatchUi : MonoBehaviour
         }
     }
 
+    private void EnsureDefendCannonsSubmenuExists()
+    {
+        if (FindObjectOfType<SiegeDefendCannonsSubmenu>(true) == null)
+        {
+            gameObject.AddComponent<SiegeDefendCannonsSubmenu>();
+        }
+    }
+
     private void EnsureCreditsPanelExists()
     {
         if (FindObjectOfType<SiegeCreditsPanel>(true) == null)
@@ -1037,13 +1062,21 @@ public class SiegeMatchUi : MonoBehaviour
         CacheDifficultyOptions();
 
         SiegeDodgeArrowsSubmenu submenu = SiegeDodgeArrowsSubmenu.Instance;
+        SiegeDefendCannonsSubmenu defendSubmenu = SiegeDefendCannonsSubmenu.Instance;
         SiegeCreditsPanel credits = SiegeCreditsPanel.Instance;
-        bool submenuOpen = submenu != null && submenu.IsSubmenuOpen;
+        bool dodgeSubmenuOpen = submenu != null && submenu.IsSubmenuOpen;
+        bool defendSubmenuOpen = defendSubmenu != null && defendSubmenu.IsSubmenuOpen;
         bool creditsOpen = credits != null && credits.IsOpen;
+        bool defendSubmenuConfigured = SiegeDefendCannonsSubmenu.IsDefendCannonsSubmenuEnabled();
 
         if (submenu != null)
         {
             submenu.ApplyLayout();
+        }
+
+        if (defendSubmenu != null)
+        {
+            defendSubmenu.ApplyLayout();
         }
 
         if (credits != null)
@@ -1060,10 +1093,14 @@ public class SiegeMatchUi : MonoBehaviour
             HideCreditsPanelContent();
         }
 
-        ApplyForcedDifficultyPresentation(submenuOpen, creditsOpen);
+        ApplyForcedDifficultyPresentation(dodgeSubmenuOpen, defendSubmenuOpen, creditsOpen, defendSubmenuConfigured);
     }
 
-    private void EnforceDifficultyOptionVisibility(bool submenuOpen, bool creditsOpen)
+    private void EnforceDifficultyOptionVisibility(
+        bool dodgeSubmenuOpen,
+        bool defendSubmenuOpen,
+        bool creditsOpen,
+        bool defendSubmenuConfigured)
     {
         if (difficultyOptions == null)
         {
@@ -1081,19 +1118,23 @@ public class SiegeMatchUi : MonoBehaviour
             bool show;
             if (option.IsCreditsBackButton)
             {
-                show = creditsOpen && !submenuOpen;
+                show = creditsOpen && !dodgeSubmenuOpen && !defendSubmenuOpen;
             }
             else if (option.OpensCreditsPanel)
             {
-                show = !creditsOpen && !submenuOpen;
+                show = !creditsOpen && !dodgeSubmenuOpen && !defendSubmenuOpen;
             }
             else if (option.IsDodgeSubmenuChoice)
             {
-                show = submenuOpen && !creditsOpen;
+                show = dodgeSubmenuOpen && !creditsOpen && !defendSubmenuOpen;
+            }
+            else if (option.IsDefendCannonsSubmenuChoice && defendSubmenuConfigured)
+            {
+                show = defendSubmenuOpen && !creditsOpen && !dodgeSubmenuOpen;
             }
             else
             {
-                show = !submenuOpen && !creditsOpen;
+                show = !dodgeSubmenuOpen && !defendSubmenuOpen && !creditsOpen;
             }
 
             option.SetOptionFullyVisible(show);
@@ -1160,29 +1201,34 @@ public class SiegeMatchUi : MonoBehaviour
         return false;
     }
 
-    private static bool ShouldShowUnmanagedDifficultyLabel(SiegeWorldUiLabel label, bool submenuOpen, bool creditsOpen)
+    private static bool ShouldShowUnmanagedDifficultyLabel(SiegeWorldUiLabel label, bool dodgeSubmenuOpen, bool defendSubmenuOpen, bool creditsOpen)
     {
-        return ShouldShowUnmanagedDifficultyObject(label.gameObject.name, submenuOpen, creditsOpen);
+        return ShouldShowUnmanagedDifficultyObject(label.gameObject.name, dodgeSubmenuOpen, defendSubmenuOpen, creditsOpen);
     }
 
-    private static bool ShouldShowUnmanagedDifficultyRoot(GameObject root, bool submenuOpen, bool creditsOpen)
+    private static bool ShouldShowUnmanagedDifficultyRoot(GameObject root, bool dodgeSubmenuOpen, bool defendSubmenuOpen, bool creditsOpen)
     {
-        return ShouldShowUnmanagedDifficultyObject(root.name, submenuOpen, creditsOpen);
+        return ShouldShowUnmanagedDifficultyObject(root.name, dodgeSubmenuOpen, defendSubmenuOpen, creditsOpen);
     }
 
-    private static bool ShouldShowUnmanagedDifficultyObject(string objectName, bool submenuOpen, bool creditsOpen)
+    private static bool ShouldShowUnmanagedDifficultyObject(string objectName, bool dodgeSubmenuOpen, bool defendSubmenuOpen, bool creditsOpen)
     {
         if (IsCreditsPanelOnlyObjectName(objectName))
         {
-            return creditsOpen && !submenuOpen;
+            return creditsOpen && !dodgeSubmenuOpen && !defendSubmenuOpen;
         }
 
         if (IsDodgeSubmenuOnlyObjectName(objectName))
         {
-            return submenuOpen && !creditsOpen;
+            return dodgeSubmenuOpen && !creditsOpen && !defendSubmenuOpen;
         }
 
-        if ((submenuOpen || creditsOpen) && IsMainMenuDifficultyObjectName(objectName))
+        if (IsDefendCannonsSubmenuOnlyObjectName(objectName))
+        {
+            return defendSubmenuOpen && !creditsOpen && !dodgeSubmenuOpen;
+        }
+
+        if ((dodgeSubmenuOpen || defendSubmenuOpen || creditsOpen) && IsMainMenuDifficultyObjectName(objectName))
         {
             return false;
         }
@@ -1221,9 +1267,9 @@ public class SiegeMatchUi : MonoBehaviour
             "survival");
     }
 
-    private static bool IsMainMenuDifficultyObjectName(string objectName)
+    private static bool IsDefendCannonsSubmenuOnlyObjectName(string objectName)
     {
-        if (IsDodgeSubmenuOnlyObjectName(objectName) || IsCreditsPanelOnlyObjectName(objectName))
+        if (IsCreditsPanelOnlyObjectName(objectName) || IsDodgeSubmenuOnlyObjectName(objectName))
         {
             return false;
         }
@@ -1234,13 +1280,27 @@ public class SiegeMatchUi : MonoBehaviour
             "full",
             "fullversion",
             "demoversion",
+            "defendcannonsback",
+            "defendthecannonsback",
+            "cannonsback");
+    }
+
+    private static bool IsMainMenuDifficultyObjectName(string objectName)
+    {
+        if (IsDodgeSubmenuOnlyObjectName(objectName) || IsCreditsPanelOnlyObjectName(objectName))
+        {
+            return false;
+        }
+
+        return ContainsNameToken(
+            objectName,
+            "defendthecannons",
+            "defendcannons",
             "dodge",
             "dodgearrows",
             "arrowdodge",
             "siegepvp",
             "pvp",
-            "2wave",
-            "3wave",
             "easy",
             "hard");
     }
@@ -1713,6 +1773,11 @@ public class SiegeMatchUi : MonoBehaviour
         }
     }
 
+    public void RefreshEditorPreview()
+    {
+        ApplyEditorPreview();
+    }
+
     private void ApplyEditorPreview()
     {
         if (!previewInEditor || Application.isPlaying)
@@ -1725,6 +1790,12 @@ public class SiegeMatchUi : MonoBehaviour
             case EditorPreviewMode.SelectingDifficulty:
                 HideCreditsPanelContent();
                 ApplyDifficultySelectLayout();
+                break;
+            case EditorPreviewMode.DefendCannonsSubmenu:
+                ApplyDefendCannonsSelectLayout();
+                break;
+            case EditorPreviewMode.DodgeArrowsSubmenu:
+                ApplyDodgeArrowsSelectLayout();
                 break;
             case EditorPreviewMode.Credits:
                 ApplyCreditsSelectLayout();
@@ -1762,7 +1833,11 @@ public class SiegeMatchUi : MonoBehaviour
 
         HidePlayingHudTargets();
         ShowCreditsPanelPrompt();
-        ApplyForcedDifficultyPresentation(submenuOpen: false, creditsOpen: true);
+        ApplyForcedDifficultyPresentation(
+            dodgeSubmenuOpen: false,
+            defendSubmenuOpen: false,
+            creditsOpen: true,
+            defendSubmenuConfigured: SiegeDefendCannonsSubmenu.IsDefendCannonsSubmenuEnabled());
 
         modeSelectLayoutApplied = true;
         SetWorldLabelText(worldVictoryLabel, string.Empty, false);
@@ -1776,9 +1851,79 @@ public class SiegeMatchUi : MonoBehaviour
         SetLabelVisible(defenderDefeatLabel, false);
     }
 
-    private void ApplyForcedDifficultyPresentation(bool submenuOpen, bool creditsOpen)
+    /// <summary>Editor/runtime helper: mode-select chrome with Demo / Full / Back visible.</summary>
+    private void ApplyDefendCannonsSelectLayout()
     {
-        EnforceDifficultyOptionVisibility(submenuOpen, creditsOpen);
+        ResolvePresentationTargets();
+        CacheDifficultyOptions();
+        ResolveDifficultyPresentationTargets();
+        pvpHudForDefender = false;
+        ApplyRoleHudVisibility();
+
+        SetGroupActive(difficultySelectGroup, true);
+        SetGroupActive(playingGroup, false);
+        SetGroupActive(endGameGroup, false);
+
+        HidePlayingHudTargets();
+        EnsureModeSelectStatusVisible(defendCannonsSubmenuPrompt);
+        ApplyForcedDifficultyPresentation(
+            dodgeSubmenuOpen: false,
+            defendSubmenuOpen: true,
+            creditsOpen: false,
+            defendSubmenuConfigured: true);
+
+        modeSelectLayoutApplied = true;
+        SetWorldLabelText(worldVictoryLabel, string.Empty, false);
+        SetWorldLabelText(worldDefeatLabel, string.Empty, false);
+        SetWorldLabelText(defenderVictoryLabel, string.Empty, false);
+        SetWorldLabelText(defenderDefeatLabel, string.Empty, false);
+        SetWorldLabelText(ActiveRestartLabel, string.Empty, false);
+        SetLabelVisible(worldVictoryLabel, false);
+        SetLabelVisible(worldDefeatLabel, false);
+        SetLabelVisible(defenderVictoryLabel, false);
+        SetLabelVisible(defenderDefeatLabel, false);
+    }
+
+    /// <summary>Editor/runtime helper: mode-select chrome with Timed / Endless / Back visible.</summary>
+    private void ApplyDodgeArrowsSelectLayout()
+    {
+        ResolvePresentationTargets();
+        CacheDifficultyOptions();
+        ResolveDifficultyPresentationTargets();
+        pvpHudForDefender = false;
+        ApplyRoleHudVisibility();
+
+        SetGroupActive(difficultySelectGroup, true);
+        SetGroupActive(playingGroup, false);
+        SetGroupActive(endGameGroup, false);
+
+        HidePlayingHudTargets();
+        EnsureModeSelectStatusVisible(dodgeArrowsSubmenuPrompt);
+        ApplyForcedDifficultyPresentation(
+            dodgeSubmenuOpen: true,
+            defendSubmenuOpen: false,
+            creditsOpen: false,
+            defendSubmenuConfigured: SiegeDefendCannonsSubmenu.IsDefendCannonsSubmenuEnabled());
+
+        modeSelectLayoutApplied = true;
+        SetWorldLabelText(worldVictoryLabel, string.Empty, false);
+        SetWorldLabelText(worldDefeatLabel, string.Empty, false);
+        SetWorldLabelText(defenderVictoryLabel, string.Empty, false);
+        SetWorldLabelText(defenderDefeatLabel, string.Empty, false);
+        SetWorldLabelText(ActiveRestartLabel, string.Empty, false);
+        SetLabelVisible(worldVictoryLabel, false);
+        SetLabelVisible(worldDefeatLabel, false);
+        SetLabelVisible(defenderVictoryLabel, false);
+        SetLabelVisible(defenderDefeatLabel, false);
+    }
+
+    private void ApplyForcedDifficultyPresentation(
+        bool dodgeSubmenuOpen,
+        bool defendSubmenuOpen,
+        bool creditsOpen,
+        bool defendSubmenuConfigured)
+    {
+        EnforceDifficultyOptionVisibility(dodgeSubmenuOpen, defendSubmenuOpen, creditsOpen, defendSubmenuConfigured);
 
         for (int i = 0; i < resolvedDifficultyLabels.Count; i++)
         {
@@ -1788,7 +1933,7 @@ public class SiegeMatchUi : MonoBehaviour
                 continue;
             }
 
-            label.SetVisible(ShouldShowUnmanagedDifficultyLabel(label, submenuOpen, creditsOpen));
+            label.SetVisible(ShouldShowUnmanagedDifficultyLabel(label, dodgeSubmenuOpen, defendSubmenuOpen, creditsOpen));
         }
 
         for (int i = 0; i < resolvedDifficultyRoots.Count; i++)
@@ -1799,7 +1944,7 @@ public class SiegeMatchUi : MonoBehaviour
                 continue;
             }
 
-            SetRootVisible(root, ShouldShowUnmanagedDifficultyRoot(root, submenuOpen, creditsOpen));
+            SetRootVisible(root, ShouldShowUnmanagedDifficultyRoot(root, dodgeSubmenuOpen, defendSubmenuOpen, creditsOpen));
         }
     }
 

@@ -2,7 +2,7 @@ using UnityEngine;
 using Votanic.vXR.vGear;
 
 /// <summary>
-/// Lets players pick Demo, Full, Dodge Arrows, or Siege PVP with the wand (or mouse on desktop).
+/// Lets players pick Defend the Cannons, Dodge Arrows, or Siege PVP with the wand (or mouse on desktop).
 /// Siege PVP is handled by <see cref="SiegePvpSession"/> (select → ready → countdown).
 /// </summary>
 [DefaultExecutionOrder(10)]
@@ -61,6 +61,17 @@ public class SiegeDifficultySelector : MonoBehaviour
 
         SiegeDodgeArrowsSubmenu dodgeSubmenu = SiegeDodgeArrowsSubmenu.Instance;
         if (dodgeSubmenu != null && dodgeSubmenu.BlocksSelection)
+        {
+            ClearHighlight();
+            hoveredOption = null;
+            keyboardSelectedOption = null;
+            keyboardStartResolved = false;
+            pendingKeyboardReSelect = false;
+            return;
+        }
+
+        SiegeDefendCannonsSubmenu defendSubmenu = SiegeDefendCannonsSubmenu.Instance;
+        if (defendSubmenu != null && defendSubmenu.BlocksSelection)
         {
             ClearHighlight();
             hoveredOption = null;
@@ -193,9 +204,37 @@ public class SiegeDifficultySelector : MonoBehaviour
             return;
         }
 
+        if (hoveredOption.OpensDefendCannonsSubmenu)
+        {
+            SiegeDefendCannonsSubmenu submenu = SiegeDefendCannonsSubmenu.Instance;
+            if (submenu != null)
+            {
+                submenu.OpenSubmenu();
+            }
+            else
+            {
+                Debug.LogWarning("Defend the Cannons submenu selected but SiegeDefendCannonsSubmenu is missing from the scene.");
+            }
+
+            pendingKeyboardReSelect = true;
+            return;
+        }
+
         if (hoveredOption.IsSubmenuBackButton)
         {
             SiegeDodgeArrowsSubmenu submenu = SiegeDodgeArrowsSubmenu.Instance;
+            if (submenu != null)
+            {
+                submenu.CloseSubmenu();
+            }
+
+            pendingKeyboardReSelect = true;
+            return;
+        }
+
+        if (hoveredOption.IsDefendCannonsSubmenuBackButton)
+        {
+            SiegeDefendCannonsSubmenu submenu = SiegeDefendCannonsSubmenu.Instance;
             if (submenu != null)
             {
                 submenu.CloseSubmenu();

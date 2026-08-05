@@ -1,20 +1,20 @@
 using UnityEngine;
 
 /// <summary>
-/// Shows Timed / Endless / Back choices after the main "Dodge Arrows" button is clicked.
+/// Shows Demo / Full / Back after the main "Defend the Cannons" button is clicked.
 /// Assign options in the inspector, or leave empty to auto-bind by <see cref="SiegeGameMode"/>.
 /// </summary>
-[DefaultExecutionOrder(50)]
+[DefaultExecutionOrder(49)]
 [DisallowMultipleComponent]
-public class SiegeDodgeArrowsSubmenu : MonoBehaviour
+public class SiegeDefendCannonsSubmenu : MonoBehaviour
 {
-    public static SiegeDodgeArrowsSubmenu Instance { get; private set; }
+    public static SiegeDefendCannonsSubmenu Instance { get; private set; }
 
-    [SerializeField] private SiegeDifficultyOption dodgeArrowsMenuButton;
-    [SerializeField] private SiegeDifficultyOption timedOption;
-    [SerializeField] private SiegeDifficultyOption endlessOption;
+    [SerializeField] private SiegeDifficultyOption defendCannonsMenuButton;
+    [SerializeField] private SiegeDifficultyOption demoOption;
+    [SerializeField] private SiegeDifficultyOption fullOption;
     [SerializeField] private SiegeDifficultyOption backOption;
-    [Tooltip("Hidden while the Dodge Arrows submenu is open (Demo, Full, PVP, etc.). Auto-filled if empty.")]
+    [Tooltip("Hidden while the Defend the Cannons submenu is open (Dodge Arrows, PVP, etc.). Auto-filled if empty.")]
     [SerializeField] private SiegeDifficultyOption[] mainMenuOptions;
     [Tooltip("After opening/closing the submenu, ignore selection until the pointer is released and this lockout elapses.")]
     [SerializeField, Min(0f)] private float submenuTransitionInputCooldownSeconds = 0.3f;
@@ -24,6 +24,28 @@ public class SiegeDodgeArrowsSubmenu : MonoBehaviour
     private bool pendingSelectionAfterRelease;
 
     public bool IsSubmenuOpen => submenuOpen;
+    public bool HasConfiguredMenuButton => defendCannonsMenuButton != null;
+
+    /// <summary>True when a main-menu opener exists so Demo/Full move into the submenu.</summary>
+    public static bool IsDefendCannonsSubmenuEnabled()
+    {
+        SiegeDifficultyOption[] all = FindObjectsOfType<SiegeDifficultyOption>(true);
+        if (all == null)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < all.Length; i++)
+        {
+            if (all[i] != null && all[i].OpensDefendCannonsSubmenu)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     public bool BlocksSelection =>
         pendingSelectionAfterRelease
         || Time.unscaledTime < selectionUnlockTime;
@@ -32,7 +54,7 @@ public class SiegeDodgeArrowsSubmenu : MonoBehaviour
     {
         if (Instance != null && Instance != this)
         {
-            Debug.LogWarning("Multiple SiegeDodgeArrowsSubmenu instances found.", this);
+            Debug.LogWarning("Multiple SiegeDefendCannonsSubmenu instances found.", this);
         }
 
         Instance = this;
@@ -59,7 +81,6 @@ public class SiegeDodgeArrowsSubmenu : MonoBehaviour
         }
     }
 
-    /// <summary>Apply the correct main-menu or submenu visibility for every bound option.</summary>
     public void ApplyLayout()
     {
         AutoBindOptionsIfNeeded();
@@ -85,17 +106,17 @@ public class SiegeDodgeArrowsSubmenu : MonoBehaviour
             credits.ClosePanel();
         }
 
-        SiegeDefendCannonsSubmenu defendSubmenu = SiegeDefendCannonsSubmenu.Instance;
-        if (defendSubmenu != null && defendSubmenu.IsSubmenuOpen)
+        SiegeDodgeArrowsSubmenu dodgeSubmenu = SiegeDodgeArrowsSubmenu.Instance;
+        if (dodgeSubmenu != null && dodgeSubmenu.IsSubmenuOpen)
         {
-            defendSubmenu.CloseSubmenu();
+            dodgeSubmenu.CloseSubmenu();
         }
 
         ApplySubmenuLayout();
 
         if (SiegeMatchUi.Instance != null)
         {
-            SiegeMatchUi.Instance.ShowDodgeArrowsSubmenuPrompt();
+            SiegeMatchUi.Instance.ShowDefendCannonsSubmenuPrompt();
             SiegeMatchUi.Instance.RefreshDifficultyOptionPresentation();
         }
     }
@@ -131,6 +152,8 @@ public class SiegeDodgeArrowsSubmenu : MonoBehaviour
             return;
         }
 
+        bool submenuEnabled = IsDefendCannonsSubmenuEnabled();
+
         for (int i = 0; i < all.Length; i++)
         {
             SiegeDifficultyOption option = all[i];
@@ -142,23 +165,19 @@ public class SiegeDodgeArrowsSubmenu : MonoBehaviour
             bool show;
             if (option.OpensCreditsPanel || option.IsCreditsBackButton)
             {
-                // Owned by SiegeCreditsPanel — hide while Dodge submenu is open.
                 show = false;
+            }
+            else if (option.IsDefendCannonsSubmenuChoice && submenuEnabled)
+            {
+                show = submenuOpen;
             }
             else
             {
-                show = option.IsDodgeSubmenuChoice ? submenuOpen : !submenuOpen;
+                show = !submenuOpen;
             }
 
             SetOptionFullyVisible(option, show);
         }
-    }
-
-    private SiegeDifficultyOption[] GetMainMenuOptions()
-    {
-        return mainMenuOptions != null && mainMenuOptions.Length > 0
-            ? mainMenuOptions
-            : System.Array.Empty<SiegeDifficultyOption>();
     }
 
     private void AutoBindOptionsIfNeeded()
@@ -169,25 +188,29 @@ public class SiegeDodgeArrowsSubmenu : MonoBehaviour
             return;
         }
 
-        if (timedOption == null)
+        if (demoOption == null)
         {
             for (int i = 0; i < all.Length; i++)
             {
-                if (all[i] != null && all[i].IsDodgeSubmenuChoice && all[i].GameMode == SiegeGameMode.DodgeArrows)
+                if (all[i] != null
+                    && all[i].GameMode == SiegeGameMode.Demo
+                    && !all[i].OpensDefendCannonsSubmenu)
                 {
-                    timedOption = all[i];
+                    demoOption = all[i];
                     break;
                 }
             }
         }
 
-        if (endlessOption == null)
+        if (fullOption == null)
         {
             for (int i = 0; i < all.Length; i++)
             {
-                if (all[i] != null && all[i].GameMode == SiegeGameMode.DodgeArrowsEndless)
+                if (all[i] != null
+                    && all[i].GameMode == SiegeGameMode.Full
+                    && !all[i].OpensDefendCannonsSubmenu)
                 {
-                    endlessOption = all[i];
+                    fullOption = all[i];
                     break;
                 }
             }
@@ -197,7 +220,7 @@ public class SiegeDodgeArrowsSubmenu : MonoBehaviour
         {
             for (int i = 0; i < all.Length; i++)
             {
-                if (all[i] != null && all[i].IsSubmenuBackButton)
+                if (all[i] != null && all[i].IsDefendCannonsSubmenuBackButton)
                 {
                     backOption = all[i];
                     break;
@@ -205,13 +228,13 @@ public class SiegeDodgeArrowsSubmenu : MonoBehaviour
             }
         }
 
-        if (dodgeArrowsMenuButton == null)
+        if (defendCannonsMenuButton == null)
         {
             for (int i = 0; i < all.Length; i++)
             {
-                if (all[i] != null && all[i].OpensDodgeArrowsSubmenu)
+                if (all[i] != null && all[i].OpensDefendCannonsSubmenu)
                 {
-                    dodgeArrowsMenuButton = all[i];
+                    defendCannonsMenuButton = all[i];
                     break;
                 }
             }
@@ -225,8 +248,8 @@ public class SiegeDodgeArrowsSubmenu : MonoBehaviour
             {
                 SiegeDifficultyOption option = all[i];
                 if (option == null
-                    || option == timedOption
-                    || option == endlessOption
+                    || option == demoOption
+                    || option == fullOption
                     || option == backOption)
                 {
                     continue;

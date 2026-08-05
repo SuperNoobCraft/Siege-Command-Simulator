@@ -58,6 +58,8 @@ public class SiegeAudioManager : MonoBehaviour
     [Header("Playback")]
     [SerializeField, Range(0f, 1f)] private float voiceVolume = 1f;
     [SerializeField, Range(0f, 1f)] private float eventVolume = 1f;
+    [Tooltip("Uniform voiceline speed. 1 = normal, 0.8 = 20% slower. Applied to all siege voicelines.")]
+    [SerializeField, Range(0.5f, 1.5f)] private float voicelinePlaybackSpeed = 1f;
 
     private AudioSource voiceSource;
     private AudioSource eventSource;
@@ -118,6 +120,12 @@ public class SiegeAudioManager : MonoBehaviour
             UnbindGameManager(manager);
             isGameManagerBound = false;
         }
+    }
+
+    private void OnValidate()
+    {
+        voicelinePlaybackSpeed = Mathf.Clamp(voicelinePlaybackSpeed, 0.5f, 1.5f);
+        ApplyVoicelinePlaybackSpeed();
     }
 
     private void Update()
@@ -486,6 +494,22 @@ public class SiegeAudioManager : MonoBehaviour
             eventSource = gameObject.AddComponent<AudioSource>();
             eventSource.playOnAwake = false;
             eventSource.spatialBlend = 0f;
+        }
+
+        ApplyVoicelinePlaybackSpeed();
+    }
+
+    private void ApplyVoicelinePlaybackSpeed()
+    {
+        float pitch = Mathf.Clamp(voicelinePlaybackSpeed, 0.5f, 1.5f);
+        if (voiceSource != null)
+        {
+            voiceSource.pitch = pitch;
+        }
+
+        if (eventSource != null)
+        {
+            eventSource.pitch = pitch;
         }
     }
 }

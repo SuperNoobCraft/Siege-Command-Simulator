@@ -57,6 +57,9 @@ public class RtsUnitMotor : MonoBehaviour
     [SerializeField, Min(0.1f)] private float stuckDetectionTime = 0.6f;
     [SerializeField, Min(0.05f)] private float stuckProgressDistance = 0.12f;
     [SerializeField, Range(0.1f, 1f)] private float stuckProgressSpeedFactor = 0.35f;
+    [Tooltip("After this long blocked/stuck with negligible movement (including failed wall slides), halt movement.")]
+    [SerializeField, Min(0.5f)] private float persistentStuckGiveUpTime = 2f;
+    [SerializeField, Min(0.02f)] private float persistentStuckMovementEpsilon = 0.1f;
     [SerializeField, Min(0.5f)] private float detourProbeDistance = 4f;
     [SerializeField, Min(0.25f)] private float detourWaypointSpacing = 1.5f;
 
@@ -95,6 +98,9 @@ public class RtsUnitMotor : MonoBehaviour
     private float nextForcedEscapeAttemptTime;
     private int wallBlockFailFrames;
     private int solidOverlapConfirmFrames;
+    private Vector3 persistentStuckOrigin;
+    private float persistentStuckSince = -1f;
+    private bool movementHaltedDueToPersistentStuck;
 
     private static readonly float[] RadialEscapeAngleOffsets =
     {
@@ -118,6 +124,7 @@ public class RtsUnitMotor : MonoBehaviour
     public Vector3 MoveDirection { get; private set; } = Vector3.forward;
     public bool IsBlockedBySolidObstacle { get; private set; }
     public bool IsStuck { get; private set; }
+    public bool IsMovementHaltedDueToStuck => movementHaltedDueToPersistentStuck;
 
     /// <summary>
     /// While true, ignore overhead solids and soften cliff checks so units can walk under open gate roofs.
@@ -180,7 +187,9 @@ public class RtsUnitMotor : MonoBehaviour
         IsBlockedBySolidObstacle = false;
         IsStuck = false;
         pathStuckConfirmCount = 0;
+        movementHaltedDueToPersistentStuck = false;
         ResetStuckTracking();
+        ResetPersistentStuckTracking();
     }
 
     /// <summary>True when the regiment footprint can reach worldPoint without crossing RTS_Solid.</summary>
@@ -449,7 +458,9 @@ public class RtsUnitMotor : MonoBehaviour
         IsBlockedBySolidObstacle = false;
         IsStuck = false;
         pathStuckConfirmCount = 0;
+        movementHaltedDueToPersistentStuck = false;
         ResetStuckTracking();
+        ResetPersistentStuckTracking();
     }
 
     /// <summary>
@@ -558,6 +569,13 @@ public class RtsUnitMotor : MonoBehaviour
             return;
         }
 
+        if (movementHaltedDueToPersistentStuck)
+        {
+            IsBlockedBySolidObstacle = true;
+            IsStuck = false;
+            return;
+        }
+
         if (!hasDestination)
         {
             IsBlockedBySolidObstacle = false;
@@ -573,6 +591,11 @@ public class RtsUnitMotor : MonoBehaviour
         }
 
         UpdateStuckDetection();
+        UpdatePersistentStuckGiveUp();
+        if (movementHaltedDueToPersistentStuck)
+        {
+            return;
+        }
 
         bool overlappingSolid = GetSolidQueryMask() != 0 && IsCurrentlyOverlappingObstacle();
         if (overlappingSolid)
@@ -1395,6 +1418,51 @@ public class RtsUnitMotor : MonoBehaviour
         return threshold;
     }
 
+    private void ResetPersistentStuckTracking()
+    {
+        persistentStuckOrigin = transform.position;
+        persistentStuckSince = -1f;
+    }
+
+    private void UpdatePersistentStuckGiveUp()
+    {
+        if (!hasDestination)
+        {
+            ResetPersistentStuckTracking();
+            return;
+        }
+
+        bool struggling = IsBlockedBySolidObstacle || IsStuck;
+        if (!struggling)
+        {
+            ResetPersistentStuckTracking();
+            return;
+        }
+
+        if (persistentStuckSince < 0f)
+        {
+            persistentStuckOrigin = transform.position;
+            persistentStuckSince = Time.time;
+            return;
+        }
+
+        float moved = Mathf.Sqrt(HorizontalDistanceSqr(transform.position, persistentStuckOrigin));
+        if (moved >= persistentStuckMovementEpsilon)
+        {
+            persistentStuckOrigin = transform.position;
+            persistentStuckSince = Time.time;
+            return;
+        }
+
+        if (Time.time - persistentStuckSince < persistentStuckGiveUpTime)
+        {
+            return;
+        }
+
+        movementHaltedDueToPersistentStuck = true;
+        HaltAgainstSolid();
+    }
+
     private void ResetStuckTracking()
     {
         stuckSamplePosition = transform.position;
@@ -1713,7 +1781,9 @@ public class RtsUnitMotor : MonoBehaviour
         wallBlockFailFrames = 0;
         nonSolidPathBlockFrames = 0;
         solidOverlapConfirmFrames = 0;
+        movementHaltedDueToPersistentStuck = false;
         ResetStuckTracking();
+        ResetPersistentStuckTracking();
     }
 
     private Vector3 FlattenToGround(Vector3 worldPoint)

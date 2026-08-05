@@ -116,6 +116,12 @@ public class SiegeCreditsPanel : MonoBehaviour
             dodgeSubmenu.CloseSubmenu();
         }
 
+        SiegeDefendCannonsSubmenu defendSubmenu = SiegeDefendCannonsSubmenu.Instance;
+        if (defendSubmenu != null && defendSubmenu.IsSubmenuOpen)
+        {
+            defendSubmenu.CloseSubmenu();
+        }
+
         ApplyLayout();
 
         if (SiegeMatchUi.Instance != null)
