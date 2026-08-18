@@ -244,10 +244,14 @@ public class SiegeDifficultySelector : MonoBehaviour
             return;
         }
 
-        if (hoveredOption.GameMode == SiegeGameMode.SiegePvp)
+        if (hoveredOption.GameMode == SiegeGameMode.SiegePvp
+            || hoveredOption.GameMode == SiegeGameMode.CapturePvP)
         {
             if (pvp != null)
             {
+                bool useCapturePvP = hoveredOption.GameMode == SiegeGameMode.CapturePvP;
+                pvp.ConfigureCapturePvPSubmode(useCapturePvP);
+
                 if (hoveredOption.UseCustomPvpTuning)
                 {
                     pvp.NotifyLocalSelectedPvp(

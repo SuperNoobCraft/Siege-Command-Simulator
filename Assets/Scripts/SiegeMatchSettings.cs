@@ -9,7 +9,8 @@ public enum SiegeGameMode
     Full = 1,
     DodgeArrows = 2,
     SiegePvp = 3,
-    DodgeArrowsEndless = 4
+    DodgeArrowsEndless = 4,
+    CapturePvP = 5
 }
 
 public static class SiegeMatchSettings
@@ -30,7 +31,7 @@ public static class SiegeMatchSettings
     public static bool IsDodgeArrowsMode => IsDodgeArrowsTimedMode || IsDodgeArrowsEndlessMode;
     public static bool IsDodgeArrowsTimedMode => GameMode == SiegeGameMode.DodgeArrows;
     public static bool IsDodgeArrowsEndlessMode => GameMode == SiegeGameMode.DodgeArrowsEndless;
-    public static bool IsSiegePvpMode => GameMode == SiegeGameMode.SiegePvp;
+    public static bool IsSiegePvpMode => GameMode == SiegeGameMode.SiegePvp || GameMode == SiegeGameMode.CapturePvP;
     public static bool IsArenaSurvivalMode => IsDodgeArrowsMode;
     public static bool HasTroopCombat => !IsDodgeArrowsMode;
     public static float ActiveMoveSpeedScale
@@ -72,6 +73,7 @@ public static class SiegeMatchSettings
             SiegeGameMode.DodgeArrows => 0,
             SiegeGameMode.DodgeArrowsEndless => 0,
             SiegeGameMode.SiegePvp => 0,
+            SiegeGameMode.CapturePvP => 0,
             _ => FullWaveCount
         };
         IsConfigured = true;

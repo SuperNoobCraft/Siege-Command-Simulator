@@ -55,6 +55,12 @@ public class RtsCampManager : MonoBehaviour
     public Transform EnemyGateInside => enemyGateInside;
     public Transform EnemyGateOutside => enemyGateOutside;
 
+    public void AssignCamps(Transform friendly, Transform enemy)
+    {
+        friendlyCamp = friendly;
+        enemyCamp = enemy;
+    }
+
     private void Awake()
     {
         if (Instance != null && Instance != this)

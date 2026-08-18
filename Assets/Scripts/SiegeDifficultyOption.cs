@@ -7,7 +7,7 @@ using UnityEngine;
 [DisallowMultipleComponent]
 public class SiegeDifficultyOption : MonoBehaviour
 {
-    [Tooltip("Demo, Full, Siege PVP, Timed Dodge Arrows, or Endless Dodge Arrows. Demo/Full are Defend the Cannons submenu choices; Timed/Endless/Back are Dodge submenu choices.")]
+    [Tooltip("Demo, Full, Siege PVP, Capture PvP, Timed Dodge Arrows, or Endless Dodge Arrows. Demo/Full are Defend the Cannons submenu choices; Timed/Endless/Back are Dodge submenu choices.")]
     [SerializeField] private SiegeGameMode gameMode = SiegeGameMode.Demo;
     [Tooltip("Main-menu Dodge Arrows button opens the Timed / Endless submenu instead of starting immediately.")]
     [SerializeField] private bool opensDodgeArrowsSubmenu;
@@ -26,6 +26,8 @@ public class SiegeDifficultyOption : MonoBehaviour
     [SerializeField] private bool useCustomPvpTuning = false;
     [SerializeField, Min(30f)] private float pvpMatchDurationSeconds = 180f;
     [SerializeField, Range(0.1f, 2f)] private float pvpMoveSpeedScale = 1f;
+
+    [Header("Capture PvP (Point Capture)")]
     [SerializeField] private Collider hitCollider;
     [SerializeField] private SiegeWorldUiLabel label;
     [SerializeField] private Color normalColor = Color.white;
@@ -57,6 +59,7 @@ public class SiegeDifficultyOption : MonoBehaviour
         SiegeGameMode.DodgeArrows => 0,
         SiegeGameMode.DodgeArrowsEndless => 0,
         SiegeGameMode.SiegePvp => 0,
+        SiegeGameMode.CapturePvP => 0,
         _ => SiegeMatchSettings.FullWaveCount
     };
 

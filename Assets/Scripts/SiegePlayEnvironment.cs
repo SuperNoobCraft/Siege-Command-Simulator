@@ -57,6 +57,30 @@ public class SiegePlayEnvironment : MonoBehaviour
         ApplyResolvedMode(ResolveMode(playEnvironment));
     }
 
+    public static void RefreshActiveInstance()
+    {
+        SiegePlayEnvironment[] all = FindObjectsOfType<SiegePlayEnvironment>(true);
+        SiegePlayEnvironment preferred = null;
+
+        for (int i = 0; i < all.Length; i++)
+        {
+            SiegePlayEnvironment candidate = all[i];
+            if (candidate == null || !candidate.enabled || !candidate.gameObject.activeInHierarchy)
+            {
+                continue;
+            }
+
+            preferred = candidate;
+            break;
+        }
+
+        Instance = preferred;
+        if (preferred != null)
+        {
+            preferred.ApplyResolvedMode(ResolveMode(preferred.playEnvironment));
+        }
+    }
+
     private void OnDestroy()
     {
         if (Instance == this)

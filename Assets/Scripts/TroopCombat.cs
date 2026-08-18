@@ -165,6 +165,7 @@ public class TroopCombat : MonoBehaviour
     private float nextScanTime;
     private float nextRetreatDestinationRefreshTime;
     private float nextRetreatUnstuckTime;
+    private float lastCombatInteractionTime = float.NegativeInfinity;
     private int retreatUnstuckAttemptIndex;
     private float invulnerableUntil;
     private bool isPermanentlyEliminated;
@@ -186,6 +187,8 @@ public class TroopCombat : MonoBehaviour
     private bool loggedMissingGround;
     private float authoredYawDegrees;
     private Coroutine retryGroundSnapCoroutine;
+    private Coroutine pointCaptureRaiseCoroutine;
+    private bool pointCaptureRetreatTracking;
     private bool hasLockedRegimentGroundY;
     private float lockedRegimentGroundY;
     private Vector3 lockedRegimentGroundXZ;
@@ -215,6 +218,8 @@ public class TroopCombat : MonoBehaviour
     }
 
     public float HealthNormalized => Mathf.Clamp01(currentHealth / Mathf.Max(1f, maxHealth));
+    public bool IsInCombat => CurrentState == State.Fight;
+    public bool IsPointCaptureRaising { get; private set; }
     public int MaxUnitCount => maxUnitCount;
     public int ActiveUnitCount => activeTroopVisualCount;
     public int MinimumUnitCountAtDefeat => Mathf.RoundToInt(maxUnitCount * defeatedUnitPercentage);
@@ -271,6 +276,11 @@ public class TroopCombat : MonoBehaviour
 
         EnsureSelectionCollider();
         return selectionCollider != null && collider == selectionCollider;
+    }
+
+    public bool WasRecentlyInCombat(float recentSeconds)
+    {
+        return Time.time - lastCombatInteractionTime <= Mathf.Max(0f, recentSeconds);
     }
 
     private Vector3 matchStartPosition;
@@ -664,7 +674,7 @@ public class TroopCombat : MonoBehaviour
 
     private void Update()
     {
-        if (CurrentState == State.Dead || !SiegeMatchSettings.HasTroopCombat)
+        if (CurrentState == State.Dead || !SiegeMatchSettings.HasTroopCombat || IsPointCaptureRaising)
         {
             return;
         }
@@ -1270,6 +1280,10 @@ public class TroopCombat : MonoBehaviour
 
     private void UpdateRecovery()
     {
+        if (PointCaptureMatch.Instance != null)
+        {
+            return;
+        }
         if (currentHealth >= maxHealth)
         {
             if (CurrentState == State.Regroup)
@@ -1425,6 +1439,9 @@ public class TroopCombat : MonoBehaviour
         {
             return;
         }
+
+        lastCombatInteractionTime = Time.time;
+        target.lastCombatInteractionTime = Time.time;
 
         SiegePvpSession session = SiegePvpSession.Instance;
         if (session != null
@@ -1604,16 +1621,23 @@ public class TroopCombat : MonoBehaviour
         }
 
         RtsCampManager campManager = RtsCampManager.Instance;
+        bool pointCaptureRetreat = PointCaptureMatch.Instance != null;
 
-        if (campManager != null
-            && retreatPhase == RetreatPhase.ToCamp
-            && campManager.HasReachedCampCenter(transform.position, faction))
+        if (HasReachedRetreatCamp(campManager))
         {
-            EnterRegroup();
+            if (pointCaptureRetreat)
+            {
+                CompletePointCaptureRetreatArrival();
+            }
+            else
+            {
+                EnterRegroup();
+            }
+
             return;
         }
 
-        if (campManager != null && retreatPhase == RetreatPhase.ToGateOutside && campManager.IsAtGateOutside(transform.position, faction))
+        if (!pointCaptureRetreat && campManager != null && retreatPhase == RetreatPhase.ToGateOutside && campManager.IsAtGateOutside(transform.position, faction))
         {
             retreatPhase = ShouldUseGateInsideWaypoint(campManager)
                 ? RetreatPhase.ToGateInside
@@ -1623,17 +1647,19 @@ public class TroopCombat : MonoBehaviour
                 IssueRetreatMoveTo(GetRetreatDestination(campManager));
             }
         }
-        else if (campManager != null && retreatPhase == RetreatPhase.ToGateInside && campManager.IsAtGateInside(transform.position, faction))
+        else if (!pointCaptureRetreat && campManager != null && retreatPhase == RetreatPhase.ToGateInside && campManager.IsAtGateInside(transform.position, faction))
         {
             retreatPhase = RetreatPhase.ToCamp;
             if (motor != null)
             {
-                IssueRetreatMoveTo(campManager.GetCampCenter(faction));
+                IssueRetreatMoveTo(GetRetreatDestination(campManager));
             }
         }
-        else if (motor != null && campManager != null)
+        else if (motor != null)
         {
-            if (retreatPhase == RetreatPhase.ToGateOutside || retreatPhase == RetreatPhase.ToGateInside)
+            if (!pointCaptureRetreat
+                && campManager != null
+                && (retreatPhase == RetreatPhase.ToGateOutside || retreatPhase == RetreatPhase.ToGateInside))
             {
                 if (!motor.HasDestination && !motor.IsBlockedBySolidObstacle)
                 {
@@ -1644,11 +1670,11 @@ public class TroopCombat : MonoBehaviour
                     TryRecoverRetreatMovement(campManager);
                 }
             }
-            else if (!campManager.HasReachedCampCenter(transform.position, faction)
+            else if (!HasReachedRetreatCamp(campManager)
                 && !motor.HasDestination
                 && !motor.IsBlockedBySolidObstacle)
             {
-                IssueRetreatMoveTo(campManager.GetCampCenter(faction));
+                IssueRetreatMoveTo(GetRetreatDestination(campManager));
             }
             else if (motor.IsBlockedBySolidObstacle || motor.IsStuck)
             {
@@ -1790,6 +1816,31 @@ public class TroopCombat : MonoBehaviour
 
     private Vector3 GetRetreatDestination(RtsCampManager campManager)
     {
+        if (PointCaptureMatch.Instance != null)
+        {
+            PointCaptureBoard board = PointCaptureBoard.Instance;
+            if (board != null)
+            {
+                CaptureOwner owner = CaptureTeams.FromTroopFaction(faction);
+                if (board.TryGetRecoveryDestination(owner, transform.position, out Vector3 recoveryDestination))
+                {
+                    return recoveryDestination;
+                }
+            }
+
+            if (campManager != null)
+            {
+                return campManager.GetCampCenter(faction);
+            }
+
+            return transform.position;
+        }
+
+        if (campManager == null)
+        {
+            return transform.position;
+        }
+
         switch (retreatPhase)
         {
             case RetreatPhase.ToGateOutside:
@@ -1799,6 +1850,28 @@ public class TroopCombat : MonoBehaviour
             default:
                 return campManager.GetCampCenter(faction);
         }
+    }
+
+    private bool HasReachedRetreatCamp(RtsCampManager campManager)
+    {
+        if (PointCaptureMatch.Instance != null)
+        {
+            PointCaptureBoard board = PointCaptureBoard.Instance;
+            if (board != null)
+            {
+                CaptureOwner owner = CaptureTeams.FromTroopFaction(faction);
+                return board.IsInsideOwnedVillageDisc(owner, transform.position);
+            }
+
+            return false;
+        }
+
+        if (campManager == null)
+        {
+            return false;
+        }
+
+        return campManager.HasReachedCampCenter(transform.position, faction);
     }
 
     private bool ShouldUseGateInsideWaypoint(RtsCampManager campManager)
@@ -2006,9 +2079,14 @@ public class TroopCombat : MonoBehaviour
         retreatUnstuckAttemptIndex = 0;
 
         RtsCampManager campManager = RtsCampManager.Instance;
-        retreatPhase = campManager != null && campManager.HasGate(faction)
-            ? RetreatPhase.ToGateOutside
-            : RetreatPhase.ToCamp;
+        retreatPhase = PointCaptureMatch.Instance != null || campManager == null || !campManager.HasGate(faction)
+            ? RetreatPhase.ToCamp
+            : RetreatPhase.ToGateOutside;
+
+        if (PointCaptureMatch.Instance != null)
+        {
+            BeginPointCaptureRetreatTracking();
+        }
 
         if (motor != null)
         {
@@ -2023,6 +2101,54 @@ public class TroopCombat : MonoBehaviour
         RegimentEnteredRetreat?.Invoke(this);
         NotifyOwnedCombatAuthorityChanged();
         ClearLocalAggressorsTargetingMe();
+    }
+
+    private void OnDisable()
+    {
+        EndPointCaptureRetreatTracking();
+    }
+
+    private void BeginPointCaptureRetreatTracking()
+    {
+        if (pointCaptureRetreatTracking)
+        {
+            return;
+        }
+
+        PointCaptureBoard board = PointCaptureBoard.Instance;
+        if (board == null)
+        {
+            return;
+        }
+
+        board.TerritoryChanged += HandlePointCaptureTerritoryChanged;
+        pointCaptureRetreatTracking = true;
+    }
+
+    private void EndPointCaptureRetreatTracking()
+    {
+        if (!pointCaptureRetreatTracking)
+        {
+            return;
+        }
+
+        PointCaptureBoard board = PointCaptureBoard.Instance;
+        if (board != null)
+        {
+            board.TerritoryChanged -= HandlePointCaptureTerritoryChanged;
+        }
+
+        pointCaptureRetreatTracking = false;
+    }
+
+    private void HandlePointCaptureTerritoryChanged()
+    {
+        if (CurrentState != State.Retreat)
+        {
+            return;
+        }
+
+        nextRetreatDestinationRefreshTime = 0f;
     }
 
     internal bool TryPerformImmediateMeleeCounter(TroopCombat attacker, bool suppressCounterReply)
@@ -2096,6 +2222,7 @@ public class TroopCombat : MonoBehaviour
 
     private void EnterRegroup()
     {
+        EndPointCaptureRetreatTracking();
         CurrentState = State.Regroup;
         currentTarget = null;
         invulnerableUntil = float.PositiveInfinity;
@@ -2116,6 +2243,28 @@ public class TroopCombat : MonoBehaviour
             }
         }
 
+        NotifyOwnedCombatAuthorityChanged();
+    }
+
+    /// <summary>
+    /// Point Capture: retreat ends in a safe village disc — become a normal regiment again at current HP.
+    /// Village recovery handles healing; no invulnerable regroup state.
+    /// </summary>
+    private void CompletePointCaptureRetreatArrival()
+    {
+        EndPointCaptureRetreatTracking();
+        CurrentState = State.Idle;
+        currentTarget = null;
+        invulnerableUntil = 0f;
+
+        if (motor != null)
+        {
+            motor.Stop();
+            motor.MoveSpeedMultiplier = 1f;
+            motor.CanReceiveCommands = motor.IsCommandUnit;
+        }
+
+        RegimentRegroupCompleted?.Invoke(this);
         NotifyOwnedCombatAuthorityChanged();
     }
 
@@ -2255,7 +2404,7 @@ public class TroopCombat : MonoBehaviour
 
     public void TakeDamage(float amount, TroopCombat attacker = null, bool isRangedAttack = false)
     {
-        if (CurrentState == State.Dead)
+        if (CurrentState == State.Dead || IsPointCaptureRaising)
         {
             return;
         }
@@ -2263,6 +2412,12 @@ public class TroopCombat : MonoBehaviour
         if (ShouldIgnoreLocalCombatDamage())
         {
             return;
+        }
+
+        lastCombatInteractionTime = Time.time;
+        if (attacker != null)
+        {
+            attacker.lastCombatInteractionTime = Time.time;
         }
 
         if (CurrentState == State.Regroup)
@@ -2300,10 +2455,185 @@ public class TroopCombat : MonoBehaviour
 
         if (currentHealth <= 0f)
         {
+            if (ShouldForceMutualRetreatInPointCapture(attacker))
+            {
+                attacker.EnterRetreat();
+            }
+
             EnterRetreat();
         }
 
         NotifyOwnedCombatAuthorityChanged();
+    }
+
+    private bool ShouldForceMutualRetreatInPointCapture(TroopCombat attacker)
+    {
+        if (PointCaptureMatch.Instance == null
+            || attacker == null
+            || attacker == this
+            || attacker.faction == faction
+            || attacker.CurrentState == State.Dead
+            || attacker.CurrentState == State.Retreat
+            || attacker.CurrentState == State.Regroup)
+        {
+            return false;
+        }
+
+        // "Equal sides" in Point Capture means mirrored regiments with effectively the same combat profile.
+        if (attacker.maxUnitCount != maxUnitCount
+            || attacker.hasRangedAttack != hasRangedAttack
+            || Mathf.Abs(attacker.maxHealth - maxHealth) > 0.01f
+            || Mathf.Abs(attacker.attackDamage - attackDamage) > 0.01f
+            || Mathf.Abs(attacker.attackCooldown - attackCooldown) > 0.01f
+            || Mathf.Abs(attacker.attackRange - attackRange) > 0.01f)
+        {
+            return false;
+        }
+
+        if (hasRangedAttack)
+        {
+            if (Mathf.Abs(attacker.rangedAttackDamage - rangedAttackDamage) > 0.01f
+                || Mathf.Abs(attacker.rangedAttackCooldown - rangedAttackCooldown) > 0.01f
+                || Mathf.Abs(attacker.rangedAttackRange - rangedAttackRange) > 0.01f)
+            {
+                return false;
+            }
+        }
+
+        // Only apply when they are actually fighting each other, not from unrelated splash / third-party pressure.
+        return attacker.currentTarget == this || currentTarget == attacker;
+    }
+
+    /// <summary>
+    /// Point Capture: heal while resting inside a friendly village disc.
+    /// </summary>
+    public void ApplyPointCaptureVillageRecovery(float healthPerSecond, float deltaTime)
+    {
+        if (deltaTime <= 0f
+            || CurrentState == State.Dead
+            || IsPermanentlyEliminated
+            || CurrentState == State.Fight
+            || CurrentState == State.Retreat
+            || currentHealth >= maxHealth)
+        {
+            return;
+        }
+
+        currentHealth = Mathf.Min(maxHealth, currentHealth + healthPerSecond * deltaTime);
+        SyncTroopVisualsToHealth();
+
+        if (currentHealth >= maxHealth)
+        {
+            RestoreFlagHolderVisual();
+        }
+    }
+
+    public void BeginPointCaptureRaiseReveal(float durationSeconds)
+    {
+        if (pointCaptureRaiseCoroutine != null)
+        {
+            StopCoroutine(pointCaptureRaiseCoroutine);
+        }
+
+        pointCaptureRaiseCoroutine = StartCoroutine(PointCaptureRaiseRevealRoutine(Mathf.Max(0.1f, durationSeconds)));
+    }
+
+    private System.Collections.IEnumerator PointCaptureRaiseRevealRoutine(float durationSeconds)
+    {
+        IsPointCaptureRaising = true;
+        EnsureTroopVisuals();
+        if (motor != null)
+        {
+            motor.CanReceiveCommands = false;
+            motor.Stop();
+        }
+
+        List<int> appearOrder = BuildRandomRaiseAppearOrder();
+        for (int i = 0; i < troopVisuals.Count; i++)
+        {
+            if (troopVisuals[i].Instance != null)
+            {
+                troopVisuals[i].Instance.SetActive(false);
+            }
+        }
+
+        currentHealth = 0.01f;
+        invulnerableUntil = Time.time + durationSeconds + 0.15f;
+        activeTroopVisualCount = 0;
+
+        int appearCount = appearOrder.Count;
+        if (appearCount == 0)
+        {
+            currentHealth = maxHealth;
+            IsPointCaptureRaising = false;
+            if (motor != null)
+            {
+                motor.CanReceiveCommands = motor.IsCommandUnit;
+            }
+
+            pointCaptureRaiseCoroutine = null;
+            yield break;
+        }
+
+        float interval = durationSeconds / appearCount;
+        for (int i = 0; i < appearCount; i++)
+        {
+            int visualIndex = appearOrder[i];
+            if (visualIndex >= 0 && visualIndex < troopVisuals.Count && troopVisuals[visualIndex].Instance != null)
+            {
+                troopVisuals[visualIndex].Instance.SetActive(true);
+                activeTroopVisualCount++;
+            }
+
+            currentHealth = Mathf.Lerp(0.01f, maxHealth, (i + 1) / (float)appearCount);
+            yield return new WaitForSeconds(interval);
+        }
+
+        currentHealth = maxHealth;
+        SyncTroopVisualsToHealth();
+        IsPointCaptureRaising = false;
+        if (motor != null)
+        {
+            motor.CanReceiveCommands = motor.IsCommandUnit;
+        }
+
+        pointCaptureRaiseCoroutine = null;
+    }
+
+    private List<int> BuildRandomRaiseAppearOrder()
+    {
+        List<int> regularTroops = new List<int>();
+        int flagHolderIndex = -1;
+        for (int i = 0; i < troopVisuals.Count; i++)
+        {
+            if (troopVisuals[i].Instance == null)
+            {
+                continue;
+            }
+
+            if (troopVisuals[i].IsFlagHolder)
+            {
+                flagHolderIndex = i;
+                continue;
+            }
+
+            regularTroops.Add(i);
+        }
+
+        for (int i = regularTroops.Count - 1; i > 0; i--)
+        {
+            int swapIndex = Random.Range(0, i + 1);
+            int temp = regularTroops[i];
+            regularTroops[i] = regularTroops[swapIndex];
+            regularTroops[swapIndex] = temp;
+        }
+
+        if (flagHolderIndex >= 0)
+        {
+            regularTroops.Add(flagHolderIndex);
+        }
+
+        return regularTroops;
     }
 
     /// <summary>
@@ -2521,7 +2851,7 @@ public class TroopCombat : MonoBehaviour
 
     public bool CanBeTargetedBy(TroopCombat other)
     {
-        if (other == null || CurrentState == State.Dead || CurrentState == State.Regroup)
+        if (other == null || CurrentState == State.Dead || CurrentState == State.Regroup || IsPointCaptureRaising)
         {
             return false;
         }
@@ -2545,6 +2875,11 @@ public class TroopCombat : MonoBehaviour
     public bool IsProtectedByFriendlyCamp()
     {
         if (faction != Faction.Friendly)
+        {
+            return false;
+        }
+
+        if (PointCaptureMatch.Instance != null)
         {
             return false;
         }
@@ -2576,7 +2911,7 @@ public class TroopCombat : MonoBehaviour
         }
 
         EnemyRegimentAI enemyAi = GetComponent<EnemyRegimentAI>();
-        if (enemyAi == null)
+        if (enemyAi == null || !enemyAi.enabled)
         {
             return true;
         }
@@ -2702,6 +3037,7 @@ public class TroopCombat : MonoBehaviour
             return;
         }
 
+        EndPointCaptureRetreatTracking();
         isPermanentlyEliminated = true;
         retreatVisualsSyncedToDefeat = false;
         CurrentState = State.Dead;
