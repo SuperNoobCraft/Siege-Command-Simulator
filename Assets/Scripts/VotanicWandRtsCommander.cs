@@ -99,6 +99,8 @@ public class VotanicWandRtsCommander : MonoBehaviour
     /// <summary>Fired after a successful local path command (used to sync PVP peers).</summary>
     public event System.Action<RtsUnitMotor, IReadOnlyList<Vector3>> PathCommandIssued;
 
+    public bool IsRecordingPath => isRecordingPath;
+
     public void SetControllableFaction(TroopCombat.Faction faction)
     {
         controllableFaction = faction;
@@ -164,7 +166,9 @@ public class VotanicWandRtsCommander : MonoBehaviour
         }
 
         SiegeGameManager manager = SiegeGameManager.Instance;
-        if (manager != null
+        bool pointCaptureStandalone = PointCaptureMatch.Instance != null;
+        if (!pointCaptureStandalone
+            && manager != null
             && (manager.CurrentState == SiegeGameManager.MatchState.SelectingDifficulty
                 || !manager.IsPlaying
                 || SiegeMatchSettings.IsArenaSurvivalMode))
@@ -336,7 +340,17 @@ public class VotanicWandRtsCommander : MonoBehaviour
 
         if (combat == null)
         {
-            return controllableFaction == TroopCombat.Faction.Friendly;
+            combat = unit.GetComponentInChildren<TroopCombat>();
+        }
+
+        if (combat == null)
+        {
+            return false;
+        }
+
+        if (PointCaptureMatch.Instance != null)
+        {
+            return combat.TroopFaction == controllableFaction;
         }
 
         if (SiegeMatchSettings.IsSiegePvpMode)

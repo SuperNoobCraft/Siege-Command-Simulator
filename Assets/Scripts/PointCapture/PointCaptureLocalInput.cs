@@ -1,9 +1,12 @@
+using System;
 using UnityEngine;
 using UnityEngine.EventSystems;
+using Votanic.vXR.vCast;
+using Votanic.vXR.vGear;
 
 /// <summary>
 /// Local prototype controls: command one side with the existing wand/mouse path tool,
-/// right-click a village disc you control to raise regiments, switch sides with Tab.
+/// click a village disc you control to raise regiments, switch sides with Tab.
 /// </summary>
 [DefaultExecutionOrder(20)]
 [DisallowMultipleComponent]
@@ -19,13 +22,30 @@ public class PointCaptureLocalInput : MonoBehaviour
     [SerializeField] private KeyCode startKey = KeyCode.Space;
     [SerializeField] private KeyCode restartKey = KeyCode.R;
 
+    [Header("Spawns")]
+    [Tooltip("Yellow / player 1 start. Falls back to a scene object named YellowSpawnPoint or StartPoint.")]
+    [SerializeField] private Transform yellowSpawnPoint;
+    [Tooltip("Red / player 2 start. Falls back to a scene object named RedSpawnPoint.")]
+    [SerializeField] private Transform redSpawnPoint;
+
     private float raiseFailUntil;
     private string raiseFailMessage = string.Empty;
 
     private bool originalWandCommanderEnabled = true;
+    private float ignoreRaiseUntil;
+
+    public void SuppressRaiseMenu(float seconds = 0.55f)
+    {
+        ignoreRaiseUntil = Time.unscaledTime + Mathf.Max(0.1f, seconds);
+        pointerPressOnCommandableTroop = true;
+    }
+    private bool pointerWasHeld;
+    private float pointerPressUnscaledTime;
+    private bool pointerPressOnCommandableTroop;
 
     public CaptureOwner CommandFaction => commandFaction;
     public string LastFailMessage => Time.unscaledTime < raiseFailUntil ? raiseFailMessage : string.Empty;
+    public static PointCaptureLocalInput Instance { get; private set; }
 
     public void Configure(
         PointCaptureMatch captureMatch,
@@ -50,6 +70,7 @@ public class PointCaptureLocalInput : MonoBehaviour
 
     private void Awake()
     {
+        Instance = this;
         if (match == null)
         {
             match = PointCaptureMatch.Instance;
@@ -72,6 +93,7 @@ public class PointCaptureLocalInput : MonoBehaviour
 
         originalWandCommanderEnabled = wandCommander == null ? true : wandCommander.enabled;
 
+        BindSpawnPoints();
         EnsureRaiseMenu();
         BindRaiseMenu();
         ApplyCommandFaction();
@@ -95,48 +117,139 @@ public class PointCaptureLocalInput : MonoBehaviour
         }
 
         EnsureRaiseMenu();
+        SyncWandCommanderForRaiseMenu();
 
         if (match == null)
         {
             return;
         }
 
-        if (Input.GetKeyDown(startKey)
-            && (match.CurrentState == PointCaptureMatch.MatchState.Waiting
-                || match.CurrentState == PointCaptureMatch.MatchState.Ended))
+        TryLockNetworkFaction();
+
+        if (match.CurrentState == PointCaptureMatch.MatchState.Waiting && WasReadyButtonPressedThisFrame())
         {
-            raiseMenu?.Hide();
-            if (match.CurrentState == PointCaptureMatch.MatchState.Ended)
-            {
-                match.Restart();
-            }
-            else
-            {
-                match.BeginCountdown();
-            }
+            match.NotifySideReady(commandFaction);
         }
 
-        if (match.CurrentState == PointCaptureMatch.MatchState.Ended && Input.GetKeyDown(restartKey))
+        if (match.CurrentState == PointCaptureMatch.MatchState.Ended && WasReadyButtonPressedThisFrame())
         {
-            raiseMenu?.Hide();
-            match.Restart();
-            return;
+            match.NotifySideReset(commandFaction);
         }
 
         if (Input.GetKeyDown(switchFactionKey))
         {
-            commandFaction = CaptureTeams.Opposite(commandFaction);
-            raiseMenu?.Hide();
-            ApplyCommandFaction();
+            if (match.HasConnectedPeer)
+            {
+                ShowFail("Each cave commands its own side. Host is Yellow, client is Red.");
+            }
+            else
+            {
+                SwitchTestingSide();
+            }
+
+            return;
         }
 
-        if (Input.GetMouseButtonDown(0))
+        if (match.IsPlaying)
         {
-            if (!IsHoveringCommandableTroop() && !IsPointerOverUi())
-            {
-                TryOpenRaiseMenu();
-            }
+            UpdateRaiseClick();
         }
+    }
+
+    private void UpdateRaiseClick()
+    {
+        bool pointerHeld = SiegeVrInput.IsPointerHeld();
+        if (pointerHeld && !pointerWasHeld)
+        {
+            pointerPressUnscaledTime = Time.unscaledTime;
+            bool menuBlocking = raiseMenu != null && (raiseMenu.IsOpen || raiseMenu.ClosedThisFrame);
+            pointerPressOnCommandableTroop = menuBlocking
+                || IsHoveringCommandableTroop()
+                || (wandCommander != null && wandCommander.IsRecordingPath);
+        }
+
+        bool pointerReleased = !pointerHeld && pointerWasHeld;
+        pointerWasHeld = pointerHeld;
+
+        if (!pointerReleased)
+        {
+            return;
+        }
+
+        if (raiseMenu != null && raiseMenu.IsOpen)
+        {
+            return;
+        }
+
+        if (Time.unscaledTime < ignoreRaiseUntil)
+        {
+            return;
+        }
+
+        if (pointerPressOnCommandableTroop || (wandCommander != null && wandCommander.IsRecordingPath))
+        {
+            return;
+        }
+
+        const float maxClickDuration = 0.35f;
+        if (Time.unscaledTime - pointerPressUnscaledTime > maxClickDuration)
+        {
+            return;
+        }
+
+        if (IsPointerOverUi() || (raiseMenu != null && raiseMenu.IsPointerOverMenu()))
+        {
+            return;
+        }
+
+        TryOpenRaiseMenu();
+    }
+
+    private void SwitchTestingSide()
+    {
+        commandFaction = CaptureTeams.Opposite(commandFaction);
+        raiseMenu?.Hide();
+        ApplyCommandFaction();
+        TeleportToCommandSpawn();
+    }
+
+    private void TryLockNetworkFaction()
+    {
+        if (match == null || !match.HasConnectedPeer)
+        {
+            return;
+        }
+
+        CaptureOwner networked = match.NetworkLocalFaction;
+        if (commandFaction == networked)
+        {
+            return;
+        }
+
+        commandFaction = networked;
+        raiseMenu?.Hide();
+        ApplyCommandFaction();
+        TeleportToCommandSpawn();
+    }
+
+    private bool WasReadyButtonPressedThisFrame()
+    {
+        if (Input.GetKeyDown(switchFactionKey))
+        {
+            return false;
+        }
+
+        if (SiegeVrInput.WasPointerPressedThisFrame())
+        {
+            return true;
+        }
+
+        if (Input.GetKeyDown(startKey) || Input.GetKeyDown(restartKey))
+        {
+            return true;
+        }
+
+        return Input.anyKeyDown && !Input.GetMouseButtonDown(0) && !Input.GetMouseButtonDown(1);
     }
 
     private void TryOpenRaiseMenu()
@@ -171,7 +284,7 @@ public class PointCaptureLocalInput : MonoBehaviour
             return;
         }
 
-        raiseMenu.Show(aimPoint, commandFaction, Input.mousePosition);
+        raiseMenu.Show(aimPoint, commandFaction);
     }
 
     private bool IsHoveringCommandableTroop()
@@ -194,7 +307,7 @@ public class PointCaptureLocalInput : MonoBehaviour
             return false;
         }
 
-        System.Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
+        Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
         for (int i = 0; i < hits.Length; i++)
         {
             Collider hitCollider = hits[i].collider;
@@ -213,6 +326,11 @@ public class PointCaptureLocalInput : MonoBehaviour
             if (combat == null)
             {
                 combat = unit.GetComponentInParent<TroopCombat>();
+            }
+
+            if (combat == null)
+            {
+                combat = unit.GetComponentInChildren<TroopCombat>();
             }
 
             if (combat == null)
@@ -261,20 +379,20 @@ public class PointCaptureLocalInput : MonoBehaviour
 
     private Ray BuildPointerRay()
     {
-        Camera viewCamera = Camera.main;
-        if (viewCamera == null)
+        if (wandCommander == null)
         {
-            viewCamera = SiegePlayEnvironment.ResolveViewCamera();
-        }
-
-        if (viewCamera != null)
-        {
-            return viewCamera.ScreenPointToRay(Input.mousePosition);
+            wandCommander = FindObjectOfType<VotanicWandRtsCommander>();
         }
 
         if (wandCommander != null)
         {
             return wandCommander.BuildGameplayRay();
+        }
+
+        Camera viewCamera = SiegePlayEnvironment.ResolveViewCamera();
+        if (viewCamera != null)
+        {
+            return viewCamera.ScreenPointToRay(Input.mousePosition);
         }
 
         return new Ray(transform.position, transform.forward);
@@ -314,6 +432,19 @@ public class PointCaptureLocalInput : MonoBehaviour
         }
     }
 
+    private void SyncWandCommanderForRaiseMenu()
+    {
+        bool menuOpen = raiseMenu != null && raiseMenu.IsOpen;
+        VotanicWandRtsCommander[] commanders = FindObjectsOfType<VotanicWandRtsCommander>(true);
+        for (int i = 0; i < commanders.Length; i++)
+        {
+            if (commanders[i] != null)
+            {
+                commanders[i].enabled = originalWandCommanderEnabled && !menuOpen;
+            }
+        }
+    }
+
     private static void EnsureEventSystem()
     {
         if (EventSystem.current != null)
@@ -328,10 +459,103 @@ public class PointCaptureLocalInput : MonoBehaviour
 
     private void ApplyCommandFaction()
     {
+        TroopCombat.Faction faction = CaptureTeams.ToTroopFaction(commandFaction);
+        VotanicWandRtsCommander[] commanders = FindObjectsOfType<VotanicWandRtsCommander>(true);
+        for (int i = 0; i < commanders.Length; i++)
+        {
+            if (commanders[i] != null)
+            {
+                commanders[i].SetControllableFaction(faction);
+            }
+        }
+
         if (wandCommander != null)
         {
-            wandCommander.SetControllableFaction(CaptureTeams.ToTroopFaction(commandFaction));
+            wandCommander.SetControllableFaction(faction);
         }
+    }
+
+    private void BindSpawnPoints()
+    {
+        if (yellowSpawnPoint == null)
+        {
+            yellowSpawnPoint = FindSpawnByName("YellowSpawnPoint") ?? FindSpawnByName("StartPoint");
+        }
+
+        if (redSpawnPoint == null)
+        {
+            redSpawnPoint = FindSpawnByName("RedSpawnPoint");
+        }
+    }
+
+    private static Transform FindSpawnByName(string objectName)
+    {
+        GameObject found = GameObject.Find(objectName);
+        return found != null ? found.transform : null;
+    }
+
+    public Transform GetSpawnPoint(CaptureOwner owner)
+    {
+        BindSpawnPoints();
+        return owner == CaptureOwner.Red ? redSpawnPoint : yellowSpawnPoint;
+    }
+
+    private void TeleportToCommandSpawn()
+    {
+        Transform destination = GetSpawnPoint(commandFaction);
+        if (destination == null)
+        {
+            ShowFail("No " + CaptureTeams.GetDisplayName(commandFaction) + " spawn point in the scene.");
+            return;
+        }
+
+        if (!TryTeleportUser(destination))
+        {
+            ShowFail("Could not teleport to " + CaptureTeams.GetDisplayName(commandFaction) + " spawn.");
+        }
+    }
+
+    private bool TryTeleportUser(Transform destination)
+    {
+        if (destination == null)
+        {
+            return false;
+        }
+
+        try
+        {
+            if (vGear.user != null)
+            {
+                vGear.user.Transform(destination.position, destination.eulerAngles);
+                return true;
+            }
+        }
+        catch (Exception exception)
+        {
+            Debug.LogWarning("Point Capture vGear.user.Transform failed: " + exception.Message, this);
+        }
+
+        try
+        {
+            if (vCast.user != null)
+            {
+                vCast.user.Transform(destination);
+                return true;
+            }
+        }
+        catch (Exception exception)
+        {
+            Debug.LogWarning("Point Capture vCast.user.Transform failed: " + exception.Message, this);
+        }
+
+        Transform user = SiegePlayEnvironment.ResolveUserTransform();
+        if (user != null)
+        {
+            user.SetPositionAndRotation(destination.position, destination.rotation);
+            return true;
+        }
+
+        return false;
     }
 
     private void ShowFail(string message)
@@ -358,6 +582,7 @@ public class PointCaptureLocalInput : MonoBehaviour
 
     private void OnEnable()
     {
+        BindPathCommandListeners(true);
         if (wandCommander != null)
         {
             wandCommander.enabled = originalWandCommanderEnabled;
@@ -366,9 +591,40 @@ public class PointCaptureLocalInput : MonoBehaviour
 
     private void OnDisable()
     {
+        BindPathCommandListeners(false);
         if (wandCommander != null)
         {
             wandCommander.enabled = originalWandCommanderEnabled;
         }
+
+        if (Instance == this)
+        {
+            Instance = null;
+        }
+    }
+
+    private void BindPathCommandListeners(bool subscribe)
+    {
+        VotanicWandRtsCommander[] commanders = FindObjectsOfType<VotanicWandRtsCommander>(true);
+        for (int i = 0; i < commanders.Length; i++)
+        {
+            VotanicWandRtsCommander commander = commanders[i];
+            if (commander == null)
+            {
+                continue;
+            }
+
+            commander.PathCommandIssued -= HandlePathCommandIssued;
+            if (subscribe)
+            {
+                commander.PathCommandIssued += HandlePathCommandIssued;
+            }
+        }
+    }
+
+    private void HandlePathCommandIssued(RtsUnitMotor motor, System.Collections.Generic.IReadOnlyList<Vector3> path)
+    {
+        ignoreRaiseUntil = Time.unscaledTime + 0.45f;
+        raiseMenu?.Hide();
     }
 }

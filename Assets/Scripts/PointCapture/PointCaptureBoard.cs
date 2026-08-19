@@ -297,6 +297,7 @@ public class PointCaptureBoard : MonoBehaviour
 
     /// <summary>
     /// Nearest owned village disc suitable for retreat recovery. Prefers villages without active combat.
+    /// If the regiment just lost a fight inside a village, that village is skipped so they flee elsewhere.
     /// </summary>
     public PointCaptureVillage FindBestRecoveryVillage(CaptureOwner owner, Vector3 fromPosition)
     {
@@ -305,8 +306,15 @@ public class PointCaptureBoard : MonoBehaviour
             return null;
         }
 
+        PointCaptureVillage currentVillage = GetVillageContaining(fromPosition);
+        bool currentFightIsLost = currentVillage != null
+            && currentVillage.CurrentOwner == owner
+            && currentVillage.HasEnemyOccupants(owner);
+
         PointCaptureVillage bestSafe = null;
         float bestSafeDistance = float.MaxValue;
+        PointCaptureVillage bestOther = null;
+        float bestOtherDistance = float.MaxValue;
         PointCaptureVillage bestFallback = null;
         float bestFallbackDistance = float.MaxValue;
 
@@ -325,6 +333,18 @@ public class PointCaptureBoard : MonoBehaviour
                 bestFallbackDistance = distance;
             }
 
+            bool lostThisVillage = currentFightIsLost && village == currentVillage;
+            if (lostThisVillage)
+            {
+                continue;
+            }
+
+            if (distance < bestOtherDistance)
+            {
+                bestOther = village;
+                bestOtherDistance = distance;
+            }
+
             if (!village.HasCombatInZone && distance < bestSafeDistance)
             {
                 bestSafe = village;
@@ -332,7 +352,17 @@ public class PointCaptureBoard : MonoBehaviour
             }
         }
 
-        return bestSafe != null ? bestSafe : bestFallback;
+        if (bestSafe != null)
+        {
+            return bestSafe;
+        }
+
+        if (bestOther != null)
+        {
+            return bestOther;
+        }
+
+        return bestFallback;
     }
 
     public bool TryGetRecoveryDestination(CaptureOwner owner, Vector3 fromPosition, out Vector3 destination)

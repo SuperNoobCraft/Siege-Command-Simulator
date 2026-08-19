@@ -1,5 +1,8 @@
 using System;
+using System.Collections.Generic;
 using UnityEngine;
+using Votanic.vNet.Networking;
+using Votanic.vXR.vGear.Networking;
 
 /// <summary>
 /// Point-capture match flow: 3-minute score race, or wipeout when a side holds no villages.
@@ -25,7 +28,8 @@ public class PointCaptureMatch : MonoBehaviour
 
     [Header("Timing")]
     [SerializeField, Min(10f)] private float matchDurationSeconds = 180f;
-    [SerializeField] private bool autoStartOnPlay = true;
+    [Tooltip("Unused. Both sides must ready before the match starts.")]
+    [SerializeField] private bool autoStartOnPlay = false;
     [SerializeField, Min(0f)] private float countdownSeconds = 3f;
 
     [Header("Scoring")]
@@ -48,6 +52,9 @@ public class PointCaptureMatch : MonoBehaviour
     [Header("Debug")]
     [SerializeField] private bool logMatchEvents = true;
 
+    private const string ReadyMessagePrefix = "PC|";
+    private const float ReadyAnnounceIntervalSeconds = 0.75f;
+
     private MatchState currentState = MatchState.Waiting;
     private float stateElapsed;
     private float redScore;
@@ -57,9 +64,24 @@ public class PointCaptureMatch : MonoBehaviour
     private CaptureOwner winner = CaptureOwner.Neutral;
     private string resultMessage = string.Empty;
     private float manpowerIntervalElapsed;
+    private bool yellowReady;
+    private bool redReady;
+    private bool yellowResetRequested;
+    private bool redResetRequested;
+    private vGear_Networking networking;
+    private NetworkManager.OnReceived previousReceivedHandler;
+    private string localInstanceToken = string.Empty;
+    private float nextReadyAnnounceTime;
+    private bool networkingBound;
 
     public MatchState CurrentState => currentState;
     public bool IsPlaying => currentState == MatchState.Playing;
+    public bool IsYellowReady => yellowReady;
+    public bool IsRedReady => redReady;
+    public bool AreBothSidesReady => yellowReady && redReady;
+    public bool IsYellowResetRequested => yellowResetRequested;
+    public bool IsRedResetRequested => redResetRequested;
+    public bool AreBothSidesResetRequested => yellowResetRequested && redResetRequested;
     public float MatchDurationSeconds => matchDurationSeconds;
     public float RemainingSeconds =>
         currentState == MatchState.Playing
@@ -91,6 +113,7 @@ public class PointCaptureMatch : MonoBehaviour
     private void Awake()
     {
         Instance = this;
+        localInstanceToken = Guid.NewGuid().ToString("N").Substring(0, 8);
         if (board == null)
         {
             board = GetComponent<PointCaptureBoard>();
@@ -115,6 +138,9 @@ public class PointCaptureMatch : MonoBehaviour
         {
             armyEconomy = gameObject.AddComponent<PointCaptureArmyEconomy>();
         }
+
+        networking = FindObjectOfType<vGear_Networking>();
+        BindNetworking();
     }
 
     private void Start()
@@ -125,18 +151,12 @@ public class PointCaptureMatch : MonoBehaviour
             BindHomeCamps();
         }
 
-        if (autoStartOnPlay)
-        {
-            BeginCountdown();
-        }
-        else
-        {
-            ResetMatch(startImmediately: false);
-        }
+        ResetMatch(startImmediately: false);
     }
 
     private void OnDestroy()
     {
+        UnbindNetworking();
         if (Instance == this)
         {
             Instance = null;
@@ -145,6 +165,28 @@ public class PointCaptureMatch : MonoBehaviour
 
     private void Update()
     {
+        if (currentState == MatchState.Waiting || currentState == MatchState.Ended)
+        {
+            if (networking == null)
+            {
+                networking = FindObjectOfType<vGear_Networking>();
+            }
+
+            if (!networkingBound)
+            {
+                BindNetworking();
+            }
+
+            if (currentState == MatchState.Waiting)
+            {
+                TryAnnounceReady();
+            }
+            else
+            {
+                TryAnnounceReset();
+            }
+        }
+
         switch (currentState)
         {
             case MatchState.Countdown:
@@ -249,7 +291,95 @@ public class PointCaptureMatch : MonoBehaviour
         }
 
         ResetMatch(startImmediately: false);
-        BeginCountdown();
+    }
+
+    public bool HasConnectedPeer
+    {
+        get
+        {
+            if (networking == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                foreach (vGear_NetworkUser user in networking.GetAllNetworkUsers())
+                {
+                    if (user != null && user.userID != networking.networkID)
+                    {
+                        return true;
+                    }
+                }
+            }
+            catch (Exception)
+            {
+            }
+
+            return false;
+        }
+    }
+
+    public CaptureOwner NetworkLocalFaction
+    {
+        get
+        {
+            if (networking == null)
+            {
+                return CaptureOwner.Yellow;
+            }
+
+            try
+            {
+                return networking.type == UserType.Host ? CaptureOwner.Yellow : CaptureOwner.Red;
+            }
+            catch (Exception)
+            {
+                return CaptureOwner.Yellow;
+            }
+        }
+    }
+
+    public void NotifySideReady(CaptureOwner owner)
+    {
+        if (currentState != MatchState.Waiting || !CaptureTeams.IsPlayerSide(owner))
+        {
+            return;
+        }
+
+        if (owner == CaptureOwner.Yellow)
+        {
+            yellowReady = true;
+        }
+        else
+        {
+            redReady = true;
+        }
+
+        Log(CaptureTeams.GetDisplayName(owner) + " is ready.");
+        BroadcastReadyState();
+        TryBeginWhenBothReady();
+    }
+
+    public void NotifySideReset(CaptureOwner owner)
+    {
+        if (currentState != MatchState.Ended || !CaptureTeams.IsPlayerSide(owner))
+        {
+            return;
+        }
+
+        if (owner == CaptureOwner.Yellow)
+        {
+            yellowResetRequested = true;
+        }
+        else
+        {
+            redResetRequested = true;
+        }
+
+        Log(CaptureTeams.GetDisplayName(owner) + " requested reset.");
+        BroadcastResetState();
+        TryRestartWhenBothReset();
     }
 
     public float GetScore(CaptureOwner owner)
@@ -406,6 +536,9 @@ public class PointCaptureMatch : MonoBehaviour
 
         winner = matchWinner;
         resultMessage = message;
+        yellowResetRequested = false;
+        redResetRequested = false;
+        nextReadyAnnounceTime = 0f;
         SetState(MatchState.Ended);
         Log(message + " Winner: " + CaptureTeams.GetDisplayName(matchWinner) + ".");
     }
@@ -419,6 +552,11 @@ public class PointCaptureMatch : MonoBehaviour
         manpowerIntervalElapsed = 0f;
         winner = CaptureOwner.Neutral;
         resultMessage = string.Empty;
+        yellowReady = false;
+        redReady = false;
+        yellowResetRequested = false;
+        redResetRequested = false;
+        nextReadyAnnounceTime = 0f;
         SetState(MatchState.Waiting);
 
         if (board != null && board.Villages != null)
@@ -453,5 +591,236 @@ public class PointCaptureMatch : MonoBehaviour
         }
 
         Debug.Log("[PointCapture] " + message, this);
+    }
+
+    private void TryBeginWhenBothReady()
+    {
+        if (currentState != MatchState.Waiting || !AreBothSidesReady)
+        {
+            return;
+        }
+
+        BroadcastReadyState();
+        SendNetworkCommand("START");
+        BeginCountdown();
+    }
+
+    private void TryAnnounceReady()
+    {
+        if (!HasConnectedPeer || Time.time < nextReadyAnnounceTime)
+        {
+            return;
+        }
+
+        nextReadyAnnounceTime = Time.time + ReadyAnnounceIntervalSeconds;
+        if (yellowReady || redReady)
+        {
+            BroadcastReadyState();
+        }
+    }
+
+    private void TryRestartWhenBothReset()
+    {
+        if (currentState != MatchState.Ended || !AreBothSidesResetRequested)
+        {
+            return;
+        }
+
+        BroadcastResetState();
+        SendNetworkCommand("RESTART");
+        Restart();
+    }
+
+    private void TryAnnounceReset()
+    {
+        if (!HasConnectedPeer || Time.time < nextReadyAnnounceTime)
+        {
+            return;
+        }
+
+        nextReadyAnnounceTime = Time.time + ReadyAnnounceIntervalSeconds;
+        if (yellowResetRequested || redResetRequested)
+        {
+            BroadcastResetState();
+        }
+    }
+
+    private void BindNetworking()
+    {
+        if (networking == null || networkingBound)
+        {
+            return;
+        }
+
+        previousReceivedHandler = networking.ReceivedMessage;
+        networking.ReceivedMessage = HandleNetworkMessage;
+        networkingBound = true;
+    }
+
+    private void UnbindNetworking()
+    {
+        if (networking == null || !networkingBound)
+        {
+            return;
+        }
+
+        networking.ReceivedMessage = previousReceivedHandler;
+        previousReceivedHandler = null;
+        networkingBound = false;
+    }
+
+    private void HandleNetworkMessage(string message)
+    {
+        previousReceivedHandler?.Invoke(message);
+        if (string.IsNullOrEmpty(message))
+        {
+            return;
+        }
+
+        int index = message.IndexOf(ReadyMessagePrefix, StringComparison.Ordinal);
+        if (index < 0)
+        {
+            return;
+        }
+
+        string protocol = index == 0 ? message : message.Substring(index);
+        string[] parts = protocol.Split('|');
+        if (parts.Length < 3 || parts[0] != "PC")
+        {
+            return;
+        }
+
+        string token = parts[2];
+        if (!string.IsNullOrEmpty(localInstanceToken) && token == localInstanceToken)
+        {
+            return;
+        }
+
+        switch (parts[1])
+        {
+            case "READY":
+                if (parts.Length >= 5)
+                {
+                    if (parts[3] == "1")
+                    {
+                        yellowReady = true;
+                    }
+
+                    if (parts[4] == "1")
+                    {
+                        redReady = true;
+                    }
+
+                    TryBeginWhenBothReady();
+                }
+
+                break;
+            case "START":
+                if (currentState == MatchState.Waiting)
+                {
+                    yellowReady = true;
+                    redReady = true;
+                    BeginCountdown();
+                }
+
+                break;
+            case "RESET":
+                if (currentState == MatchState.Ended && parts.Length >= 5)
+                {
+                    if (parts[3] == "1")
+                    {
+                        yellowResetRequested = true;
+                    }
+
+                    if (parts[4] == "1")
+                    {
+                        redResetRequested = true;
+                    }
+
+                    TryRestartWhenBothReset();
+                }
+
+                break;
+            case "RESTART":
+                if (currentState == MatchState.Ended)
+                {
+                    Restart();
+                }
+
+                break;
+        }
+    }
+
+    private void BroadcastReadyState()
+    {
+        SendNetworkCommand(
+            "READY",
+            (yellowReady ? "1" : "0") + "|" + (redReady ? "1" : "0"));
+    }
+
+    private void BroadcastResetState()
+    {
+        SendNetworkCommand(
+            "RESET",
+            (yellowResetRequested ? "1" : "0") + "|" + (redResetRequested ? "1" : "0"));
+    }
+
+    private void SendNetworkCommand(string command, string payload = null)
+    {
+        if (networking == null)
+        {
+            return;
+        }
+
+        string token = string.IsNullOrEmpty(localInstanceToken) ? "local" : localInstanceToken;
+        string message = string.IsNullOrEmpty(payload)
+            ? ReadyMessagePrefix + command + "|" + token
+            : ReadyMessagePrefix + command + "|" + token + "|" + payload;
+        SendNetwork(message);
+    }
+
+    private void SendNetwork(string message)
+    {
+        if (networking == null || string.IsNullOrEmpty(message))
+        {
+            return;
+        }
+
+        List<int> peerIds = new List<int>(4);
+        try
+        {
+            foreach (vGear_NetworkUser user in networking.GetAllNetworkUsers())
+            {
+                if (user != null && user.userID != networking.networkID)
+                {
+                    peerIds.Add((int)user.userID);
+                }
+            }
+        }
+        catch (Exception)
+        {
+        }
+
+        try
+        {
+            if (peerIds.Count > 0)
+            {
+                networking.Send(message, false, false, peerIds.ToArray());
+            }
+            else
+            {
+                networking.Send(message, false, false);
+            }
+        }
+        catch (Exception)
+        {
+            try
+            {
+                networking.Send(message);
+            }
+            catch (Exception)
+            {
+            }
+        }
     }
 }

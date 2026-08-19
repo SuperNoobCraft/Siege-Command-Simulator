@@ -189,6 +189,7 @@ public class TroopCombat : MonoBehaviour
     private Coroutine retryGroundSnapCoroutine;
     private Coroutine pointCaptureRaiseCoroutine;
     private bool pointCaptureRetreatTracking;
+    private float retreatStartedTime;
     private bool hasLockedRegimentGroundY;
     private float lockedRegimentGroundY;
     private Vector3 lockedRegimentGroundXZ;
@@ -1717,7 +1718,7 @@ public class TroopCombat : MonoBehaviour
         }
 
         RtsCampManager campManager = RtsCampManager.Instance;
-        if (campManager == null)
+        if (PointCaptureMatch.Instance == null && campManager == null)
         {
             return;
         }
@@ -1822,9 +1823,10 @@ public class TroopCombat : MonoBehaviour
             if (board != null)
             {
                 CaptureOwner owner = CaptureTeams.FromTroopFaction(faction);
-                if (board.TryGetRecoveryDestination(owner, transform.position, out Vector3 recoveryDestination))
+                PointCaptureVillage village = board.FindBestRecoveryVillage(owner, transform.position);
+                if (village != null)
                 {
-                    return recoveryDestination;
+                    return village.Position;
                 }
             }
 
@@ -1856,14 +1858,7 @@ public class TroopCombat : MonoBehaviour
     {
         if (PointCaptureMatch.Instance != null)
         {
-            PointCaptureBoard board = PointCaptureBoard.Instance;
-            if (board != null)
-            {
-                CaptureOwner owner = CaptureTeams.FromTroopFaction(faction);
-                return board.IsInsideOwnedVillageDisc(owner, transform.position);
-            }
-
-            return false;
+            return HasReachedPointCaptureRetreatVillage();
         }
 
         if (campManager == null)
@@ -1872,6 +1867,36 @@ public class TroopCombat : MonoBehaviour
         }
 
         return campManager.HasReachedCampCenter(transform.position, faction);
+    }
+
+    private bool HasReachedPointCaptureRetreatVillage()
+    {
+        PointCaptureBoard board = PointCaptureBoard.Instance;
+        if (board == null)
+        {
+            return false;
+        }
+
+        if (Time.time < retreatStartedTime + 0.6f)
+        {
+            return false;
+        }
+
+        CaptureOwner owner = CaptureTeams.FromTroopFaction(faction);
+        PointCaptureVillage village = board.FindBestRecoveryVillage(owner, transform.position);
+
+        if (village == null || village.HasCombatInZone)
+        {
+            return false;
+        }
+
+        float arrivalRadius = Mathf.Max(2.75f, board.ControlRadius * 0.22f);
+        if (PointCaptureVillage.GetHorizontalDistance(transform.position, village.Position) > arrivalRadius)
+        {
+            return false;
+        }
+
+        return !village.HasHostilePressure;
     }
 
     private bool ShouldUseGateInsideWaypoint(RtsCampManager campManager)
@@ -2073,6 +2098,7 @@ public class TroopCombat : MonoBehaviour
         CurrentState = State.Retreat;
         currentHealth = 0f;
         currentTarget = null;
+        retreatStartedTime = Time.time;
         invulnerableUntil = Time.time + retreatInvulnerabilityDuration;
         nextRetreatDestinationRefreshTime = 0f;
         nextRetreatUnstuckTime = 0f;
@@ -2295,7 +2321,9 @@ public class TroopCombat : MonoBehaviour
         {
             bool canCommand = motor.IsCommandUnit && (
                 faction == Faction.Friendly
-                || (faction == Faction.Enemy && SiegeMatchSettings.IsSiegePvpMode));
+                || faction == Faction.Enemy && (
+                    SiegeMatchSettings.IsSiegePvpMode
+                    || PointCaptureMatch.Instance != null));
             motor.CanReceiveCommands = canCommand;
             motor.MoveSpeedMultiplier = 1f;
         }
@@ -2501,7 +2529,59 @@ public class TroopCombat : MonoBehaviour
         }
 
         // Only apply when they are actually fighting each other, not from unrelated splash / third-party pressure.
-        return attacker.currentTarget == this || currentTarget == attacker;
+        if (attacker.currentTarget != this && currentTarget != attacker)
+        {
+            return false;
+        }
+
+        // Archer fire, extra infantry, etc. make this an uneven fight — only the defeated regiment retreats.
+        if (HasPointCaptureFightSupport(attacker, this) || HasPointCaptureFightSupport(this, attacker))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool HasPointCaptureFightSupport(TroopCombat allyOf, TroopCombat enemy)
+    {
+        if (allyOf == null || enemy == null)
+        {
+            return false;
+        }
+
+        TroopCombat[] troops = FindObjectsOfType<TroopCombat>();
+        for (int i = 0; i < troops.Length; i++)
+        {
+            TroopCombat troop = troops[i];
+            if (troop == null
+                || troop == allyOf
+                || troop.faction != allyOf.faction
+                || !troop.isActiveAndEnabled
+                || troop.IsPermanentlyEliminated
+                || troop.CurrentState == State.Dead
+                || troop.CurrentState == State.Retreat
+                || troop.CurrentState == State.Regroup)
+            {
+                continue;
+            }
+
+            if (troop.currentTarget == enemy
+                || troop.currentTarget == allyOf
+                || enemy.currentTarget == troop)
+            {
+                return true;
+            }
+
+            float supportRange = troop.AttackRange + 2f;
+            float distance = GetHorizontalDistance(troop.transform.position, enemy.transform.position);
+            if (distance <= supportRange && (troop.IsInCombat || troop.WasRecentlyInCombat(2f)))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -2714,6 +2794,7 @@ public class TroopCombat : MonoBehaviour
             CurrentState = State.Retreat;
             currentHealth = 0f;
             currentTarget = null;
+            retreatStartedTime = Time.time;
             invulnerableUntil = Time.time + retreatInvulnerabilityDuration;
             nextRetreatDestinationRefreshTime = 0f;
             nextRetreatUnstuckTime = 0f;

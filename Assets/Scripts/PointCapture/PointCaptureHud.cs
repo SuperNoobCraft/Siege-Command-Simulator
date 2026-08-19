@@ -56,14 +56,19 @@ public class PointCaptureHud : MonoBehaviour
         switch (match.CurrentState)
         {
             case PointCaptureMatch.MatchState.Waiting:
-                return "Point Capture\nPress Space to start.\n" + factionLine;
+                return BuildReadyStatus(factionLine);
             case PointCaptureMatch.MatchState.Countdown:
                 return "Point Capture\nStarting in " + Mathf.CeilToInt(match.RemainingSeconds) + "...\n" + factionLine;
             case PointCaptureMatch.MatchState.Ended:
                 return "Point Capture\n"
                     + match.ResultMessage + "\n"
-                    + FormatScores(redVillages, yellowVillages)
-                    + "\nPress R to restart.";
+                    + FormatScores(redVillages, yellowVillages) + "\n"
+                    + "Yellow reset: " + (match.IsYellowResetRequested ? "Yes" : "Waiting")
+                    + "    Red reset: " + (match.IsRedResetRequested ? "Yes" : "Waiting") + "\n"
+                    + factionLine + "\n"
+                    + (match.HasConnectedPeer
+                        ? "Press any button to reset this cave. Both sides needed."
+                        : "Press any button to reset this side. Tab to the other side, then press again.");
             default:
                 string fail = localInput != null ? localInput.LastFailMessage : string.Empty;
                 string failLine = string.IsNullOrEmpty(fail) ? string.Empty : "\n" + fail;
@@ -71,10 +76,26 @@ public class PointCaptureHud : MonoBehaviour
                     + FormatClock(match.RemainingSeconds) + "\n"
                     + FormatScores(redVillages, yellowVillages) + "\n"
                     + factionLine + "\n"
-                    + "Tab faction   Right-click a village disc to raise\n"
+                    + (match.HasConnectedPeer
+                        ? "Click a village disc to raise\n"
+                        : "Tab switches side and spawn   Click a village disc to raise\n")
                     + "Income 5+2/village per 10s   Upkeep 1/10s (3/s recovering)"
                     + failLine;
         }
+    }
+
+    private string BuildReadyStatus(string factionLine)
+    {
+        string yellow = match.IsYellowReady ? "Ready" : "Waiting";
+        string red = match.IsRedReady ? "Ready" : "Waiting";
+        bool networked = match.HasConnectedPeer;
+        string howToReady = networked
+            ? "Press any button to ready this cave.\nHost is Yellow, client is Red."
+            : "Press any button to ready this side.\nTab to the other side, then press again.";
+        return "Point Capture\n"
+            + "Yellow: " + yellow + "    Red: " + red + "\n"
+            + factionLine + "\n"
+            + howToReady;
     }
 
     private string FormatScores(int redVillages, int yellowVillages)

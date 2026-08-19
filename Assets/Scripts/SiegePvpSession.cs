@@ -4,7 +4,6 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
 using UnityEngine;
-using UnityEngine.SceneManagement;
 using Votanic.vNet.Networking;
 using Votanic.vXR.vCast;
 using Votanic.vXR.vGear;
@@ -54,15 +53,6 @@ public class SiegePvpSession : MonoBehaviour
         ReadyWaitingPeer = 2,
         Countdown = 3,
         Playing = 4
-    }
-
-    private enum CapturePvPStage
-    {
-        Inactive = 0,
-        TransportingToCapture = 1,
-        WaitingSecondReady = 2,
-        InMatch = 3,
-        AwaitingReturn = 4
     }
 
     [Header("References")]
@@ -123,18 +113,6 @@ public class SiegePvpSession : MonoBehaviour
     [SerializeField] private bool allowSoloTesting = false;
     [SerializeField] private bool logDefenderTeleport = true;
 
-    [Header("Capture PvP Submode")]
-    [Tooltip("When enabled, this will run Point Capture using the same SiegePVP lobby ready messages (press Ready twice).")]
-    [SerializeField] private bool enableCapturePvP = false;
-    [Tooltip("Runtime scene name used for LoadSceneAsync(Additive).")]
-    [SerializeField] private string capturePvPSceneName = "Point Capture";
-    [Tooltip("If enabled, CapturePvP starts locally without vNet (single-machine desktop testing).")]
-    [SerializeField] private bool capturePvPDebugLocalDesktop = false;
-    [Tooltip("If enabled, CapturePvP loads the Point Capture scene as a normal standalone scene for bird's-eye debugging.")]
-    [SerializeField] private bool capturePvPDebugBirdsEyeStandalone = false;
-    [Tooltip("Because Point Capture currently loads additively, offset its world roots so it reads like a true scene transport instead of overlapping Hyrule Field.")]
-    [SerializeField] private Vector3 capturePvPSceneWorldOffset = new Vector3(0f, 0f, 5000f);
-
     [Header("Remote Opponent Avatar")]
     [Tooltip("Body shown when looking at the Host (Attacker). Client machines use this for their remote opponent.")]
     [SerializeField] private GameObject hostOpponentBodyPrefab;
@@ -173,26 +151,7 @@ public class SiegePvpSession : MonoBehaviour
     private readonly Dictionary<int, Vector3> lastRemotePoseByIndex = new Dictionary<int, Vector3>();
     private readonly Dictionary<int, int> remotePoseStableCountByIndex = new Dictionary<int, int>();
 
-    // CapturePvP submode runtime state.
-    private CapturePvPStage captureStage = CapturePvPStage.Inactive;
-    private AsyncOperation captureSceneLoadOp;
-    private Scene captureScene;
-    private Scene captureReturnScene;
-    private bool captureTransportInFlight;
-    private bool captureSecondStageEnabled;
-    private PointCaptureMatch captureMatch;
-    private bool captureAwaitingReturn;
-    private bool captureLocalReturnReady;
-    private bool capturePeerReturnReady;
-    private bool captureSceneRootsOffsetApplied;
-
     public static SiegePvpSession Instance { get; private set; }
-    private static bool pendingCaptureStandaloneDebugSetup;
-    private static bool pendingCaptureStandaloneBirdsEye;
-    private static LocalRole pendingCaptureStandaloneRole = LocalRole.Attacker;
-    private static float pendingCaptureStandaloneMatchDurationSeconds = 180f;
-    private static float pendingCaptureStandaloneMoveSpeedScale = 1f;
-    private static Camera pendingCaptureStandaloneViewCamera;
     public LocalRole Role => resolvedRole;
     public bool IsAttacker => resolvedRole == LocalRole.Attacker;
     public bool IsDefender => resolvedRole == LocalRole.Defender;
@@ -371,7 +330,6 @@ public class SiegePvpSession : MonoBehaviour
         Instance = this;
         EnsureWandBound();
         BindNetworking();
-        SceneManager.sceneLoaded += HandleSceneLoaded;
 
         SiegeGameManager manager = SiegeGameManager.Instance;
         if (manager != null)
@@ -395,7 +353,6 @@ public class SiegePvpSession : MonoBehaviour
         }
 
         StopCountdown();
-        SceneManager.sceneLoaded -= HandleSceneLoaded;
         UnbindNetworking();
         if (Instance == this)
         {
@@ -439,12 +396,6 @@ public class SiegePvpSession : MonoBehaviour
 
         if (!SiegeVrInput.IsGameplayInputAllowed() || !SiegeVrInput.WasPointerPressedThisFrame())
         {
-            return;
-        }
-
-        if (enableCapturePvP && captureAwaitingReturn)
-        {
-            NotifyLocalCaptureReturnReady();
             return;
         }
 
@@ -511,10 +462,7 @@ public class SiegePvpSession : MonoBehaviour
         localSelected = true;
         lobbyPhase = LobbyPhase.SelectedWaitingReady;
         nextLobbyAnnounceTime = 0f;
-        if (!IsCapturePvPAnyDebugMode)
-        {
-            BroadcastSelect();
-        }
+        BroadcastSelect();
 
         if (SiegeMatchUi.Instance != null)
         {
@@ -523,26 +471,6 @@ public class SiegePvpSession : MonoBehaviour
 
         RefreshLobbyStatus();
         ApplyCommandFactionFilter();
-    }
-
-    private bool IsCapturePvPAnyDebugMode =>
-        enableCapturePvP && (capturePvPDebugLocalDesktop || capturePvPDebugBirdsEyeStandalone);
-
-    /// <summary>
-    /// Configure the PVP submode (Siege battlefield vs Point Capture) before entering the Ready lobby.
-    /// Called by the mode-select UI.
-    /// </summary>
-    public void ConfigureCapturePvPSubmode(bool enableCapturePvPSubMode)
-    {
-        enableCapturePvP = enableCapturePvPSubMode;
-
-        // Reset any in-progress capture state so the next Ready cycle starts clean.
-        captureStage = CapturePvPStage.Inactive;
-        captureTransportInFlight = false;
-        captureSecondStageEnabled = false;
-        captureAwaitingReturn = false;
-        captureLocalReturnReady = false;
-        capturePeerReturnReady = false;
     }
 
     public void NotifyLocalReady()
@@ -556,10 +484,7 @@ public class SiegePvpSession : MonoBehaviour
         lobbyPhase = LobbyPhase.ReadyWaitingPeer;
         readyGraceUntil = Time.unscaledTime + 1.25f;
         nextLobbyAnnounceTime = 0f;
-        if (!IsCapturePvPAnyDebugMode)
-        {
-            BroadcastReady();
-        }
+        BroadcastReady();
         RefreshLobbyStatus();
 
         if (allowSoloTesting)
@@ -593,33 +518,13 @@ public class SiegePvpSession : MonoBehaviour
             return;
         }
 
-        if (broadcast && !IsCapturePvPAnyDebugMode)
+        if (broadcast)
         {
             SendCommand("CANCEL");
         }
 
         StopCountdown();
         matchRunning = false;
-
-        if (enableCapturePvP && captureStage != CapturePvPStage.Inactive)
-        {
-            captureStage = CapturePvPStage.Inactive;
-            captureTransportInFlight = false;
-            captureAwaitingReturn = false;
-            captureLocalReturnReady = false;
-            capturePeerReturnReady = false;
-            captureSecondStageEnabled = false;
-
-            if (captureMatch != null)
-            {
-                captureMatch.StateChanged -= HandleCaptureMatchStateChanged;
-                captureMatch = null;
-            }
-
-            // Unload the additive Point Capture scene if it got loaded already.
-            UnloadCaptureSceneIfNeeded();
-            RestoreCommandTowerBoundaryAfterDefender();
-        }
 
         ResetLobbyFlags();
         ApplyCommandFactionFilter();
@@ -720,13 +625,6 @@ public class SiegePvpSession : MonoBehaviour
     private void ApplyCommandFactionFilter()
     {
         if (wandCommander == null)
-        {
-            return;
-        }
-
-        // Desktop local CapturePvP debug is supposed to be driven by PointCaptureLocalInput
-        // (including Tab-based side switching). Skip this session's faction ownership filter.
-        if (IsCapturePvPAnyDebugMode)
         {
             return;
         }
@@ -850,13 +748,6 @@ public class SiegePvpSession : MonoBehaviour
             case "SETUP":
                 BeginSharedSetup();
                 break;
-            case "CAP_SETUP":
-                // Transport the user(s) into Point Capture and wait for Ready again.
-                if (enableCapturePvP && captureStage == CapturePvPStage.Inactive)
-                {
-                    StartCoroutine(LoadCaptureSceneAdditiveAndTeleport());
-                }
-                break;
             case "COUNT":
                 if (parts.Length > p
                     && int.TryParse(parts[p], NumberStyles.Integer, CultureInfo.InvariantCulture, out int secondsLeft))
@@ -875,31 +766,6 @@ public class SiegePvpSession : MonoBehaviour
                 }
 
                 BeginGameplay();
-                break;
-            case "CAP_GO":
-                if (parts.Length >= p + 2
-                    && TryParseFloat(parts[p], out float capDuration)
-                    && TryParseFloat(parts[p + 1], out float capSpeed))
-                {
-                    matchDurationSeconds = capDuration;
-                    moveSpeedScale = capSpeed;
-                }
-                if (enableCapturePvP)
-                {
-                    StartCapturePvPMatchLocal();
-                }
-                break;
-            case "CAP_RETURN_READY":
-                if (enableCapturePvP)
-                {
-                    HandlePeerReturnReady();
-                }
-                break;
-            case "CAP_RETURN_GO":
-                if (enableCapturePvP)
-                {
-                    HandleCaptureReturnGoNetwork();
-                }
                 break;
             case "PATH":
                 HandleRemotePath(parts, p);
@@ -1043,70 +909,6 @@ public class SiegePvpSession : MonoBehaviour
             return;
         }
 
-        if (enableCapturePvP)
-        {
-            if (capturePvPDebugBirdsEyeStandalone || capturePvPDebugLocalDesktop)
-            {
-                if (!localSelected || !localReady)
-                {
-                    return;
-                }
-
-                LoadCaptureSceneStandaloneDebug(capturePvPDebugBirdsEyeStandalone);
-                return;
-            }
-
-            bool debugLocal = capturePvPDebugLocalDesktop;
-            bool peerSelectedOk = peerSelected || allowSoloTesting || debugLocal;
-            bool peerReadyOk = peerReady || allowSoloTesting || debugLocal;
-
-            bool captureBothSelected = localSelected && peerSelectedOk;
-            bool captureBothReady = localReady && peerReadyOk;
-            if (!captureBothSelected || !captureBothReady)
-            {
-                return;
-            }
-
-            // Stage1: transport into Point Capture, wait for Ready again.
-            if (captureStage == CapturePvPStage.Inactive)
-            {
-                if (!debugLocal && networking != null && !IsAttacker)
-                {
-                    // Client waits for CAP_SETUP.
-                    return;
-                }
-
-                if (!debugLocal && networking != null && IsAttacker)
-                {
-                    SendCommand("CAP_SETUP");
-                }
-
-                StartCoroutine(LoadCaptureSceneAdditiveAndTeleport());
-                return;
-            }
-
-            // Stage2: both sides pressed Ready again, host issues CAP_GO.
-            if (captureStage == CapturePvPStage.WaitingSecondReady)
-            {
-                if (!debugLocal && networking != null && !IsAttacker)
-                {
-                    // Client waits for CAP_GO.
-                    return;
-                }
-
-                if (!debugLocal && networking != null && IsAttacker)
-                {
-                    SendCommand("CAP_GO", string.Format(CultureInfo.InvariantCulture, "{0:0.###}|{1:0.###}", matchDurationSeconds, moveSpeedScale));
-                }
-
-                StartCapturePvPMatchLocal();
-                return;
-            }
-
-            return;
-        }
-
-        // Normal SiegePVP flow.
         bool bothSelected = localSelected && (peerSelected || allowSoloTesting);
         bool bothReady = localReady && (peerReady || allowSoloTesting);
         if (!bothSelected || !bothReady)
@@ -1488,625 +1290,6 @@ public class SiegePvpSession : MonoBehaviour
                 "SiegePvp gameplay as " + resolvedRole
                 + " with " + syncMotorsByIndex.Count + " sync units.",
                 this);
-        }
-    }
-
-    // -----------------------------
-    // Capture PvP submode helpers.
-    // -----------------------------
-
-    private IEnumerator LoadCaptureSceneAdditiveAndTeleport()
-    {
-        if (captureTransportInFlight)
-        {
-            yield break;
-        }
-
-        Camera preservedViewCamera = capturePvPDebugLocalDesktop && !capturePvPDebugBirdsEyeStandalone
-            ? SiegePlayEnvironment.ResolveViewCamera()
-            : null;
-
-        captureTransportInFlight = true;
-        captureStage = CapturePvPStage.TransportingToCapture;
-        captureReturnScene = gameObject.scene;
-
-        // Load the Point Capture scene without destroying the SiegePvpSession / networking.
-        if (!captureSceneLoaded())
-        {
-            captureSceneLoadOp = SceneManager.LoadSceneAsync(capturePvPSceneName, LoadSceneMode.Additive);
-            if (captureSceneLoadOp != null)
-            {
-                yield return captureSceneLoadOp;
-            }
-            captureScene = SceneManager.GetSceneByName(capturePvPSceneName);
-        }
-        else if (!captureScene.IsValid())
-        {
-            captureScene = SceneManager.GetSceneByName(capturePvPSceneName);
-        }
-
-        captureSceneLoadOp = null;
-
-        if (captureScene.IsValid())
-        {
-            PositionCaptureSceneRootsIfNeeded();
-            SanitizeLoadedCaptureSceneForAdditivePlay();
-            RestorePreservedCaptureDebugViewCamera(preservedViewCamera);
-            SceneManager.SetActiveScene(captureScene);
-        }
-
-        // Wait for capture systems to initialize so we can stop auto-start and teleport.
-        float timeoutAt = Time.unscaledTime + 10f;
-        while ((PointCaptureMatch.Instance == null || PointCaptureBoard.Instance == null)
-            && Time.unscaledTime < timeoutAt)
-        {
-            yield return null;
-        }
-
-        if (captureStage != CapturePvPStage.TransportingToCapture)
-        {
-            // Cancelled mid-load.
-            captureTransportInFlight = false;
-            yield break;
-        }
-
-        if (PointCaptureMatch.Instance != null)
-        {
-            PointCaptureMatch.Instance.PrepareForManualStart();
-        }
-
-        yield return TeleportUserToCaptureHomeWhenReady();
-        captureTransportInFlight = false;
-        if (captureStage == CapturePvPStage.TransportingToCapture)
-        {
-            captureStage = CapturePvPStage.WaitingSecondReady;
-        }
-
-        // Clear the first "Ready" so the UI/lobby can ask for Ready again.
-        if (captureStage == CapturePvPStage.WaitingSecondReady)
-        {
-            localReady = false;
-            peerReady = false;
-            lobbyPhase = LobbyPhase.SelectedWaitingReady;
-            captureSecondStageEnabled = true;
-        }
-    }
-
-    private void LoadCaptureSceneStandaloneDebug(bool useBirdsEyeCamera)
-    {
-        SiegeGameManager manager = SiegeGameManager.Instance;
-        matchDurationSeconds = Mathf.Max(10f, matchDurationSeconds);
-        moveSpeedScale = Mathf.Clamp(moveSpeedScale, 0.1f, 2f);
-
-        // Keep PVP tuning available even when the scene is loaded standalone for debug.
-        SiegeMatchSettings.Configure(
-            SiegeGameMode.CapturePvP,
-            manager != null ? manager.DemoMoveSpeedScale : 0.6f,
-            matchDurationSeconds,
-            moveSpeedScale);
-
-        PrepareCaptureStandaloneDebugLoad(useBirdsEyeCamera);
-        Cursor.lockState = CursorLockMode.None;
-        Cursor.visible = true;
-        SceneManager.LoadScene(capturePvPSceneName, LoadSceneMode.Single);
-    }
-
-    private void PrepareCaptureStandaloneDebugLoad(bool useBirdsEyeCamera)
-    {
-        pendingCaptureStandaloneDebugSetup = true;
-        pendingCaptureStandaloneBirdsEye = useBirdsEyeCamera;
-        pendingCaptureStandaloneRole = resolvedRole;
-        pendingCaptureStandaloneMatchDurationSeconds = matchDurationSeconds;
-        pendingCaptureStandaloneMoveSpeedScale = moveSpeedScale;
-        pendingCaptureStandaloneViewCamera = !useBirdsEyeCamera
-            ? SiegePlayEnvironment.ResolveViewCamera()
-            : null;
-
-        DontDestroyOnLoad(gameObject);
-
-        if (useBirdsEyeCamera)
-        {
-            return;
-        }
-
-        PreserveStandaloneDebugObject(wandCommander != null ? wandCommander.gameObject : null);
-        PreserveStandaloneDebugObject(SiegePlayEnvironment.Instance != null ? SiegePlayEnvironment.Instance.gameObject : null);
-        PreserveStandaloneDebugObject(pendingCaptureStandaloneViewCamera != null ? pendingCaptureStandaloneViewCamera.gameObject : null);
-        PreserveStandaloneDebugObject(SiegePlayEnvironment.ResolveUserTransform()?.gameObject);
-        PreserveStandaloneDebugObject(SiegePlayEnvironment.ResolvePlayerTransform()?.gameObject);
-        PreserveStandaloneDebugObject(SiegePlayEnvironment.ResolveHeadTransform()?.gameObject);
-    }
-
-    private static void PreserveStandaloneDebugObject(GameObject target)
-    {
-        if (target == null)
-        {
-            return;
-        }
-
-        Transform root = target.transform.root;
-        if (root == null)
-        {
-            return;
-        }
-
-        DontDestroyOnLoad(root.gameObject);
-    }
-
-    private void HandleSceneLoaded(Scene scene, LoadSceneMode mode)
-    {
-        if (!pendingCaptureStandaloneDebugSetup
-            || mode != LoadSceneMode.Single
-            || !string.Equals(scene.name, capturePvPSceneName, StringComparison.Ordinal))
-        {
-            return;
-        }
-
-        StartCoroutine(CompleteStandaloneCaptureSceneSetupWhenReady(scene, pendingCaptureStandaloneBirdsEye));
-    }
-
-    private IEnumerator CompleteStandaloneCaptureSceneSetupWhenReady(Scene scene, bool useBirdsEyeCamera)
-    {
-        captureScene = scene;
-        captureStage = CapturePvPStage.InMatch;
-        matchRunning = true;
-        captureAwaitingReturn = false;
-        captureSecondStageEnabled = false;
-        localSelected = false;
-        localReady = false;
-        peerSelected = false;
-        peerReady = false;
-        lobbyPhase = LobbyPhase.Playing;
-
-        float timeoutAt = Time.unscaledTime + 10f;
-        while ((PointCaptureMatch.Instance == null || PointCaptureBoard.Instance == null)
-            && Time.unscaledTime < timeoutAt)
-        {
-            yield return null;
-        }
-
-        if (!useBirdsEyeCamera)
-        {
-            EnsureWandBound();
-            SanitizeLoadedCaptureSceneForAdditivePlay();
-            RestorePreservedCaptureDebugViewCamera(
-                pendingCaptureStandaloneViewCamera != null
-                    ? pendingCaptureStandaloneViewCamera
-                    : SiegePlayEnvironment.ResolveViewCamera());
-            yield return TeleportUserToCaptureHomeWhenReady();
-        }
-
-        captureMatch = PointCaptureMatch.Instance;
-        if (captureMatch != null)
-        {
-            captureMatch.SetMatchDurationSeconds(pendingCaptureStandaloneMatchDurationSeconds);
-            captureMatch.StateChanged -= HandleCaptureMatchStateChanged;
-            captureMatch.StateChanged += HandleCaptureMatchStateChanged;
-            captureMatch.StartPlayingNow();
-        }
-
-        ApplyCommandFactionFilter();
-        ApplyMoveSpeedToAllTroops();
-        pendingCaptureStandaloneDebugSetup = false;
-        pendingCaptureStandaloneViewCamera = null;
-        enabled = false;
-    }
-
-    private void PositionCaptureSceneRootsIfNeeded()
-    {
-        if (!captureScene.IsValid() || captureSceneRootsOffsetApplied)
-        {
-            return;
-        }
-
-        if (capturePvPSceneWorldOffset == Vector3.zero)
-        {
-            captureSceneRootsOffsetApplied = true;
-            return;
-        }
-
-        GameObject[] roots = captureScene.GetRootGameObjects();
-        for (int i = 0; i < roots.Length; i++)
-        {
-            GameObject root = roots[i];
-            if (root == null)
-            {
-                continue;
-            }
-
-            root.transform.position += capturePvPSceneWorldOffset;
-        }
-
-        captureSceneRootsOffsetApplied = true;
-    }
-
-    private void SanitizeLoadedCaptureSceneForAdditivePlay()
-    {
-        if (!captureScene.IsValid())
-        {
-            return;
-        }
-
-        EnsureWandBound();
-
-        GameObject[] roots = captureScene.GetRootGameObjects();
-        for (int i = 0; i < roots.Length; i++)
-        {
-            GameObject root = roots[i];
-            if (root == null)
-            {
-                continue;
-            }
-
-            Camera[] cameras = root.GetComponentsInChildren<Camera>(true);
-            for (int j = 0; j < cameras.Length; j++)
-            {
-                cameras[j].enabled = false;
-            }
-
-            AudioListener[] listeners = root.GetComponentsInChildren<AudioListener>(true);
-            for (int j = 0; j < listeners.Length; j++)
-            {
-                listeners[j].enabled = false;
-            }
-
-            SiegePlayEnvironment[] environments = root.GetComponentsInChildren<SiegePlayEnvironment>(true);
-            for (int j = 0; j < environments.Length; j++)
-            {
-                environments[j].enabled = false;
-            }
-
-            VotanicWandRtsCommander[] commanders = root.GetComponentsInChildren<VotanicWandRtsCommander>(true);
-            for (int j = 0; j < commanders.Length; j++)
-            {
-                commanders[j].enabled = false;
-            }
-        }
-
-        // Rebind Point Capture local input to the main-scene commander so desktop/XR control
-        // stays consistent after additive transport.
-        PointCaptureLocalInput[] inputs = FindObjectsOfType<PointCaptureLocalInput>(true);
-        for (int i = 0; i < inputs.Length; i++)
-        {
-            PointCaptureLocalInput input = inputs[i];
-            if (input == null || input.gameObject.scene != captureScene)
-            {
-                continue;
-            }
-
-            PointCaptureSpawner inputSpawner = input.GetComponent<PointCaptureSpawner>();
-            if (inputSpawner == null)
-            {
-                inputSpawner = FindObjectOfType<PointCaptureSpawner>();
-            }
-
-            PointCaptureRaiseMenu inputRaiseMenu = input.GetComponent<PointCaptureRaiseMenu>();
-            if (inputRaiseMenu == null)
-            {
-                inputRaiseMenu = FindObjectOfType<PointCaptureRaiseMenu>();
-            }
-
-            input.Configure(PointCaptureMatch.Instance, inputSpawner, inputRaiseMenu, wandCommander);
-            input.SetCommandFaction(IsAttacker ? CaptureOwner.Yellow : CaptureOwner.Red);
-        }
-
-        SiegePlayEnvironment.RefreshActiveInstance();
-    }
-
-    private void RestorePreservedCaptureDebugViewCamera(Camera preservedViewCamera)
-    {
-        if (!capturePvPDebugLocalDesktop || capturePvPDebugBirdsEyeStandalone || preservedViewCamera == null)
-        {
-            return;
-        }
-
-        preservedViewCamera.enabled = true;
-
-        AudioListener preservedListener = preservedViewCamera.GetComponent<AudioListener>();
-        if (preservedListener != null)
-        {
-            preservedListener.enabled = true;
-        }
-    }
-
-    private IEnumerator TeleportUserToCaptureHomeWhenReady()
-    {
-        yield return null;
-        yield return new WaitForEndOfFrame();
-
-        for (int attempt = 0; attempt < 8; attempt++)
-        {
-            if (TeleportUserToCaptureHome())
-            {
-                SiegeSceneBootstrap.BeginInputCooldown(0.2f);
-                yield break;
-            }
-
-            yield return new WaitForSecondsRealtime(0.1f);
-        }
-    }
-
-    private bool TeleportUserToCaptureHome()
-    {
-        PointCaptureBoard board = PointCaptureBoard.Instance;
-        if (board == null)
-        {
-            return false;
-        }
-
-        CaptureOwner homeOwner = IsAttacker ? CaptureOwner.Yellow : CaptureOwner.Red;
-        PointCaptureVillage homeVillage = board.GetHomeVillage(homeOwner);
-        if (homeVillage == null)
-        {
-            return false;
-        }
-
-        GameObject tempTarget = new GameObject("CaptureHomeTeleportTarget");
-        try
-        {
-            PointCaptureVillage centerVillage = board.GetVillage(2);
-            Vector3 targetPosition = homeVillage.Position;
-            Vector3 lookTarget = centerVillage != null ? centerVillage.Position : homeVillage.Position + homeVillage.transform.forward * 10f;
-
-            Vector3 towardCenter = lookTarget - homeVillage.Position;
-            towardCenter.y = 0f;
-            if (towardCenter.sqrMagnitude < 0.01f)
-            {
-                towardCenter = Vector3.forward;
-            }
-
-            // Stand on stable ground just in front of the home village instead of inside/above
-            // the visual mesh, which has no physical top surface for the player rig.
-            float standOffDistance = Mathf.Max(homeVillage.CaptureRadius + 4f, 14f);
-            targetPosition += towardCenter.normalized * standOffDistance;
-            targetPosition = RtsGroundUtility.ProjectPointOntoGround(
-                targetPosition,
-                0.08f,
-                preferredY: homeVillage.Position.y + 2f);
-            targetPosition += Vector3.up * 1.55f;
-
-            Quaternion facing = Quaternion.LookRotation(towardCenter.normalized, Vector3.up);
-            tempTarget.transform.SetPositionAndRotation(targetPosition, facing);
-            bool teleported = TryTeleportUser(tempTarget.transform, logFailure: false);
-            AlignCaptureDebugViewRig(tempTarget.transform);
-            return teleported || SiegePlayEnvironment.ResolveViewCamera() != null;
-        }
-        finally
-        {
-            Destroy(tempTarget);
-        }
-    }
-
-    private void AlignCaptureDebugViewRig(Transform destination)
-    {
-        if (destination == null || capturePvPDebugBirdsEyeStandalone)
-        {
-            return;
-        }
-
-        Transform user = SiegePlayEnvironment.ResolveUserTransform();
-        Transform player = SiegePlayEnvironment.ResolvePlayerTransform();
-        Transform head = SiegePlayEnvironment.ResolveHeadTransform();
-        Camera viewCamera = SiegePlayEnvironment.ResolveViewCamera();
-
-        SyncTransformToDestinationIfIndependent(player, user, destination);
-        SyncTransformToDestinationIfIndependent(head, user, destination);
-
-        if (viewCamera != null)
-        {
-            SyncTransformToDestinationIfIndependent(viewCamera.transform, user, destination);
-            SyncTransformToDestinationIfIndependent(viewCamera.transform, head, destination);
-        }
-    }
-
-    private static void SyncTransformToDestinationIfIndependent(
-        Transform target,
-        Transform reference,
-        Transform destination)
-    {
-        if (target == null || destination == null)
-        {
-            return;
-        }
-
-        if (reference != null
-            && (target == reference
-                || target.IsChildOf(reference)
-                || reference.IsChildOf(target)))
-        {
-            return;
-        }
-
-        target.position = destination.position;
-    }
-
-    private bool captureSceneLoaded()
-    {
-        return captureScene.IsValid() && captureScene.isLoaded;
-    }
-
-    private void UnloadCaptureSceneIfNeeded()
-    {
-        if (!captureSceneLoaded())
-        {
-            captureScene = default;
-            captureSceneRootsOffsetApplied = false;
-            return;
-        }
-
-        SceneManager.UnloadSceneAsync(captureScene);
-        captureScene = default;
-        captureSceneRootsOffsetApplied = false;
-    }
-
-    private void StartCapturePvPMatchLocal()
-    {
-        if (captureStage == CapturePvPStage.InMatch || PointCaptureMatch.Instance == null)
-        {
-            return;
-        }
-
-        captureStage = CapturePvPStage.InMatch;
-        matchRunning = true;
-
-        SiegeGameManager manager = SiegeGameManager.Instance;
-        matchDurationSeconds = Mathf.Max(10f, matchDurationSeconds);
-        moveSpeedScale = Mathf.Clamp(moveSpeedScale, 0.1f, 2f);
-
-        if (manager != null && manager.CurrentState == SiegeGameManager.MatchState.SelectingDifficulty)
-        {
-            manager.ConfirmPlayMode(
-                SiegeGameMode.CapturePvP,
-                matchDurationSeconds,
-                moveSpeedScale);
-        }
-        else
-        {
-            // Keep CapturePvP-specific settings/timers in sync if the manager already left menu state.
-            SiegeMatchSettings.Configure(
-                SiegeGameMode.CapturePvP,
-                manager != null ? manager.DemoMoveSpeedScale : 0.6f,
-                matchDurationSeconds,
-                moveSpeedScale);
-        }
-
-        ApplyMoveSpeedToAllTroops();
-        ApplyCommandFactionFilter();
-        EnsureWandBound();
-        ApplyLocalHudViewpoint();
-
-        // Setup network sync/authority for Point Capture troops.
-        RebuildUnitSyncTable();
-        if (!capturePvPDebugLocalDesktop)
-        {
-            ApplyNetworkAuthorityRoles();
-        }
-
-        // Start the capture match immediately (no countdown).
-        captureMatch = PointCaptureMatch.Instance;
-        captureMatch.SetMatchDurationSeconds(matchDurationSeconds);
-        captureMatch.StateChanged -= HandleCaptureMatchStateChanged;
-        captureMatch.StateChanged += HandleCaptureMatchStateChanged;
-        captureMatch.StartPlayingNow();
-        captureAwaitingReturn = false;
-    }
-
-    private void HandleCaptureMatchStateChanged(PointCaptureMatch.MatchState state)
-    {
-        if (!enableCapturePvP || captureStage != CapturePvPStage.InMatch)
-        {
-            return;
-        }
-
-        if (state != PointCaptureMatch.MatchState.Ended)
-        {
-            return;
-        }
-
-        captureStage = CapturePvPStage.AwaitingReturn;
-        matchRunning = false;
-        captureAwaitingReturn = true;
-        captureLocalReturnReady = false;
-        capturePeerReturnReady = false;
-        ShowCaptureReturnPrompt();
-    }
-
-    private void ShowCaptureReturnPrompt()
-    {
-        // Reuse existing siege lobby label pipeline (safe during capture scene).
-        ShowStatus("Point Capture ended — click again to transport back.");
-    }
-
-    private void NotifyLocalCaptureReturnReady()
-    {
-        if (!captureAwaitingReturn || captureLocalReturnReady)
-        {
-            return;
-        }
-
-        captureLocalReturnReady = true;
-
-        // No networking in debug local mode: return immediately on the local click.
-        if (capturePvPDebugLocalDesktop || networking == null)
-        {
-            ReturnFromCaptureLocal();
-            return;
-        }
-
-        SendCommand("CAP_RETURN_READY");
-        HostStartReturnIfReady();
-    }
-
-    private void HostStartReturnIfReady()
-    {
-        if (!captureLocalReturnReady || !capturePeerReturnReady)
-        {
-            return;
-        }
-
-        if (!IsAttacker)
-        {
-            return;
-        }
-
-        SendCommand("CAP_RETURN_GO");
-        ReturnFromCaptureLocal();
-    }
-
-    private void HandlePeerReturnReady()
-    {
-        capturePeerReturnReady = true;
-        HostStartReturnIfReady();
-    }
-
-    private void HandleCaptureReturnGoNetwork()
-    {
-        ReturnFromCaptureLocal();
-    }
-
-    private void ReturnFromCaptureLocal()
-    {
-        if (captureStage != CapturePvPStage.AwaitingReturn)
-        {
-            return;
-        }
-
-        captureStage = CapturePvPStage.Inactive;
-        matchRunning = false;
-        captureAwaitingReturn = false;
-
-        if (captureMatch != null)
-        {
-            captureMatch.StateChanged -= HandleCaptureMatchStateChanged;
-            captureMatch = null;
-        }
-
-        // Restore defender tower boundary if it was released during teleport.
-        RestoreCommandTowerBoundaryAfterDefender();
-
-        // Unload Point Capture scene.
-        UnloadCaptureSceneIfNeeded();
-
-        if (captureReturnScene.IsValid())
-        {
-            SceneManager.SetActiveScene(captureReturnScene);
-        }
-
-        // Teleport back to the menu spawn (both host and client).
-        TeleportUser(menuSpawnPoint);
-
-        // Restore non-PVP defaults so commander control goes back to the standard faction.
-        SiegeMatchSettings.Reset();
-        ResetLobbyFlags();
-        ShowModeSelect();
-        ApplyCommandFactionFilter();
-    }
-
-    private void ShowModeSelect()
-    {
-        if (SiegeMatchUi.Instance != null)
-        {
-            SiegeMatchUi.Instance.ShowModeSelect();
         }
     }
 

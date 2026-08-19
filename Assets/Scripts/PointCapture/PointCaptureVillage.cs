@@ -42,6 +42,8 @@ public class PointCaptureVillage : MonoBehaviour
     private int redOccupants;
     private int yellowOccupants;
     private bool hasCombatInZone;
+    private bool hasHostilePressure;
+    private bool hasOwnerPresence;
     private PointCaptureBoard board;
     private PointCaptureMatch match;
 
@@ -67,7 +69,23 @@ public class PointCaptureVillage : MonoBehaviour
     public int RedOccupants => redOccupants;
     public int YellowOccupants => yellowOccupants;
     public bool IsContested => redOccupants > 0 && yellowOccupants > 0;
-    public bool HasCombatInZone => hasCombatInZone;
+    public bool HasCombatInZone => hasCombatInZone || hasHostilePressure || HasEnemyOccupants(currentOwner);
+    public bool HasHostilePressure => hasHostilePressure;
+
+    public bool HasEnemyOccupants(CaptureOwner owner)
+    {
+        if (owner == CaptureOwner.Red)
+        {
+            return yellowOccupants > 0;
+        }
+
+        if (owner == CaptureOwner.Yellow)
+        {
+            return redOccupants > 0;
+        }
+
+        return redOccupants > 0 || yellowOccupants > 0;
+    }
 
     public void Configure(string displayName, CaptureOwner owner)
     {
@@ -102,6 +120,8 @@ public class PointCaptureVillage : MonoBehaviour
         redOccupants = 0;
         yellowOccupants = 0;
         hasCombatInZone = false;
+        hasHostilePressure = false;
+        hasOwnerPresence = false;
         RefreshVisuals();
         SyncCaptureRingScale();
     }
@@ -165,8 +185,11 @@ public class PointCaptureVillage : MonoBehaviour
         redOccupants = 0;
         yellowOccupants = 0;
         hasCombatInZone = false;
+        hasHostilePressure = false;
+        hasOwnerPresence = false;
 
         TroopCombat[] troops = FindObjectsOfType<TroopCombat>();
+        float rimThreatRadius = OccupyRadius + 6f;
         for (int i = 0; i < troops.Length; i++)
         {
             TroopCombat troop = troops[i];
@@ -179,7 +202,21 @@ public class PointCaptureVillage : MonoBehaviour
                 continue;
             }
 
-            if (!ContainsPoint(troop.transform.position))
+            bool inside = ContainsPoint(troop.transform.position);
+            bool retreating = troop.CurrentState == TroopCombat.State.Retreat;
+            CaptureOwner troopOwner = CaptureTeams.FromTroopFaction(troop.TroopFaction);
+
+            if (!inside)
+            {
+                continue;
+            }
+
+            if (CaptureTeams.IsPlayerSide(currentOwner) && troopOwner == currentOwner)
+            {
+                hasOwnerPresence = true;
+            }
+
+            if (retreating)
             {
                 continue;
             }
@@ -190,7 +227,7 @@ public class PointCaptureVillage : MonoBehaviour
                 hasCombatInZone = true;
             }
 
-            if (CaptureTeams.FromTroopFaction(troop.TroopFaction) == CaptureOwner.Red)
+            if (troopOwner == CaptureOwner.Red)
             {
                 redOccupants++;
             }
@@ -203,6 +240,40 @@ public class PointCaptureVillage : MonoBehaviour
         if (!hasCombatInZone && redOccupants > 0 && yellowOccupants > 0)
         {
             hasCombatInZone = true;
+        }
+
+        if (!hasOwnerPresence || !CaptureTeams.IsPlayerSide(currentOwner))
+        {
+            return;
+        }
+
+        for (int i = 0; i < troops.Length; i++)
+        {
+            TroopCombat troop = troops[i];
+            if (troop == null
+                || !troop.isActiveAndEnabled
+                || troop.IsPermanentlyEliminated
+                || troop.CurrentState == TroopCombat.State.Dead
+                || troop.CurrentState == TroopCombat.State.Retreat
+                || ContainsPoint(troop.transform.position)
+                )
+            {
+                continue;
+            }
+
+            CaptureOwner troopOwner = CaptureTeams.FromTroopFaction(troop.TroopFaction);
+            if (troopOwner == currentOwner)
+            {
+                continue;
+            }
+
+            bool targetingInside = troop.CurrentTarget != null && ContainsPoint(troop.CurrentTarget.transform.position);
+            float distanceToVillage = GetHorizontalDistance(troop.transform.position, transform.position);
+            if (targetingInside || distanceToVillage <= rimThreatRadius)
+            {
+                hasHostilePressure = true;
+                break;
+            }
         }
     }
 
@@ -335,9 +406,14 @@ public class PointCaptureVillage : MonoBehaviour
             return;
         }
 
-        if (TryGetOwnerPresenceIntruder(out CaptureOwner intruder))
+        if (TryGetOwnerPresenceIntruder(out CaptureOwner intruder) || (hasHostilePressure && hasOwnerPresence))
         {
-            // Enemy is inside this village while we own it — show orange for clarity.
+            // Fight in the disc, or the owner is still here while enemies press the rim.
+            if (intruder == CaptureOwner.Neutral)
+            {
+                intruder = CaptureTeams.Opposite(currentOwner);
+            }
+
             Color orange = new Color(1f, 0.55f, 0.1f, discColorAlpha);
             ApplyRendererColor(captureRingRenderer, orange);
             RefreshStripeOverlay(intruder, visible: false);

@@ -244,14 +244,17 @@ public class SiegeDifficultySelector : MonoBehaviour
             return;
         }
 
-        if (hoveredOption.GameMode == SiegeGameMode.SiegePvp
-            || hoveredOption.GameMode == SiegeGameMode.CapturePvP)
+        if (hoveredOption.GameMode == SiegeGameMode.CapturePvP)
+        {
+            Debug.LogWarning(
+                "Capture PvP is a standalone scene. Open and play 'Point Capture' instead of launching it from Hyrule Field.");
+            return;
+        }
+
+        if (hoveredOption.GameMode == SiegeGameMode.SiegePvp)
         {
             if (pvp != null)
             {
-                bool useCapturePvP = hoveredOption.GameMode == SiegeGameMode.CapturePvP;
-                pvp.ConfigureCapturePvPSubmode(useCapturePvP);
-
                 if (hoveredOption.UseCustomPvpTuning)
                 {
                     pvp.NotifyLocalSelectedPvp(

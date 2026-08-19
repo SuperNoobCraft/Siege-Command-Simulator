@@ -4,13 +4,15 @@ using UnityEngine.EventSystems;
 using UnityEngine.UI;
 
 /// <summary>
-/// Small popup to raise Infantry or Archer when clicking controlled territory.
+/// World-space popup to raise Infantry or Archer at a clicked village disc.
+/// Stays at the raise point so first-person / CAVE view can aim at it with mouse or wand.
 /// </summary>
 [DisallowMultipleComponent]
 public class PointCaptureRaiseMenu : MonoBehaviour
 {
     [SerializeField] private PointCaptureMatch match;
     [SerializeField] private PointCaptureSpawner spawner;
+    [SerializeField] private VotanicWandRtsCommander wandCommander;
     [SerializeField] private Canvas canvas;
     [SerializeField] private RectTransform panel;
     [SerializeField] private Text titleText;
@@ -18,13 +20,30 @@ public class PointCaptureRaiseMenu : MonoBehaviour
     [SerializeField] private Button archerButton;
     [SerializeField] private Text infantryCostText;
     [SerializeField] private Text archerCostText;
+    [SerializeField, Min(0.001f)] private float worldScale = 0.008f;
+    [SerializeField, Min(0.2f)] private float worldHeight = 1.35f;
+    [SerializeField, Min(0f)] private float pullTowardViewer = 0.7f;
+    [SerializeField, Min(1f)] private float referenceViewDistance = 10f;
+    [SerializeField, Min(0.001f)] private float minWorldScale = 0.007f;
+    [SerializeField, Min(0.001f)] private float maxWorldScale = 0.04f;
 
     private Vector3 pendingWorldPosition;
     private CaptureOwner pendingOwner = CaptureOwner.Neutral;
     private Action<string> onRaiseFailed;
     private int openedOnFrame = -1;
+    private Collider infantryCollider;
+    private Collider archerCollider;
+    private Collider panelCollider;
+    private Image infantryImage;
+    private Image archerImage;
+    private int lastClosedFrame = -1;
 
-    public bool IsOpen => panel != null && panel.gameObject.activeSelf;
+    private static readonly Color ButtonNormal = new Color(0.18f, 0.22f, 0.28f, 0.96f);
+    private static readonly Color ButtonHover = new Color(1f, 0.86f, 0.22f, 1f);
+    private static readonly Color ButtonHoverText = new Color(0.12f, 0.1f, 0.02f, 1f);
+
+    public bool IsOpen => canvas != null && canvas.gameObject.activeSelf && panel != null && panel.gameObject.activeSelf;
+    public bool ClosedThisFrame => lastClosedFrame == Time.frameCount;
 
     public void Configure(PointCaptureMatch captureMatch, PointCaptureSpawner captureSpawner)
     {
@@ -51,34 +70,67 @@ public class PointCaptureRaiseMenu : MonoBehaviour
             spawner = FindObjectOfType<PointCaptureSpawner>();
         }
 
+        if (wandCommander == null)
+        {
+            wandCommander = FindObjectOfType<VotanicWandRtsCommander>();
+        }
+
         EnsureUi();
         Hide();
     }
 
     private void Update()
     {
-        if (!IsOpen || Time.frameCount == openedOnFrame)
+        if (!IsOpen)
         {
             return;
         }
 
-        if (Input.GetMouseButtonDown(0) || Input.GetMouseButtonDown(1))
+        FaceViewer();
+        ValidatePendingRaiseLocation();
+        if (!IsOpen)
         {
-            if (!IsPointerOverPanel())
-            {
-                Hide();
-            }
+            return;
+        }
+
+        UpdateButtonHover();
+
+        if (Time.frameCount == openedOnFrame)
+        {
+            return;
         }
 
         if (Input.GetKeyDown(KeyCode.Escape))
         {
-            Hide();
+            Hide(suppressReopen: true);
+            return;
         }
 
-        ValidatePendingRaiseLocation();
+        if (!SiegeVrInput.WasPointerPressedThisFrame())
+        {
+            return;
+        }
+
+        Ray ray = BuildGameplayRay();
+        if (RayHitsCollider(ray, infantryCollider))
+        {
+            Raise(PointCaptureSpawner.RegimentType.Infantry);
+            return;
+        }
+
+        if (RayHitsCollider(ray, archerCollider))
+        {
+            Raise(PointCaptureSpawner.RegimentType.Archer);
+            return;
+        }
+
+        if (!RayHitsCollider(ray, panelCollider))
+        {
+            Hide(suppressReopen: true);
+        }
     }
 
-    public void Show(Vector3 worldPosition, CaptureOwner owner, Vector2 screenPosition)
+    public void Show(Vector3 worldPosition, CaptureOwner owner)
     {
         if (match == null || spawner == null || !match.IsPlaying)
         {
@@ -106,17 +158,54 @@ public class PointCaptureRaiseMenu : MonoBehaviour
             archerCostText.text = "Archer (" + archerCost.ToString("0") + " MP)";
         }
 
+        canvas.gameObject.SetActive(true);
         panel.gameObject.SetActive(true);
         openedOnFrame = Time.frameCount;
-        LayoutPanelAt(screenPosition);
+        PlaceInWorld(worldPosition);
+        FaceViewer();
+        UpdateButtonHover();
     }
 
     public void Hide()
     {
+        Hide(suppressReopen: false);
+    }
+
+    public void Hide(bool suppressReopen)
+    {
+        bool wasOpen = IsOpen;
+        ResetButtonHover();
         if (panel != null)
         {
             panel.gameObject.SetActive(false);
         }
+
+        if (canvas != null)
+        {
+            canvas.gameObject.SetActive(false);
+        }
+
+        if (wasOpen)
+        {
+            lastClosedFrame = Time.frameCount;
+            if (suppressReopen)
+            {
+                SuppressReopen();
+            }
+        }
+    }
+
+    public bool IsPointerOverMenu()
+    {
+        if (!IsOpen)
+        {
+            return false;
+        }
+
+        Ray ray = BuildGameplayRay();
+        return RayHitsCollider(ray, panelCollider)
+            || RayHitsCollider(ray, infantryCollider)
+            || RayHitsCollider(ray, archerCollider);
     }
 
     private void Raise(PointCaptureSpawner.RegimentType regimentType)
@@ -133,7 +222,7 @@ public class PointCaptureRaiseMenu : MonoBehaviour
             onRaiseFailed?.Invoke(string.IsNullOrEmpty(failReason)
                 ? "This village can no longer raise regiments."
                 : failReason);
-            Hide();
+            Hide(suppressReopen: true);
             return;
         }
 
@@ -142,17 +231,7 @@ public class PointCaptureRaiseMenu : MonoBehaviour
             onRaiseFailed?.Invoke(failReason);
         }
 
-        Hide();
-    }
-
-    private bool IsPointerOverPanel()
-    {
-        if (panel == null)
-        {
-            return false;
-        }
-
-        return RectTransformUtility.RectangleContainsScreenPoint(panel, Input.mousePosition, null);
+        Hide(suppressReopen: true);
     }
 
     private void ValidatePendingRaiseLocation()
@@ -160,7 +239,7 @@ public class PointCaptureRaiseMenu : MonoBehaviour
         PointCaptureBoard board = PointCaptureBoard.Instance;
         if (board == null)
         {
-            Hide();
+            Hide(suppressReopen: true);
             return;
         }
 
@@ -169,26 +248,188 @@ public class PointCaptureRaiseMenu : MonoBehaviour
             return;
         }
 
-        Hide();
+        Hide(suppressReopen: true);
         onRaiseFailed?.Invoke("This village can no longer raise regiments.");
     }
 
-    private void LayoutPanelAt(Vector2 screenPosition)
+    private void PlaceInWorld(Vector3 worldPosition)
     {
-        const float width = 220f;
-        const float height = 118f;
-        Vector2 anchored = screenPosition;
-        anchored.x = Mathf.Clamp(anchored.x, width * 0.5f + 8f, Screen.width - width * 0.5f - 8f);
-        anchored.y = Mathf.Clamp(anchored.y, height * 0.5f + 8f, Screen.height - height * 0.5f - 8f);
-        panel.SetSizeWithCurrentAnchors(RectTransform.Axis.Horizontal, width);
-        panel.SetSizeWithCurrentAnchors(RectTransform.Axis.Vertical, height);
-        panel.position = anchored;
+        Transform viewer = ResolveViewer();
+        Vector3 towardViewer = Vector3.forward;
+        if (viewer != null)
+        {
+            towardViewer = viewer.position - worldPosition;
+            towardViewer.y = 0f;
+        }
+
+        if (towardViewer.sqrMagnitude < 0.01f)
+        {
+            towardViewer = Vector3.forward;
+        }
+
+        Vector3 menuPosition = worldPosition + Vector3.up * worldHeight + towardViewer.normalized * pullTowardViewer;
+        canvas.transform.position = menuPosition;
+        ApplyDistanceScale(viewer);
+        canvas.worldCamera = SiegePlayEnvironment.ResolveViewCamera();
+    }
+
+    private void FaceViewer()
+    {
+        if (canvas == null || !canvas.gameObject.activeSelf)
+        {
+            return;
+        }
+
+        Transform viewer = ResolveViewer();
+        if (viewer == null)
+        {
+            return;
+        }
+
+        Vector3 toViewer = viewer.position - canvas.transform.position;
+        toViewer.y = 0f;
+        if (toViewer.sqrMagnitude < 0.0001f)
+        {
+            return;
+        }
+
+        canvas.transform.rotation = Quaternion.LookRotation(-toViewer.normalized, Vector3.up);
+        ApplyDistanceScale(viewer);
+    }
+
+    private void UpdateButtonHover()
+    {
+        if (!IsOpen)
+        {
+            return;
+        }
+
+        Ray ray = BuildGameplayRay();
+        bool hoverInfantry = RayHitsCollider(ray, infantryCollider);
+        bool hoverArcher = RayHitsCollider(ray, archerCollider);
+        ApplyButtonHover(infantryButton, infantryImage, infantryCostText, hoverInfantry);
+        ApplyButtonHover(archerButton, archerImage, archerCostText, hoverArcher);
+    }
+
+    private void ResetButtonHover()
+    {
+        ApplyButtonHover(infantryButton, infantryImage, infantryCostText, false);
+        ApplyButtonHover(archerButton, archerImage, archerCostText, false);
+    }
+
+    private void ApplyButtonHover(Button button, Image image, Text label, bool hovered)
+    {
+        if (image != null)
+        {
+            Color team = CaptureTeams.GetColor(pendingOwner);
+            image.color = hovered
+                ? Color.Lerp(ButtonHover, team, 0.35f)
+                : ButtonNormal;
+        }
+
+        if (label != null)
+        {
+            label.color = hovered ? ButtonHoverText : Color.white;
+            label.fontStyle = hovered ? FontStyle.Bold : FontStyle.Normal;
+            label.fontSize = hovered ? 22 : 18;
+        }
+
+        if (button != null)
+        {
+            button.transform.localScale = hovered ? Vector3.one * 1.16f : Vector3.one;
+        }
+    }
+
+    private static void SuppressReopen()
+    {
+        PointCaptureLocalInput input = PointCaptureLocalInput.Instance != null
+            ? PointCaptureLocalInput.Instance
+            : FindObjectOfType<PointCaptureLocalInput>();
+        input?.SuppressRaiseMenu(0.6f);
+    }
+
+    private void ApplyDistanceScale(Transform viewer)
+    {
+        if (canvas == null)
+        {
+            return;
+        }
+
+        canvas.transform.localScale = Vector3.one * GetDistanceScale(viewer);
+    }
+
+    private float GetDistanceScale(Transform viewer)
+    {
+        if (viewer == null)
+        {
+            return worldScale;
+        }
+
+        float distance = Vector3.Distance(viewer.position, canvas.transform.position);
+        float scaled = worldScale * (distance / referenceViewDistance);
+        return Mathf.Clamp(scaled, minWorldScale, maxWorldScale);
+    }
+
+    private Ray BuildGameplayRay()
+    {
+        if (wandCommander == null)
+        {
+            wandCommander = FindObjectOfType<VotanicWandRtsCommander>();
+        }
+
+        if (wandCommander != null)
+        {
+            return wandCommander.BuildGameplayRay();
+        }
+
+        Camera viewCamera = SiegePlayEnvironment.ResolveViewCamera();
+        if (viewCamera != null)
+        {
+            return viewCamera.ScreenPointToRay(Input.mousePosition);
+        }
+
+        return new Ray(transform.position, transform.forward);
+    }
+
+    private static Transform ResolveViewer()
+    {
+        Transform player = SiegePlayEnvironment.ResolvePlayerTransform();
+        if (player != null)
+        {
+            return player;
+        }
+
+        Transform user = SiegePlayEnvironment.ResolveUserTransform();
+        if (user != null)
+        {
+            return user;
+        }
+
+        Camera viewCamera = SiegePlayEnvironment.ResolveViewCamera();
+        return viewCamera != null ? viewCamera.transform : null;
+    }
+
+    private static bool RayHitsCollider(Ray ray, Collider hitCollider)
+    {
+        if (hitCollider == null || !hitCollider.enabled || !hitCollider.gameObject.activeInHierarchy)
+        {
+            return false;
+        }
+
+        return hitCollider.Raycast(ray, out _, 2000f);
     }
 
     private void EnsureUi()
     {
-        if (panel != null)
+        if (panel != null && canvas != null)
         {
+            if (canvas.transform.parent != null)
+            {
+                canvas.transform.SetParent(null, true);
+            }
+
+            ApplyWorldSpaceCanvas();
+            EnsureMenuColliders();
             return;
         }
 
@@ -200,34 +441,74 @@ public class PointCaptureRaiseMenu : MonoBehaviour
         }
 
         GameObject canvasObject = new GameObject("PointCaptureRaiseCanvas");
-        canvasObject.transform.SetParent(transform, false);
+        canvasObject.transform.SetParent(null, true);
         canvas = canvasObject.AddComponent<Canvas>();
-        canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+        canvas.renderMode = RenderMode.WorldSpace;
         canvas.sortingOrder = 80;
-        CanvasScaler scaler = canvasObject.AddComponent<CanvasScaler>();
-        scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
-        scaler.referenceResolution = new Vector2(1920f, 1080f);
         canvasObject.AddComponent<GraphicRaycaster>();
 
         GameObject panelObject = new GameObject("RaisePanel");
         panelObject.transform.SetParent(canvasObject.transform, false);
         panel = panelObject.AddComponent<RectTransform>();
+        panel.anchorMin = new Vector2(0.5f, 0.5f);
+        panel.anchorMax = new Vector2(0.5f, 0.5f);
+        panel.pivot = new Vector2(0.5f, 0.5f);
+        panel.sizeDelta = new Vector2(220f, 118f);
         Image panelImage = panelObject.AddComponent<Image>();
         panelImage.color = new Color(0.08f, 0.1f, 0.12f, 0.94f);
+        panelImage.raycastTarget = true;
+        panelCollider = EnsureBoxCollider(panelObject, panel.sizeDelta);
 
-        titleText = CreateLabel(panel, "Title", new Vector2(0f, -14f), 20, TextAnchor.UpperCenter);
-        infantryButton = CreateButton(panel, "InfantryButton", new Vector2(0f, -48f), OnInfantryClicked, out infantryCostText);
-        archerButton = CreateButton(panel, "ArcherButton", new Vector2(0f, -88f), OnArcherClicked, out archerCostText);
+        titleText = CreateLabel(panel, "Title", new Vector2(0f, 42f), 20, TextAnchor.MiddleCenter);
+        infantryButton = CreateButton(panel, "InfantryButton", new Vector2(0f, 6f), out infantryCostText);
+        archerButton = CreateButton(panel, "ArcherButton", new Vector2(0f, -36f), out archerCostText);
+        infantryImage = infantryButton != null ? infantryButton.GetComponent<Image>() : null;
+        archerImage = archerButton != null ? archerButton.GetComponent<Image>() : null;
+        infantryCollider = infantryButton != null ? infantryButton.GetComponent<Collider>() : null;
+        archerCollider = archerButton != null ? archerButton.GetComponent<Collider>() : null;
+
+        RectTransform canvasRect = canvasObject.GetComponent<RectTransform>();
+        canvasRect.sizeDelta = panel.sizeDelta;
+        ApplyWorldSpaceCanvas();
+        EnsureMenuColliders();
     }
 
-    private void OnInfantryClicked()
+    private void ApplyWorldSpaceCanvas()
     {
-        Raise(PointCaptureSpawner.RegimentType.Infantry);
+        if (canvas == null)
+        {
+            return;
+        }
+
+        canvas.renderMode = RenderMode.WorldSpace;
+        canvas.worldCamera = SiegePlayEnvironment.ResolveViewCamera();
+        canvas.transform.localScale = Vector3.one * worldScale;
     }
 
-    private void OnArcherClicked()
+    private void EnsureMenuColliders()
     {
-        Raise(PointCaptureSpawner.RegimentType.Archer);
+        if (panel != null)
+        {
+            panelCollider = EnsureBoxCollider(panel.gameObject, panel.sizeDelta);
+        }
+
+        if (infantryButton != null)
+        {
+            RectTransform infantryRect = infantryButton.transform as RectTransform;
+            infantryCollider = EnsureBoxCollider(
+                infantryButton.gameObject,
+                infantryRect != null ? infantryRect.sizeDelta : new Vector2(200f, 36f));
+            infantryImage = infantryButton.GetComponent<Image>();
+        }
+
+        if (archerButton != null)
+        {
+            RectTransform archerRect = archerButton.transform as RectTransform;
+            archerCollider = EnsureBoxCollider(
+                archerButton.gameObject,
+                archerRect != null ? archerRect.sizeDelta : new Vector2(200f, 36f));
+            archerImage = archerButton.GetComponent<Image>();
+        }
     }
 
     private static Text CreateLabel(RectTransform parent, string name, Vector2 anchoredPosition, int fontSize, TextAnchor anchor)
@@ -235,9 +516,9 @@ public class PointCaptureRaiseMenu : MonoBehaviour
         GameObject labelObject = new GameObject(name);
         labelObject.transform.SetParent(parent, false);
         RectTransform rect = labelObject.AddComponent<RectTransform>();
-        rect.anchorMin = new Vector2(0.5f, 1f);
-        rect.anchorMax = new Vector2(0.5f, 1f);
-        rect.pivot = new Vector2(0.5f, 1f);
+        rect.anchorMin = new Vector2(0.5f, 0.5f);
+        rect.anchorMax = new Vector2(0.5f, 0.5f);
+        rect.pivot = new Vector2(0.5f, 0.5f);
         rect.anchoredPosition = anchoredPosition;
         rect.sizeDelta = new Vector2(200f, 28f);
         Text text = labelObject.AddComponent<Text>();
@@ -253,22 +534,22 @@ public class PointCaptureRaiseMenu : MonoBehaviour
         RectTransform parent,
         string name,
         Vector2 anchoredPosition,
-        UnityEngine.Events.UnityAction onClick,
         out Text label)
     {
         GameObject buttonObject = new GameObject(name);
         buttonObject.transform.SetParent(parent, false);
         RectTransform rect = buttonObject.AddComponent<RectTransform>();
-        rect.anchorMin = new Vector2(0.5f, 1f);
-        rect.anchorMax = new Vector2(0.5f, 1f);
-        rect.pivot = new Vector2(0.5f, 1f);
+        rect.anchorMin = new Vector2(0.5f, 0.5f);
+        rect.anchorMax = new Vector2(0.5f, 0.5f);
+        rect.pivot = new Vector2(0.5f, 0.5f);
         rect.anchoredPosition = anchoredPosition;
-        rect.sizeDelta = new Vector2(190f, 30f);
+        rect.sizeDelta = new Vector2(200f, 36f);
         Image image = buttonObject.AddComponent<Image>();
-        image.color = new Color(0.22f, 0.28f, 0.34f, 1f);
+        image.color = ButtonNormal;
         Button button = buttonObject.AddComponent<Button>();
         button.targetGraphic = image;
-        button.onClick.AddListener(onClick);
+        button.transition = Selectable.Transition.ColorTint;
+        EnsureBoxCollider(buttonObject, rect.sizeDelta);
 
         GameObject labelObject = new GameObject("Label");
         labelObject.transform.SetParent(buttonObject.transform, false);
@@ -284,5 +565,18 @@ public class PointCaptureRaiseMenu : MonoBehaviour
         label.color = Color.white;
         label.raycastTarget = false;
         return button;
+    }
+
+    private static BoxCollider EnsureBoxCollider(GameObject target, Vector2 size)
+    {
+        BoxCollider box = target.GetComponent<BoxCollider>();
+        if (box == null)
+        {
+            box = target.AddComponent<BoxCollider>();
+        }
+
+        box.size = new Vector3(size.x, size.y, 24f);
+        box.center = Vector3.zero;
+        return box;
     }
 }
