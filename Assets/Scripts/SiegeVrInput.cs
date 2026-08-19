@@ -35,29 +35,28 @@ public static class SiegeVrInput
             return false;
         }
 
-        // Keyboard fallback for CAVE / broken controller: treat Enter as a pointer press.
         if (Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.KeypadEnter))
         {
             return true;
         }
 
-        if (SiegePlayEnvironment.IsDesktopInput)
+        if (WasAnyVrButtonPressedThisFrame())
         {
-            if (Input.GetMouseButtonDown(0))
-            {
-                return true;
-            }
-
-            if (Input.touchCount > 0)
-            {
-                Touch touch = Input.GetTouch(0);
-                return touch.phase == TouchPhase.Began;
-            }
-
-            return false;
+            return true;
         }
 
-        return WasAnyVrButtonPressedThisFrame();
+        if (Input.GetMouseButtonDown(0))
+        {
+            return true;
+        }
+
+        if (Input.touchCount > 0)
+        {
+            Touch touch = Input.GetTouch(0);
+            return touch.phase == TouchPhase.Began;
+        }
+
+        return false;
     }
 
     public static bool IsPointerHeld()
@@ -67,23 +66,23 @@ public static class SiegeVrInput
             return false;
         }
 
-        if (SiegePlayEnvironment.IsDesktopInput)
+        if (IsAnyVrButtonHeld())
         {
-            if (Input.GetMouseButton(0))
-            {
-                return true;
-            }
-
-            if (Input.touchCount > 0)
-            {
-                TouchPhase phase = Input.GetTouch(0).phase;
-                return phase != TouchPhase.Ended && phase != TouchPhase.Canceled;
-            }
-
-            return false;
+            return true;
         }
 
-        return IsAnyVrButtonHeld();
+        if (Input.GetMouseButton(0))
+        {
+            return true;
+        }
+
+        if (Input.touchCount > 0)
+        {
+            TouchPhase phase = Input.GetTouch(0).phase;
+            return phase != TouchPhase.Ended && phase != TouchPhase.Canceled;
+        }
+
+        return false;
     }
 
     public static bool WasAnyVrButtonPressedThisFrame()
@@ -139,5 +138,53 @@ public static class SiegeVrInput
     private static bool ShouldTreatAsButtonCommand(string command)
     {
         return !string.IsNullOrEmpty(command) && !IgnoredCommandNames.Contains(command);
+    }
+
+    public static string BuildInputDebugText()
+    {
+        System.Text.StringBuilder text = new System.Text.StringBuilder(256);
+        text.Append("input allowed=").Append(IsGameplayInputAllowed());
+        text.Append("  mouse=").Append(Input.GetMouseButton(0) ? "held" : "-");
+        text.Append("  vrHeld=").Append(IsAnyVrButtonHeld() ? "Y" : "N");
+        text.Append('\n');
+        text.Append("ctrlBtn ");
+        for (int i = 0; i < VirtualButtonCount; i++)
+        {
+            bool down = false;
+            bool held = false;
+            try
+            {
+                down = vGear.Ctrl.ButtonDown(i);
+                held = vGear.Ctrl.ButtonPress(i);
+            }
+            catch (System.Exception)
+            {
+            }
+
+            if (down || held)
+            {
+                text.Append(i).Append(down ? "D" : "H").Append(' ');
+            }
+        }
+
+        text.Append('\n').Append("cmds:");
+        try
+        {
+            foreach (string command in vGear.Cmd.AllReceived())
+            {
+                if (string.IsNullOrEmpty(command))
+                {
+                    continue;
+                }
+
+                text.Append(' ').Append(command).Append('=').Append(vGear.Cmd.Value(command).ToString("0.00"));
+            }
+        }
+        catch (System.Exception exception)
+        {
+            text.Append(" err ").Append(exception.Message);
+        }
+
+        return text.ToString();
     }
 }

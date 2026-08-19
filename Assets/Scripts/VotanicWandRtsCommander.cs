@@ -100,6 +100,43 @@ public class VotanicWandRtsCommander : MonoBehaviour
     public event System.Action<RtsUnitMotor, IReadOnlyList<Vector3>> PathCommandIssued;
 
     public bool IsRecordingPath => isRecordingPath;
+    public string HoveredUnitName => hoveredUnit != null ? hoveredUnit.name : "none";
+    public bool IsCommandHeldNow => IsCommandHeld();
+
+    public string BuildAimDebugText()
+    {
+        Ray ray = BuildWandRay();
+        Transform wand = ResolveLiveWandTransform();
+        string originName = wandOrigin != null ? wandOrigin.name : "none";
+        string wandName = wand != null ? wand.name : "none";
+        string hitName = "none";
+        string hitLayer = "-";
+        string hitDist = "-";
+        RaycastHit[] hits = Physics.RaycastAll(ray, maxRayDistance, ~0, QueryTriggerInteraction.Collide);
+        if (hits != null && hits.Length > 0)
+        {
+            System.Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
+            RaycastHit hit = hits[0];
+            hitName = hit.collider != null ? hit.collider.name : "hit";
+            hitLayer = hit.collider != null
+                ? hit.collider.gameObject.layer + ":" + LayerMask.LayerToName(hit.collider.gameObject.layer)
+                : "-";
+            hitDist = hit.distance.ToString("0.0");
+            if (hits.Length > 1)
+            {
+                hitName += " +" + (hits.Length - 1);
+            }
+        }
+
+        return "cmd=" + name + (enabled ? " ON" : " OFF")
+            + "  origin=" + originName
+            + "  wand=" + wandName + "\n"
+            + "ray " + ray.origin.ToString("F1") + " -> " + ray.direction.ToString("F2") + "\n"
+            + "hit " + hitName + "  layer " + hitLayer + "  d=" + hitDist + "\n"
+            + "hover " + HoveredUnitName
+            + "  rec=" + (isRecordingPath ? "Y" : "N")
+            + "  cmdHeld=" + (IsCommandHeld() ? "Y" : "N");
+    }
 
     public void SetControllableFaction(TroopCombat.Faction faction)
     {
@@ -279,6 +316,10 @@ public class VotanicWandRtsCommander : MonoBehaviour
             {
                 issuedPath = SiegePvpSession.Instance.CanonicalizePathForMatch(issuedPath);
             }
+            else if (PointCaptureNetworkSession.Instance != null && PointCaptureNetworkSession.Instance.IsSyncActive)
+            {
+                issuedPath = PointCaptureNetworkSession.Instance.CanonicalizePathForMatch(issuedPath);
+            }
 
             if (issuedPath.Count >= 2 && RtsPathUtility.GetPathLength(issuedPath) >= pathMinIssueLength)
             {
@@ -287,6 +328,11 @@ public class VotanicWandRtsCommander : MonoBehaviour
                 if (SiegePvpSession.Instance != null)
                 {
                     SiegePvpSession.Instance.NotifyPathFromCommander(unit, issuedPath);
+                }
+
+                if (PointCaptureNetworkSession.Instance != null)
+                {
+                    PointCaptureNetworkSession.Instance.NotifyPathFromCommander(unit, issuedPath);
                 }
 
                 debugStatusLine = "Issued path to " + unit.name;
@@ -300,6 +346,11 @@ public class VotanicWandRtsCommander : MonoBehaviour
                     SiegePvpSession.Instance.NotifyStopFromCommander(unit);
                 }
 
+                if (PointCaptureNetworkSession.Instance != null)
+                {
+                    PointCaptureNetworkSession.Instance.NotifyStopFromCommander(unit);
+                }
+
                 debugStatusLine = "Command cancelled";
                 debugPathLine = "Path: collapsed after sanitize";
             }
@@ -307,10 +358,18 @@ public class VotanicWandRtsCommander : MonoBehaviour
         else
         {
             // Click-to-stop / cancelled short path: ensure peer also stops.
-            if (unit != null && SiegePvpSession.Instance != null)
+            if (unit != null)
             {
                 unit.Stop();
-                SiegePvpSession.Instance.NotifyStopFromCommander(unit);
+                if (SiegePvpSession.Instance != null)
+                {
+                    SiegePvpSession.Instance.NotifyStopFromCommander(unit);
+                }
+
+                if (PointCaptureNetworkSession.Instance != null)
+                {
+                    PointCaptureNetworkSession.Instance.NotifyStopFromCommander(unit);
+                }
             }
 
             debugStatusLine = "Command cancelled";
@@ -698,6 +757,14 @@ public class VotanicWandRtsCommander : MonoBehaviour
         return BuildWandRay();
     }
 
+    public void ClearCameraWandOrigin()
+    {
+        if (wandOrigin != null && wandOrigin.GetComponent<Camera>() != null)
+        {
+            wandOrigin = null;
+        }
+    }
+
     private Ray BuildWandRay()
     {
         if (ShouldUseDesktopFallback() && useDesktopMouseRay)
@@ -709,11 +776,24 @@ public class VotanicWandRtsCommander : MonoBehaviour
             }
         }
 
-        Transform source = wandOrigin;
-
-        if (source == null && vGear.controller != null)
+        if (SiegePlayEnvironment.IsTrackedXr)
         {
-            source = vGear.controller.transform;
+            Transform controller = ResolveLiveWandTransform();
+            if (controller != null)
+            {
+                return new Ray(controller.position, controller.forward);
+            }
+        }
+
+        Transform source = wandOrigin;
+        if (source != null && source.GetComponent<Camera>() != null)
+        {
+            source = null;
+        }
+
+        if (source == null)
+        {
+            source = ResolveLiveWandTransform();
         }
 
         if (source == null && vGear.head != null)
@@ -729,9 +809,51 @@ public class VotanicWandRtsCommander : MonoBehaviour
         return new Ray(source.position, source.forward);
     }
 
+    private static Transform ResolveLiveWandTransform()
+    {
+        try
+        {
+            if (vGear.controller != null && vGear.controller.transform != null)
+            {
+                return vGear.controller.transform;
+            }
+        }
+        catch (System.Exception)
+        {
+        }
+
+        try
+        {
+            if (vCast.controller != null && vCast.controller.transform != null)
+            {
+                return vCast.controller.transform;
+            }
+        }
+        catch (System.Exception)
+        {
+        }
+
+        return SiegePlayEnvironment.ResolveControllerTransform();
+    }
+
     private bool ShouldUseDesktopFallback()
     {
-        return enableDesktopFallback && SiegePlayEnvironment.IsDesktopInput;
+        if (!enableDesktopFallback || !SiegePlayEnvironment.IsDesktopInput)
+        {
+            return false;
+        }
+
+        if (SiegeVrInput.IsAnyVrButtonHeld() || SiegeVrInput.WasAnyVrButtonPressedThisFrame())
+        {
+            return false;
+        }
+
+        if (SiegePlayEnvironment.IsCaveMode || SiegePlayEnvironment.DescribeVcastEnvironment() == "CAVE")
+        {
+            return false;
+        }
+
+        return ResolveLiveWandTransform() == null;
     }
 
     private bool TryGetBattlefieldPoint(Ray ray, out Vector3 point)
@@ -967,6 +1089,17 @@ public class VotanicWandRtsCommander : MonoBehaviour
 
         if (!enableVotanicSdkWandRay)
         {
+            try
+            {
+                if (vCast.controller != null)
+                {
+                    vCast.controller.SetTool("Wand");
+                }
+            }
+            catch (System.Exception)
+            {
+            }
+
             return true;
         }
 

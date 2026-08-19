@@ -46,6 +46,7 @@ public class PointCaptureVillage : MonoBehaviour
     private bool hasOwnerPresence;
     private PointCaptureBoard board;
     private PointCaptureMatch match;
+    private bool deferCaptureSimulation;
 
     public string VillageName => villageName;
     public CaptureOwner StartingOwner => startingOwner;
@@ -170,9 +171,32 @@ public class PointCaptureVillage : MonoBehaviour
             ScanOccupants();
         }
 
-        TickCapture(Time.deltaTime);
+        if (!deferCaptureSimulation)
+        {
+            TickCapture(Time.deltaTime);
+        }
+
         RefreshDiscColor();
         RefreshProgressLabel();
+    }
+
+    public void SetDeferCaptureSimulation(bool defer)
+    {
+        deferCaptureSimulation = defer;
+    }
+
+    public void ApplyNetworkCaptureState(CaptureOwner owner, CaptureOwner capturing, float progress)
+    {
+        CaptureOwner previousOwner = currentOwner;
+        currentOwner = owner;
+        capturingOwner = capturing;
+        captureProgress = Mathf.Clamp01(progress);
+        RefreshVisuals();
+
+        if (previousOwner != owner && board != null)
+        {
+            board.NotifyTerritoryChanged();
+        }
     }
 
     public bool ContainsPoint(Vector3 worldPosition)

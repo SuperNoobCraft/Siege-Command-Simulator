@@ -296,8 +296,8 @@ public class PointCaptureBoard : MonoBehaviour
     }
 
     /// <summary>
-    /// Nearest owned village disc suitable for retreat recovery. Prefers villages without active combat.
-    /// If the regiment just lost a fight inside a village, that village is skipped so they flee elsewhere.
+    /// Retreat recovery village. Prefers a friendly village with no enemy occupants.
+    /// If none are safe, falls back to the nearest friendly village even if enemies are present.
     /// </summary>
     public PointCaptureVillage FindBestRecoveryVillage(CaptureOwner owner, Vector3 fromPosition)
     {
@@ -307,16 +307,18 @@ public class PointCaptureBoard : MonoBehaviour
         }
 
         PointCaptureVillage currentVillage = GetVillageContaining(fromPosition);
-        bool currentFightIsLost = currentVillage != null
-            && currentVillage.CurrentOwner == owner
-            && currentVillage.HasEnemyOccupants(owner);
+        int ownedVillageCount = CountOwned(owner);
+        bool skipCurrentVillage = ShouldSkipCurrentVillageForRetreat(
+            owner,
+            currentVillage,
+            ownedVillageCount);
 
         PointCaptureVillage bestSafe = null;
         float bestSafeDistance = float.MaxValue;
-        PointCaptureVillage bestOther = null;
-        float bestOtherDistance = float.MaxValue;
-        PointCaptureVillage bestFallback = null;
-        float bestFallbackDistance = float.MaxValue;
+        PointCaptureVillage bestOwned = null;
+        float bestOwnedDistance = float.MaxValue;
+        PointCaptureVillage nearestOwned = null;
+        float nearestOwnedDistance = float.MaxValue;
 
         for (int i = 0; i < villages.Length; i++)
         {
@@ -327,25 +329,24 @@ public class PointCaptureBoard : MonoBehaviour
             }
 
             float distance = PointCaptureVillage.GetHorizontalDistance(fromPosition, village.Position);
-            if (distance < bestFallbackDistance)
+            if (distance < nearestOwnedDistance)
             {
-                bestFallback = village;
-                bestFallbackDistance = distance;
+                nearestOwned = village;
+                nearestOwnedDistance = distance;
             }
 
-            bool lostThisVillage = currentFightIsLost && village == currentVillage;
-            if (lostThisVillage)
+            if (skipCurrentVillage && village == currentVillage)
             {
                 continue;
             }
 
-            if (distance < bestOtherDistance)
+            if (distance < bestOwnedDistance)
             {
-                bestOther = village;
-                bestOtherDistance = distance;
+                bestOwned = village;
+                bestOwnedDistance = distance;
             }
 
-            if (!village.HasCombatInZone && distance < bestSafeDistance)
+            if (!village.HasEnemyOccupants(owner) && distance < bestSafeDistance)
             {
                 bestSafe = village;
                 bestSafeDistance = distance;
@@ -357,12 +358,33 @@ public class PointCaptureBoard : MonoBehaviour
             return bestSafe;
         }
 
-        if (bestOther != null)
+        if (bestOwned != null)
         {
-            return bestOther;
+            return bestOwned;
         }
 
-        return bestFallback;
+        return nearestOwned;
+    }
+
+    public bool HasSafeRecoveryVillage(CaptureOwner owner, Vector3 fromPosition)
+    {
+        PointCaptureVillage village = FindBestRecoveryVillage(owner, fromPosition);
+        return village != null && !village.HasEnemyOccupants(owner);
+    }
+
+    private static bool ShouldSkipCurrentVillageForRetreat(
+        CaptureOwner owner,
+        PointCaptureVillage currentVillage,
+        int ownedVillageCount)
+    {
+        if (currentVillage == null || currentVillage.CurrentOwner != owner || ownedVillageCount <= 1)
+        {
+            return false;
+        }
+
+        bool lostFightHere = currentVillage.HasEnemyOccupants(owner);
+        bool capturedFightSite = currentVillage.StartingOwner != owner;
+        return lostFightHere || capturedFightSite;
     }
 
     public bool TryGetRecoveryDestination(CaptureOwner owner, Vector3 fromPosition, out Vector3 destination)

@@ -99,8 +99,33 @@ public class PointCaptureMatch : MonoBehaviour
     public string ResultMessage => resultMessage;
     public PointCaptureBoard Board => board;
     public PointCaptureSpawner Spawner => spawner;
+    public string LocalNetworkToken => localInstanceToken;
+    public bool IsNetworkHost
+    {
+        get
+        {
+            if (networking == null)
+            {
+                return true;
+            }
+
+            try
+            {
+                return networking.type == UserType.Host;
+            }
+            catch (Exception)
+            {
+                return true;
+            }
+        }
+    }
 
     public event Action<MatchState> StateChanged;
+
+    public void SendNetworkMessage(string message)
+    {
+        SendNetwork(message);
+    }
 
 #if UNITY_EDITOR
     [ContextMenu("Point Capture/Generate Placeholder Scene Setup")]
@@ -141,6 +166,15 @@ public class PointCaptureMatch : MonoBehaviour
 
         networking = FindObjectOfType<vGear_Networking>();
         BindNetworking();
+        if (GetComponent<PointCaptureNetworkSession>() == null)
+        {
+            gameObject.AddComponent<PointCaptureNetworkSession>();
+        }
+
+        if (SiegePlayEnvironment.Instance == null)
+        {
+            gameObject.AddComponent<SiegePlayEnvironment>();
+        }
     }
 
     private void Start()
@@ -444,21 +478,7 @@ public class PointCaptureMatch : MonoBehaviour
 
     public void HandleTerritoryChanged()
     {
-        if (!IsPlaying || board == null)
-        {
-            return;
-        }
-
-        int redVillages = board.CountOwned(CaptureOwner.Red);
-        int yellowVillages = board.CountOwned(CaptureOwner.Yellow);
-        if (redVillages == 0)
-        {
-            EndMatch(CaptureOwner.Yellow, "Yellow holds every remaining village.");
-        }
-        else if (yellowVillages == 0)
-        {
-            EndMatch(CaptureOwner.Red, "Red holds every remaining village.");
-        }
+        TryEndIfSideHasNoVillages();
     }
 
     private void TickPlay(float deltaTime)
@@ -492,15 +512,8 @@ public class PointCaptureMatch : MonoBehaviour
             armyEconomy.TickRecovery(deltaTime);
         }
 
-        if (redVillages == 0)
+        if (TryEndIfSideHasNoVillages())
         {
-            EndMatch(CaptureOwner.Yellow, "Yellow holds every remaining village.");
-            return;
-        }
-
-        if (yellowVillages == 0)
-        {
-            EndMatch(CaptureOwner.Red, "Red holds every remaining village.");
             return;
         }
 
@@ -508,6 +521,30 @@ public class PointCaptureMatch : MonoBehaviour
         {
             EndByScore();
         }
+    }
+
+    private bool TryEndIfSideHasNoVillages()
+    {
+        if (!IsPlaying || board == null)
+        {
+            return false;
+        }
+
+        int redVillages = board.CountOwned(CaptureOwner.Red);
+        int yellowVillages = board.CountOwned(CaptureOwner.Yellow);
+        if (redVillages == 0 && yellowVillages > 0)
+        {
+            EndMatch(CaptureOwner.Yellow, "Red has no villages left.");
+            return true;
+        }
+
+        if (yellowVillages == 0 && redVillages > 0)
+        {
+            EndMatch(CaptureOwner.Red, "Yellow has no villages left.");
+            return true;
+        }
+
+        return false;
     }
 
     private void EndByScore()
@@ -541,6 +578,23 @@ public class PointCaptureMatch : MonoBehaviour
         nextReadyAnnounceTime = 0f;
         SetState(MatchState.Ended);
         Log(message + " Winner: " + CaptureTeams.GetDisplayName(matchWinner) + ".");
+        PointCaptureNetworkSession.Instance?.NotifyMatchEnded(matchWinner, message);
+    }
+
+    public void ApplyNetworkEnd(CaptureOwner matchWinner, string message)
+    {
+        if (currentState == MatchState.Ended)
+        {
+            return;
+        }
+
+        winner = matchWinner;
+        resultMessage = string.IsNullOrEmpty(message) ? "Match ended." : message;
+        yellowResetRequested = false;
+        redResetRequested = false;
+        nextReadyAnnounceTime = 0f;
+        SetState(MatchState.Ended);
+        Log(resultMessage + " Winner: " + CaptureTeams.GetDisplayName(matchWinner) + ".");
     }
 
     private void ResetMatch(bool startImmediately)

@@ -46,6 +46,18 @@ public class SiegePlayEnvironment : MonoBehaviour
         ActiveMode == SiegePlayEnvironmentMode.Cave || ActiveMode == SiegePlayEnvironmentMode.Hmd;
     public static bool IsCaveMode => ActiveMode == SiegePlayEnvironmentMode.Cave;
 
+    public static string DescribeVcastEnvironment()
+    {
+        try
+        {
+            return vCast.environment.ToString();
+        }
+        catch (Exception exception)
+        {
+            return "err " + exception.Message;
+        }
+    }
+
     private void Awake()
     {
         if (Instance != null && Instance != this)
@@ -55,6 +67,20 @@ public class SiegePlayEnvironment : MonoBehaviour
 
         Instance = this;
         ApplyResolvedMode(ResolveMode(playEnvironment));
+    }
+
+    private void LateUpdate()
+    {
+        if (playEnvironment != SiegePlayEnvironmentMode.Auto)
+        {
+            return;
+        }
+
+        SiegePlayEnvironmentMode next = ResolveMode(SiegePlayEnvironmentMode.Auto);
+        if (next != resolvedMode)
+        {
+            ApplyResolvedMode(next);
+        }
     }
 
     public static void RefreshActiveInstance()

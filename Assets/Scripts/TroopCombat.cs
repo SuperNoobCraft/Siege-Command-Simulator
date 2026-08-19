@@ -1453,6 +1453,15 @@ public class TroopCombat : MonoBehaviour
             return;
         }
 
+        PointCaptureNetworkSession captureSession = PointCaptureNetworkSession.Instance;
+        if (captureSession != null
+            && captureSession.IsSyncActive
+            && !captureSession.IsLocallyOwnedTroop(target))
+        {
+            captureSession.NotifyInflictedDamage(this, target, amount, isRangedAttack);
+            return;
+        }
+
         target.TakeDamage(amount, this, isRangedAttack);
     }
 
@@ -1749,6 +1758,12 @@ public class TroopCombat : MonoBehaviour
         {
             session.NotifyRetreatDestinationFromAuthority(motor, destination);
         }
+
+        PointCaptureNetworkSession captureSession = PointCaptureNetworkSession.Instance;
+        if (captureSession != null && captureSession.IsSyncActive)
+        {
+            captureSession.NotifyRetreatDestinationFromAuthority(motor, destination);
+        }
     }
 
     private void TryRecoverRetreatMovement(RtsCampManager campManager)
@@ -1884,8 +1899,7 @@ public class TroopCombat : MonoBehaviour
 
         CaptureOwner owner = CaptureTeams.FromTroopFaction(faction);
         PointCaptureVillage village = board.FindBestRecoveryVillage(owner, transform.position);
-
-        if (village == null || village.HasCombatInZone)
+        if (village == null)
         {
             return false;
         }
@@ -1896,7 +1910,12 @@ public class TroopCombat : MonoBehaviour
             return false;
         }
 
-        return !village.HasHostilePressure;
+        if (board.HasSafeRecoveryVillage(owner, transform.position) && village.HasEnemyOccupants(owner))
+        {
+            return false;
+        }
+
+        return true;
     }
 
     private bool ShouldUseGateInsideWaypoint(RtsCampManager campManager)
@@ -2822,7 +2841,7 @@ public class TroopCombat : MonoBehaviour
 
     private void NotifyOwnedCombatAuthorityChanged()
     {
-        if (!SiegeMatchSettings.IsSiegePvpMode || UsesRemoteCombatAuthority())
+        if (UsesRemoteCombatAuthority())
         {
             return;
         }
@@ -2831,6 +2850,12 @@ public class TroopCombat : MonoBehaviour
         if (session != null && session.IsMatchRunning)
         {
             session.NotifyOwnedTroopCombatChanged(this);
+        }
+
+        PointCaptureNetworkSession captureSession = PointCaptureNetworkSession.Instance;
+        if (captureSession != null && captureSession.IsSyncActive)
+        {
+            captureSession.NotifyOwnedTroopCombatChanged(this);
         }
     }
 
@@ -2899,6 +2924,12 @@ public class TroopCombat : MonoBehaviour
 
     private bool ShouldIgnoreLocalCombatDamage()
     {
+        PointCaptureNetworkSession captureSession = PointCaptureNetworkSession.Instance;
+        if (captureSession != null && captureSession.IsSyncActive)
+        {
+            return !captureSession.IsLocallyOwnedTroop(this);
+        }
+
         if (!SiegeMatchSettings.IsSiegePvpMode)
         {
             return false;

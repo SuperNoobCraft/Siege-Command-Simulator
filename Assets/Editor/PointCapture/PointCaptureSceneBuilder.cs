@@ -3,6 +3,7 @@ using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
+using Votanic.vXR.vGear;
 
 /// <summary>
 /// Right-click in the Hierarchy, Project window, or Tools menu to generate the Point Capture
@@ -23,7 +24,139 @@ public static class PointCaptureSceneBuilder
     private const float CorridorWidth = 12f;
     private const float CaptureRadius = ControlRadius;
 
-    [MenuItem("GameObject/Point Capture/Generate Placeholder Scene Setup", false, 10)]
+    [MenuItem("Tools/Point Capture/Bind Wand Commander From vGear")]
+    public static void BindWandCommanderFromVgear()
+    {
+        PointCaptureLocalInput localInput = UnityEngine.Object.FindObjectOfType<PointCaptureLocalInput>();
+        if (localInput == null)
+        {
+            EditorUtility.DisplayDialog(
+                "Point Capture",
+                "Open the Point Capture scene first (needs PointCaptureLocalInput).",
+                "OK");
+            return;
+        }
+
+        VotanicWandRtsCommander commander = FindExistingVotanicCommander();
+        if (commander == null)
+        {
+            EditorUtility.DisplayDialog(
+                "Point Capture",
+                "No VotanicWandRtsCommander found on vGear / Controller.\n\n"
+                + "Copy the whole vGear root from Hyrule Field into this scene first.",
+                "OK");
+            return;
+        }
+
+        SerializedObject inputSo = new SerializedObject(localInput);
+        inputSo.FindProperty("wandCommander").objectReferenceValue = commander;
+        inputSo.ApplyModifiedPropertiesWithoutUndo();
+
+        PointCaptureRaiseMenu raiseMenu = UnityEngine.Object.FindObjectOfType<PointCaptureRaiseMenu>();
+        if (raiseMenu != null)
+        {
+            SerializedObject raiseSo = new SerializedObject(raiseMenu);
+            raiseSo.FindProperty("wandCommander").objectReferenceValue = commander;
+            raiseSo.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        SerializedObject commanderSo = new SerializedObject(commander);
+        commanderSo.FindProperty("wandOrigin").objectReferenceValue = null;
+        GameObject ground = GameObject.Find("RTS_Ground");
+        if (ground != null)
+        {
+            commanderSo.FindProperty("groundCollider").objectReferenceValue = ground.GetComponent<Collider>();
+            int groundLayer = LayerMask.NameToLayer("RTS_Ground");
+            if (groundLayer >= 0)
+            {
+                commanderSo.FindProperty("groundLayers").intValue = 1 << groundLayer;
+            }
+        }
+
+        commanderSo.ApplyModifiedPropertiesWithoutUndo();
+
+        VotanicWandRtsCommander[] all = UnityEngine.Object.FindObjectsOfType<VotanicWandRtsCommander>(true);
+        int disabled = 0;
+        for (int i = 0; i < all.Length; i++)
+        {
+            if (all[i] == null || all[i] == commander)
+            {
+                continue;
+            }
+
+            if (all[i].GetComponent<PointCaptureLocalInput>() != null
+                || all[i].GetComponent<PointCaptureMatch>() != null)
+            {
+                Undo.RecordObject(all[i], "Disable extra wand commander");
+                all[i].enabled = false;
+                disabled++;
+            }
+        }
+
+        EditorSceneManager.MarkSceneDirty(EditorSceneManager.GetActiveScene());
+        EditorUtility.DisplayDialog(
+            "Point Capture",
+            "Bound wand commander: " + GetHierarchyPath(commander.transform)
+            + "\nCleared Wand Origin (uses live vGear.controller)."
+            + (disabled > 0 ? "\nDisabled " + disabled + " extra commander(s) on Systems." : string.Empty),
+            "OK");
+    }
+
+    private static VotanicWandRtsCommander FindExistingVotanicCommander()
+    {
+        VotanicWandRtsCommander[] commanders = UnityEngine.Object.FindObjectsOfType<VotanicWandRtsCommander>(true);
+        VotanicWandRtsCommander onController = null;
+        VotanicWandRtsCommander onVgear = null;
+        VotanicWandRtsCommander any = null;
+        for (int i = 0; i < commanders.Length; i++)
+        {
+            VotanicWandRtsCommander commander = commanders[i];
+            if (commander == null)
+            {
+                continue;
+            }
+
+            any = commander;
+            if (commander.GetComponent<vGear_Controller>() != null
+                || commander.GetComponentInParent<vGear_Controller>() != null)
+            {
+                onController = commander;
+                break;
+            }
+
+            Transform current = commander.transform;
+            while (current != null)
+            {
+                if (current.name.IndexOf("vGear", System.StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    onVgear = commander;
+                    break;
+                }
+
+                current = current.parent;
+            }
+        }
+
+        if (onController != null)
+        {
+            return onController;
+        }
+
+        return onVgear != null ? onVgear : any;
+    }
+
+    private static string GetHierarchyPath(Transform transform)
+    {
+        string path = transform.name;
+        Transform parent = transform.parent;
+        while (parent != null)
+        {
+            path = parent.name + "/" + path;
+            parent = parent.parent;
+        }
+
+        return path;
+    }
     [MenuItem("Assets/Create/Point Capture/Generate Placeholder Scene Setup", false, 2000)]
     [MenuItem("Tools/Point Capture/Generate Placeholder Scene Setup")]
     public static void GeneratePlaceholderSceneSetup()
@@ -230,6 +363,7 @@ public static class PointCaptureSceneBuilder
         PointCaptureMatch match = systems.AddComponent<PointCaptureMatch>();
         PointCaptureBoard board = systems.AddComponent<PointCaptureBoard>();
         PointCaptureSpawner spawner = systems.AddComponent<PointCaptureSpawner>();
+        systems.AddComponent<PointCaptureNetworkSession>();
         PointCaptureArmyEconomy armyEconomy = systems.AddComponent<PointCaptureArmyEconomy>();
         PointCaptureRaiseMenu raiseMenu = systems.AddComponent<PointCaptureRaiseMenu>();
         PointCaptureLocalInput localInput = systems.AddComponent<PointCaptureLocalInput>();
@@ -237,7 +371,7 @@ public static class PointCaptureSceneBuilder
         PointCaptureTerritoryView territory = systems.AddComponent<PointCaptureTerritoryView>();
         RtsCampManager camps = systems.AddComponent<RtsCampManager>();
         SiegePlayEnvironment playEnvironment = systems.AddComponent<SiegePlayEnvironment>();
-        VotanicWandRtsCommander commander = systems.AddComponent<VotanicWandRtsCommander>();
+        VotanicWandRtsCommander commander = FindExistingVotanicCommander();
 
         SerializedObject boardSo = new SerializedObject(board);
         SerializedProperty villageProp = boardSo.FindProperty("villages");
@@ -331,23 +465,21 @@ public static class PointCaptureSceneBuilder
         territory.Configure(board, redFill, yellowFill);
 
         SetupCameraAndLight();
-        SerializedObject commanderSo = new SerializedObject(commander);
-        Camera mainCamera = Camera.main;
-        if (mainCamera != null)
+        if (commander != null)
         {
-            commanderSo.FindProperty("wandOrigin").objectReferenceValue = mainCamera.transform;
-        }
+            SerializedObject commanderSo = new SerializedObject(commander);
+            commanderSo.FindProperty("wandOrigin").objectReferenceValue = null;
+            commanderSo.FindProperty("enableDesktopFallback").boolValue = true;
+            commanderSo.FindProperty("useDesktopMouseRay").boolValue = true;
+            Collider groundCollider = ground.GetComponent<Collider>();
+            commanderSo.FindProperty("groundCollider").objectReferenceValue = groundCollider;
+            if (groundLayer >= 0)
+            {
+                commanderSo.FindProperty("groundLayers").intValue = 1 << groundLayer;
+            }
 
-        commanderSo.FindProperty("enableDesktopFallback").boolValue = true;
-        commanderSo.FindProperty("useDesktopMouseRay").boolValue = true;
-        Collider groundCollider = ground.GetComponent<Collider>();
-        commanderSo.FindProperty("groundCollider").objectReferenceValue = groundCollider;
-        if (groundLayer >= 0)
-        {
-            commanderSo.FindProperty("groundLayers").intValue = 1 << groundLayer;
+            commanderSo.ApplyModifiedPropertiesWithoutUndo();
         }
-
-        commanderSo.ApplyModifiedPropertiesWithoutUndo();
 
         board.BindVillages();
         for (int i = 0; i < villages.Length; i++)

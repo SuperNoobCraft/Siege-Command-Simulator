@@ -22,6 +22,9 @@ public class PointCaptureLocalInput : MonoBehaviour
     [SerializeField] private KeyCode startKey = KeyCode.Space;
     [SerializeField] private KeyCode restartKey = KeyCode.R;
 
+    [Header("Input")]
+    [SerializeField, Min(0.1f)] private float raiseOpenGraceSeconds = 0.42f;
+
     [Header("Spawns")]
     [Tooltip("Yellow / player 1 start. Falls back to a scene object named YellowSpawnPoint or StartPoint.")]
     [SerializeField] private Transform yellowSpawnPoint;
@@ -38,13 +41,37 @@ public class PointCaptureLocalInput : MonoBehaviour
     {
         ignoreRaiseUntil = Time.unscaledTime + Mathf.Max(0.1f, seconds);
         pointerPressOnCommandableTroop = true;
+        PointCapturePointerInput.BeginAfterMenuCloseCooldown();
     }
     private bool pointerWasHeld;
     private float pointerPressUnscaledTime;
     private bool pointerPressOnCommandableTroop;
 
     public CaptureOwner CommandFaction => commandFaction;
+    public VotanicWandRtsCommander DebugWandCommander => wandCommander;
     public string LastFailMessage => Time.unscaledTime < raiseFailUntil ? raiseFailMessage : string.Empty;
+
+    public string BuildRaiseAimDebug()
+    {
+        if (board == null)
+        {
+            board = PointCaptureBoard.Instance;
+        }
+
+        if (wandCommander == null || board == null)
+        {
+            return "raise: no ray";
+        }
+
+        Ray ray = wandCommander.BuildGameplayRay();
+        bool hasHit = Physics.Raycast(ray, out RaycastHit hit, 2000f, ~0, QueryTriggerInteraction.Collide);
+        Vector3 point = hasHit ? hit.point : ray.GetPoint(20f);
+        PointCaptureVillage village = board.GetVillageContaining(point);
+        bool canRaise = board.CanRaiseAt(commandFaction, point, out string fail);
+        return "raisePt " + point.ToString("F1")
+            + "  village=" + (village != null ? village.VillageName + "/" + village.CurrentOwner : "none")
+            + "\ncanRaise=" + (canRaise ? "Y" : "N " + fail);
+    }
     public static PointCaptureLocalInput Instance { get; private set; }
 
     public void Configure(
@@ -86,11 +113,7 @@ public class PointCaptureLocalInput : MonoBehaviour
             spawner = GetComponent<PointCaptureSpawner>();
         }
 
-        if (wandCommander == null)
-        {
-            wandCommander = FindObjectOfType<VotanicWandRtsCommander>();
-        }
-
+        BindVotanicRigCommander();
         originalWandCommanderEnabled = wandCommander == null ? true : wandCommander.enabled;
 
         BindSpawnPoints();
@@ -117,6 +140,7 @@ public class PointCaptureLocalInput : MonoBehaviour
         }
 
         EnsureRaiseMenu();
+        BindVotanicRigCommander();
         SyncWandCommanderForRaiseMenu();
 
         if (match == null)
@@ -181,6 +205,11 @@ public class PointCaptureLocalInput : MonoBehaviour
             return;
         }
 
+        if (raiseMenu != null && raiseMenu.ClosedThisFrame)
+        {
+            return;
+        }
+
         if (Time.unscaledTime < ignoreRaiseUntil)
         {
             return;
@@ -239,7 +268,7 @@ public class PointCaptureLocalInput : MonoBehaviour
             return false;
         }
 
-        if (SiegeVrInput.WasPointerPressedThisFrame())
+        if (PointCapturePointerInput.WasPointerPressedThisFrame())
         {
             return true;
         }
@@ -285,6 +314,7 @@ public class PointCaptureLocalInput : MonoBehaviour
         }
 
         raiseMenu.Show(aimPoint, commandFaction);
+        ignoreRaiseUntil = Time.unscaledTime + raiseOpenGraceSeconds;
     }
 
     private bool IsHoveringCommandableTroop()
@@ -422,27 +452,110 @@ public class PointCaptureLocalInput : MonoBehaviour
 
     private void BindRaiseMenu()
     {
-        if (raiseMenu != null)
+        if (raiseMenu == null)
         {
-            raiseMenu.SetFailureHandler(ShowFail);
-            if (match != null && spawner != null)
-            {
-                raiseMenu.Configure(match, spawner);
-            }
+            return;
+        }
+
+        raiseMenu.SetFailureHandler(ShowFail);
+        if (match != null && spawner != null)
+        {
+            raiseMenu.Configure(match, spawner);
         }
     }
 
     private void SyncWandCommanderForRaiseMenu()
     {
+        if (wandCommander == null)
+        {
+            return;
+        }
+
         bool menuOpen = raiseMenu != null && raiseMenu.IsOpen;
+        wandCommander.enabled = originalWandCommanderEnabled && !menuOpen;
+    }
+
+    private void BindVotanicRigCommander()
+    {
+        VotanicWandRtsCommander rigCommander = FindCommanderOnVotanicRig();
+        if (rigCommander == null)
+        {
+            if (wandCommander == null)
+            {
+                wandCommander = FindObjectOfType<VotanicWandRtsCommander>();
+            }
+
+            wandCommander?.ClearCameraWandOrigin();
+            return;
+        }
+
         VotanicWandRtsCommander[] commanders = FindObjectsOfType<VotanicWandRtsCommander>(true);
         for (int i = 0; i < commanders.Length; i++)
         {
-            if (commanders[i] != null)
+            VotanicWandRtsCommander extra = commanders[i];
+            if (extra == null || extra == rigCommander)
             {
-                commanders[i].enabled = originalWandCommanderEnabled && !menuOpen;
+                continue;
+            }
+
+            if (extra.GetComponent<PointCaptureLocalInput>() != null
+                || extra.GetComponent<PointCaptureMatch>() != null)
+            {
+                extra.enabled = false;
             }
         }
+
+        wandCommander = rigCommander;
+        wandCommander.enabled = true;
+        wandCommander.ClearCameraWandOrigin();
+        originalWandCommanderEnabled = true;
+        raiseMenu?.SetWandCommander(wandCommander);
+    }
+
+    private static VotanicWandRtsCommander FindCommanderOnVotanicRig()
+    {
+        VotanicWandRtsCommander[] commanders = FindObjectsOfType<VotanicWandRtsCommander>(true);
+        VotanicWandRtsCommander onController = null;
+        VotanicWandRtsCommander onVgear = null;
+        for (int i = 0; i < commanders.Length; i++)
+        {
+            VotanicWandRtsCommander commander = commanders[i];
+            if (commander == null)
+            {
+                continue;
+            }
+
+            if (commander.GetComponent<vGear_Controller>() != null
+                || commander.GetComponentInParent<vGear_Controller>() != null)
+            {
+                onController = commander;
+                break;
+            }
+
+            if (onVgear == null && IsUnderNamedParent(commander.transform, "vGear"))
+            {
+                onVgear = commander;
+            }
+        }
+
+        return onController != null ? onController : onVgear;
+    }
+
+    private static bool IsUnderNamedParent(Transform transform, string namePart)
+    {
+        Transform current = transform;
+        while (current != null)
+        {
+            if (!string.IsNullOrEmpty(current.name)
+                && current.name.IndexOf(namePart, StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return true;
+            }
+
+            current = current.parent;
+        }
+
+        return false;
     }
 
     private static void EnsureEventSystem()

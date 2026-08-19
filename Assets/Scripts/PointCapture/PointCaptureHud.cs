@@ -12,6 +12,7 @@ public class PointCaptureHud : MonoBehaviour
     [SerializeField] private PointCaptureLocalInput localInput;
     [SerializeField] private Text statusText;
     [SerializeField] private Text shadowText;
+    [SerializeField] private bool showAimDebug = true;
 
     public void Configure(PointCaptureMatch captureMatch, PointCaptureLocalInput input, Text text, Text shadow)
     {
@@ -27,6 +28,24 @@ public class PointCaptureHud : MonoBehaviour
         {
             match = PointCaptureMatch.Instance;
         }
+
+        ExpandDebugHud();
+    }
+
+    private void ExpandDebugHud()
+    {
+        if (!showAimDebug || statusText == null)
+        {
+            return;
+        }
+
+        statusText.fontSize = 18;
+        statusText.rectTransform.sizeDelta = new Vector2(980f, 780f);
+        if (shadowText != null)
+        {
+            shadowText.fontSize = 18;
+            shadowText.rectTransform.sizeDelta = statusText.rectTransform.sizeDelta;
+        }
     }
 
     private void Update()
@@ -37,6 +56,11 @@ public class PointCaptureHud : MonoBehaviour
         }
 
         string status = BuildStatus();
+        if (showAimDebug)
+        {
+            status += "\n\n" + BuildAimDebug();
+        }
+
         statusText.text = status;
         if (shadowText != null)
         {
@@ -112,5 +136,21 @@ public class PointCaptureHud : MonoBehaviour
         int minutes = total / 60;
         int remainder = total % 60;
         return minutes.ToString() + ":" + remainder.ToString("00");
+    }
+
+    private string BuildAimDebug()
+    {
+        string env = "env " + SiegePlayEnvironment.ActiveMode
+            + " cfg=" + (SiegePlayEnvironment.Instance != null
+                ? SiegePlayEnvironment.Instance.ConfiguredMode.ToString()
+                : "none")
+            + " vCast=" + SiegePlayEnvironment.DescribeVcastEnvironment()
+            + " desk=" + (SiegePlayEnvironment.IsDesktopInput ? "Y" : "N")
+            + " xr=" + (SiegePlayEnvironment.IsTrackedXr ? "Y" : "N");
+
+        VotanicWandRtsCommander commander = localInput != null ? localInput.DebugWandCommander : null;
+        string aim = commander != null ? commander.BuildAimDebugText() : "no wand commander";
+        string raise = localInput != null ? localInput.BuildRaiseAimDebug() : string.Empty;
+        return env + "\n" + SiegeVrInput.BuildInputDebugText() + "\n" + aim + "\n" + raise;
     }
 }

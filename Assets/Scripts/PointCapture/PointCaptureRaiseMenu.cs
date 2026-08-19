@@ -26,11 +26,12 @@ public class PointCaptureRaiseMenu : MonoBehaviour
     [SerializeField, Min(1f)] private float referenceViewDistance = 10f;
     [SerializeField, Min(0.001f)] private float minWorldScale = 0.007f;
     [SerializeField, Min(0.001f)] private float maxWorldScale = 0.04f;
+    [SerializeField, Min(0.1f)] private float menuInputGraceSeconds = 0.42f;
 
     private Vector3 pendingWorldPosition;
     private CaptureOwner pendingOwner = CaptureOwner.Neutral;
     private Action<string> onRaiseFailed;
-    private int openedOnFrame = -1;
+    private float ignoreMenuInputUntilUnscaledTime;
     private Collider infantryCollider;
     private Collider archerCollider;
     private Collider panelCollider;
@@ -50,7 +51,14 @@ public class PointCaptureRaiseMenu : MonoBehaviour
         match = captureMatch;
         spawner = captureSpawner;
         EnsureUi();
-        Hide();
+    }
+
+    public void SetWandCommander(VotanicWandRtsCommander commander)
+    {
+        if (commander != null)
+        {
+            wandCommander = commander;
+        }
     }
 
     public void SetFailureHandler(Action<string> handler)
@@ -95,18 +103,13 @@ public class PointCaptureRaiseMenu : MonoBehaviour
 
         UpdateButtonHover();
 
-        if (Time.frameCount == openedOnFrame)
-        {
-            return;
-        }
-
         if (Input.GetKeyDown(KeyCode.Escape))
         {
             Hide(suppressReopen: true);
             return;
         }
 
-        if (!SiegeVrInput.WasPointerPressedThisFrame())
+        if (!PointCapturePointerInput.WasPointerPressedThisFrame())
         {
             return;
         }
@@ -124,10 +127,12 @@ public class PointCaptureRaiseMenu : MonoBehaviour
             return;
         }
 
-        if (!RayHitsCollider(ray, panelCollider))
+        if (Time.unscaledTime < ignoreMenuInputUntilUnscaledTime)
         {
-            Hide(suppressReopen: true);
+            return;
         }
+
+        Hide(suppressReopen: true);
     }
 
     public void Show(Vector3 worldPosition, CaptureOwner owner)
@@ -160,7 +165,7 @@ public class PointCaptureRaiseMenu : MonoBehaviour
 
         canvas.gameObject.SetActive(true);
         panel.gameObject.SetActive(true);
-        openedOnFrame = Time.frameCount;
+        ignoreMenuInputUntilUnscaledTime = Time.unscaledTime + Mathf.Max(0.1f, menuInputGraceSeconds);
         PlaceInWorld(worldPosition);
         FaceViewer();
         UpdateButtonHover();
@@ -188,8 +193,10 @@ public class PointCaptureRaiseMenu : MonoBehaviour
         if (wasOpen)
         {
             lastClosedFrame = Time.frameCount;
+            ignoreMenuInputUntilUnscaledTime = 0f;
             if (suppressReopen)
             {
+                PointCapturePointerInput.BeginAfterMenuCloseCooldown();
                 SuppressReopen();
             }
         }

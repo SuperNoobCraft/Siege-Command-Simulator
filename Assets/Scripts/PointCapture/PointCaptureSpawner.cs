@@ -1,3 +1,4 @@
+using System;
 using UnityEngine;
 
 /// <summary>
@@ -28,6 +29,8 @@ public class PointCaptureSpawner : MonoBehaviour
     public GameObject RedArcherPrefab => redArcherPrefab;
     public GameObject YellowInfantryPrefab => yellowInfantryPrefab;
     public GameObject YellowArcherPrefab => yellowArcherPrefab;
+
+    private int nextRegimentSpawnId = 100;
 
     private void Awake()
     {
@@ -60,6 +63,8 @@ public class PointCaptureSpawner : MonoBehaviour
 
     public void ClearSpawnedUnits()
     {
+        nextRegimentSpawnId = 100;
+
         if (unitsRoot == null)
         {
             return;
@@ -129,16 +134,42 @@ public class PointCaptureSpawner : MonoBehaviour
             return false;
         }
 
-        if (SpawnRegiment(owner, regimentType, worldPosition) == null)
+        GameObject spawned = SpawnRegiment(owner, regimentType, worldPosition, allocateSpawnId: true);
+        if (spawned == null)
         {
             failReason = "Missing regiment prefab.";
             return false;
         }
 
+        PointCaptureNetworkSession networkSession = PointCaptureNetworkSession.Instance;
+        if (networkSession != null)
+        {
+            networkSession.NotifyLocalRegimentSpawned(owner, regimentType, spawned.transform.position, GetSpawnId(spawned));
+        }
+
         return true;
     }
 
+    public GameObject SpawnRegimentFromNetwork(
+        CaptureOwner owner,
+        RegimentType regimentType,
+        Vector3 worldPosition,
+        int regimentSpawnId)
+    {
+        return SpawnRegiment(owner, regimentType, worldPosition, allocateSpawnId: false, regimentSpawnId);
+    }
+
     public GameObject SpawnRegiment(CaptureOwner owner, RegimentType regimentType, Vector3 worldPosition)
+    {
+        return SpawnRegiment(owner, regimentType, worldPosition, allocateSpawnId: true);
+    }
+
+    private GameObject SpawnRegiment(
+        CaptureOwner owner,
+        RegimentType regimentType,
+        Vector3 worldPosition,
+        bool allocateSpawnId,
+        int regimentSpawnId = -1)
     {
         GameObject prefab = GetPrefab(owner, regimentType);
         if (prefab == null)
@@ -162,7 +193,8 @@ public class PointCaptureSpawner : MonoBehaviour
             : Quaternion.identity;
 
         GameObject instance = Instantiate(prefab, spawnPosition, rotation, unitsRoot);
-        instance.name = CaptureTeams.GetDisplayName(owner) + "_" + regimentType;
+        int spawnId = allocateSpawnId ? AllocateRegimentSpawnId() : regimentSpawnId;
+        instance.name = BuildRegimentName(owner, regimentType, spawnId);
         PrepareSpawnedRegiment(instance, playRaiseReveal: true);
         return instance;
     }
@@ -184,10 +216,15 @@ public class PointCaptureSpawner : MonoBehaviour
 
         towardCenter.Normalize();
         Vector3 spawnPoint = home.Position + towardCenter * startingSpawnOffset + sideOffset.normalized * 0.5f;
-        SpawnRegimentInstant(owner, RegimentType.Infantry, spawnPoint);
+        SpawnRegimentInstant(owner, RegimentType.Infantry, spawnPoint, GetStartingSpawnId(owner));
     }
 
-    private GameObject SpawnRegimentInstant(CaptureOwner owner, RegimentType regimentType, Vector3 worldPosition)
+    private static int GetStartingSpawnId(CaptureOwner owner)
+    {
+        return owner == CaptureOwner.Yellow ? 1 : 2;
+    }
+
+    private GameObject SpawnRegimentInstant(CaptureOwner owner, RegimentType regimentType, Vector3 worldPosition, int regimentSpawnId)
     {
         GameObject prefab = GetPrefab(owner, regimentType);
         if (prefab == null)
@@ -197,9 +234,37 @@ public class PointCaptureSpawner : MonoBehaviour
 
         Vector3 spawnPosition = RtsGroundUtility.ProjectPointOntoGround(worldPosition, spawnSurfaceOffset);
         GameObject instance = Instantiate(prefab, spawnPosition, Quaternion.identity, unitsRoot);
-        instance.name = CaptureTeams.GetDisplayName(owner) + "_" + regimentType;
+        instance.name = BuildRegimentName(owner, regimentType, regimentSpawnId);
         PrepareSpawnedRegiment(instance, playRaiseReveal: false);
         return instance;
+    }
+
+    private int AllocateRegimentSpawnId()
+    {
+        nextRegimentSpawnId = Mathf.Max(nextRegimentSpawnId + 1, 101);
+        return nextRegimentSpawnId;
+    }
+
+    private static string BuildRegimentName(CaptureOwner owner, RegimentType regimentType, int regimentSpawnId)
+    {
+        return CaptureTeams.GetDisplayName(owner) + "_" + regimentType + "_s" + regimentSpawnId;
+    }
+
+    private static int GetSpawnId(GameObject regiment)
+    {
+        if (regiment == null || string.IsNullOrEmpty(regiment.name))
+        {
+            return -1;
+        }
+
+        int marker = regiment.name.LastIndexOf("_s", StringComparison.Ordinal);
+        if (marker < 0)
+        {
+            return -1;
+        }
+
+        string suffix = regiment.name.Substring(marker + 2);
+        return int.TryParse(suffix, out int spawnId) ? spawnId : -1;
     }
 
     private GameObject GetPrefab(CaptureOwner owner, RegimentType regimentType)
