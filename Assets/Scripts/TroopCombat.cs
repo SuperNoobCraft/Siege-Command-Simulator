@@ -190,6 +190,7 @@ public class TroopCombat : MonoBehaviour
     private Coroutine pointCaptureRaiseCoroutine;
     private bool pointCaptureRetreatTracking;
     private float retreatStartedTime;
+    private PointCaptureVillage lockedRetreatVillage;
     private bool hasLockedRegimentGroundY;
     private float lockedRegimentGroundY;
     private Vector3 lockedRegimentGroundXZ;
@@ -1838,7 +1839,7 @@ public class TroopCombat : MonoBehaviour
             if (board != null)
             {
                 CaptureOwner owner = CaptureTeams.FromTroopFaction(faction);
-                PointCaptureVillage village = board.FindBestRecoveryVillage(owner, transform.position);
+                PointCaptureVillage village = GetLockedPointCaptureRetreatVillage(board, owner);
                 if (village != null)
                 {
                     return village.Position;
@@ -1898,24 +1899,31 @@ public class TroopCombat : MonoBehaviour
         }
 
         CaptureOwner owner = CaptureTeams.FromTroopFaction(faction);
-        PointCaptureVillage village = board.FindBestRecoveryVillage(owner, transform.position);
+        PointCaptureVillage village = GetLockedPointCaptureRetreatVillage(board, owner);
         if (village == null)
         {
             return false;
         }
 
-        float arrivalRadius = Mathf.Max(2.75f, board.ControlRadius * 0.22f);
-        if (PointCaptureVillage.GetHorizontalDistance(transform.position, village.Position) > arrivalRadius)
+        float arrivalRadius = Mathf.Max(3.5f, board.ControlRadius * 0.35f);
+        return PointCaptureVillage.GetHorizontalDistance(transform.position, village.Position) <= arrivalRadius;
+    }
+
+    private PointCaptureVillage GetLockedPointCaptureRetreatVillage(PointCaptureBoard board, CaptureOwner owner)
+    {
+        if (board == null || !CaptureTeams.IsPlayerSide(owner))
         {
-            return false;
+            lockedRetreatVillage = null;
+            return null;
         }
 
-        if (board.HasSafeRecoveryVillage(owner, transform.position) && village.HasEnemyOccupants(owner))
+        if (lockedRetreatVillage != null && lockedRetreatVillage.CurrentOwner == owner)
         {
-            return false;
+            return lockedRetreatVillage;
         }
 
-        return true;
+        lockedRetreatVillage = board.FindBestRecoveryVillage(owner, transform.position);
+        return lockedRetreatVillage;
     }
 
     private bool ShouldUseGateInsideWaypoint(RtsCampManager campManager)
@@ -2130,6 +2138,7 @@ public class TroopCombat : MonoBehaviour
 
         if (PointCaptureMatch.Instance != null)
         {
+            lockedRetreatVillage = null;
             BeginPointCaptureRetreatTracking();
         }
 
@@ -2184,6 +2193,7 @@ public class TroopCombat : MonoBehaviour
         }
 
         pointCaptureRetreatTracking = false;
+        lockedRetreatVillage = null;
     }
 
     private void HandlePointCaptureTerritoryChanged()
@@ -2193,6 +2203,16 @@ public class TroopCombat : MonoBehaviour
             return;
         }
 
+        PointCaptureBoard board = PointCaptureBoard.Instance;
+        CaptureOwner owner = CaptureTeams.FromTroopFaction(faction);
+        if (lockedRetreatVillage != null
+            && board != null
+            && lockedRetreatVillage.CurrentOwner == owner)
+        {
+            return;
+        }
+
+        lockedRetreatVillage = null;
         nextRetreatDestinationRefreshTime = 0f;
     }
 
