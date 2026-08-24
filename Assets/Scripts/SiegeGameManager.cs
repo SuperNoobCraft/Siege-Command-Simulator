@@ -506,6 +506,11 @@ public class SiegeGameManager : MonoBehaviour
             return;
         }
 
+        if (SiegeMatchSettings.IsDodgeArrowsEndlessMode)
+        {
+            SiegeEndlessSurvivalRecord.SubmitRun(matchElapsedSeconds);
+        }
+
         defeatReason = string.IsNullOrWhiteSpace(reason) ? "Defeat." : reason;
         SetMatchState(MatchState.Lost);
         onDefeat?.Invoke();

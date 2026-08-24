@@ -86,6 +86,8 @@ public class SiegeMatchUi : MonoBehaviour
     [SerializeField] private string dodgeArrowsEndlessOpeningStatus = "Endless Survival — dodge as long as you can. One hit ends the run.";
     [SerializeField] private string dodgeArrowsEndlessHudFormat = "Time {0:0.00}s";
     [SerializeField] private string dodgeArrowsEndlessDefeatFormat = "You survived {0:0.00} seconds";
+    [SerializeField] private string dodgeArrowsEndlessBestFormat = "All-time best: {0:0.00} seconds";
+    [SerializeField] private string dodgeArrowsEndlessNewBestFormat = "New all-time best: {0:0.00} seconds!";
     [SerializeField] private string siegePvpAttackerOpeningStatus = "Siege the walls — hold until the cannons are ready!";
     [SerializeField] private string siegePvpDefenderOpeningStatus = "Stop the siege — break through and silence the cannons!";
     [SerializeField] private bool showOpeningStatusOnStart = true;
@@ -1952,9 +1954,17 @@ public class SiegeMatchUi : MonoBehaviour
     {
         if (SiegeMatchSettings.IsDodgeArrowsEndlessMode && SiegeGameManager.Instance != null)
         {
-            return string.Format(
-                dodgeArrowsEndlessDefeatFormat,
-                SiegeGameManager.Instance.MatchElapsedSeconds);
+            float survivedSeconds = SiegeGameManager.Instance.MatchElapsedSeconds;
+            string survivedLine = string.Format(dodgeArrowsEndlessDefeatFormat, survivedSeconds);
+            if (!SiegeEndlessSurvivalRecord.TryGetBestSeconds(out float bestSeconds))
+            {
+                return survivedLine;
+            }
+
+            string bestFormat = SiegeEndlessSurvivalRecord.LastRunWasNewBest
+                ? dodgeArrowsEndlessNewBestFormat
+                : dodgeArrowsEndlessBestFormat;
+            return survivedLine + "\n" + string.Format(bestFormat, bestSeconds);
         }
 
         if (string.IsNullOrWhiteSpace(reason))
