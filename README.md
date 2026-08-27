@@ -1,9 +1,8 @@
 # Siege Command Simulator
 ---
-Voiceover Trailer: https://youtu.be/emaOAygFlzM
 
-Cinematic Trailer: https://youtu.be/jxcJ2IsbopQ
-
+### Project Page: https://visioneers.hku.hk/project/siege-command-simulator
+### Official Trailer: https://youtu.be/snOwMo2A8Ww
 ---
 
 ## Introduction
@@ -40,11 +39,11 @@ As a game designed to be played in an immersive environment, we wish to differen
 
 ## Gamemodes
 
-### Demo Mode
-Demo Mode is recommended for beginners, as it is an easier and shorter version of the full mode. There are fewer waves of enemies, cannons get ready quicker, and troops (both enemy and friendly) move at a slower speed, giving the player more time to react and reposition. Demo Mode lasts for ~85 seconds.
+### Defend the Cannons
 
-### Full Mode
-Full Mode is the intended experience of the game. Players must manage their troops well, regroup when necessary, and be ready to cut off retreating foes in order to win. Full Mode lasts for ~120 seconds.
+**Demo Mode** is recommended for beginners, as it is an easier and shorter version of the full mode. There are fewer waves of enemies, cannons get ready quicker, and troops (both enemy and friendly) move at a slower speed, giving the player more time to react and reposition. Demo Mode lasts for ~85 seconds.
+
+**Full Mode** is the intended experience of the game. Players must manage their troops well, regroup when necessary, and be ready to cut off retreating foes in order to win. Full Mode lasts for ~120 seconds.
 
 ### Dodge the Arrows
 For players who enjoy the dodging aspect of the game, this is a minigame submode for you. Choose either the **Timed Challenge** or **Endless Survival** to experience the thrill of dodging for your life. Players get 3 hitpoints in the Timed Challenge to survive for 30 seconds, while players only get 1 hitpoint in the Endless Survival and must try to survive for as long as they can. As time goes on, the frequency of the arrows are increased, if you want to give yourself a challenge, try to survive for a minute in the Endless Survival!
@@ -58,9 +57,22 @@ In a siege, there is always an attacking commander and a defending commander. Al
 
 ### Launching the Game
 
+The game is already added in the CaveLauncher of both caves. Simply select "Siege" and then either "XBox (Host)" or "XBox (Client)". If this works, you can skip the following paragraph.
+
 This game is intended for CAVE only, and is not tested for PC environment or HMD environment. In the CAVE machines, find in the root of the game a file named `Siege Command Simulator_[CAVE][XR].bat`, double click to launch. Make sure the controller is turned on when playing this game. Alternatively, you can use arrow keys and the Enter key to navigate the main menu, though the Demo, Full, and Siege PvP modes require a controller to be played properly, keyboard shortcuts are useful for quick testing and for launching dodge the arrows without needing a controller.
 
+Note: This game is designed to be played using only the CAVE Glasses with a tracker, and an Xbox Controller with a tracker. Technically, menus can be navigated with arrow keys and Enter, but only "Dodge the Arrows" can be played without a controller.
+
 ### Multiplayer
+
+For the sake of convenience, the current setup at DASECave and LEDCave automatically does the configuration below every time, including fetching IP Address. 
+
+1. Startup "Siege" on DASECave with "XBox (Host)" mode, and wait for it to fully load
+2. Startup "Siege" on LEDCave with "XBox (Client)" mode, and wait for it to fully load
+3. You should now be able to see each other in game, select SiegePvP and ready up to play
+
+If for some reason that does not work, refer to the following: 
+
 After booting up the game for the first time on both machines, you should find `network-config.json` (sometimes `network-configc.json` or `network-configh.json`) in the same folder as the `SiegeCommandSimulator.exe`. Open the file on both machines and configure to match one of the following, depending on whether the machine is the host or the client (under normal circumstances, the DASECave should always be the host, and the LEDCave should always be the client):
 ```
 {
