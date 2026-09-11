@@ -117,6 +117,9 @@ public class SiegeMatchUi : MonoBehaviour
     private bool isBoundToManager;
     private bool modeSelectLayoutApplied;
     private bool pvpLobbyPresentationActive;
+
+    /// <summary>True after win/lose when press-to-return (or Lite Main Menu stand) is armed.</summary>
+    public bool IsAwaitingRestart => awaitingRestart;
     private Coroutine openingStatusCoroutine;
     private Coroutine restartDelayCoroutine;
     private SiegeGameManager boundManager;
@@ -359,6 +362,7 @@ public class SiegeMatchUi : MonoBehaviour
             RefreshCannonCountdown();
         }
 
+        // Lite still uses press-to-return after a match; only mode-select uses stand circles.
         if (!awaitingRestart || !enableClickToRestart)
         {
             return;
@@ -579,6 +583,15 @@ public class SiegeMatchUi : MonoBehaviour
         EnsureModeSelectStatusVisible(dodgeArrowsSubmenuPrompt);
     }
 
+    public void ShowLiteModeSelectPrompt()
+    {
+        ResolvePresentationTargets();
+        const string prompt =
+            "\"Siege Command Simulator (Lite)\" created by Jim Tze Lau Please choose a gamemode.\n"
+            + "Stand 2 seconds in a circle: Timed Challenge · Endless Survival";
+        EnsureModeSelectStatusVisible(prompt);
+    }
+
     public void ShowDefendCannonsSubmenuPrompt()
     {
         ResolvePresentationTargets();
@@ -601,6 +614,12 @@ public class SiegeMatchUi : MonoBehaviour
     public void ApplyCreditsBodyText()
     {
         string text = creditsText ?? string.Empty;
+        // Keep credits version at v1.0.3 for both modes (scene/default may still say v1.0.2).
+        text = NormalizeCreditsVersion(text);
+        if (SiegeGameManager.LiteModeActive && !text.Contains("Siege Command Simulator (Lite)"))
+        {
+            text = text.Replace("Siege Command Simulator", "Siege Command Simulator (Lite)");
+        }
 
         if (creditsBodyText == null && creditsBodyLabel != null)
         {
@@ -621,6 +640,19 @@ public class SiegeMatchUi : MonoBehaviour
         {
             creditsBodyText.text = text;
         }
+    }
+
+    private static string NormalizeCreditsVersion(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return text;
+        }
+
+        return System.Text.RegularExpressions.Regex.Replace(
+            text,
+            @"v\d+\.\d+\.\d+",
+            "v1.0.3");
     }
 
     public void SetCreditsPanelVisible(bool visible)
@@ -897,14 +929,22 @@ public class SiegeMatchUi : MonoBehaviour
         SetGroupActive(playingGroup, false);
         SetGroupActive(endGameGroup, false);
 
-        SetDifficultyPresentationVisible(true);
+        bool lite = SiegeLiteModeSelect.IsActive;
+        SetDifficultyPresentationVisible(!lite);
         HidePlayingHudTargets();
 
-        EnsureModeSelectStatusVisible(BuildDifficultySelectPrompt());
-        if (worldStatusLabel != null)
+        if (lite)
         {
-            SetWorldLabelText(worldStatusLabel, BuildDifficultySelectPrompt(), keepVisible: true);
-            SetLabelVisible(worldStatusLabel, true);
+            ShowLiteModeSelectPrompt();
+        }
+        else
+        {
+            EnsureModeSelectStatusVisible(BuildDifficultySelectPrompt());
+            if (worldStatusLabel != null)
+            {
+                SetWorldLabelText(worldStatusLabel, BuildDifficultySelectPrompt(), keepVisible: true);
+                SetLabelVisible(worldStatusLabel, true);
+            }
         }
 
         modeSelectLayoutApplied = true;
@@ -2034,6 +2074,11 @@ public class SiegeMatchUi : MonoBehaviour
 
     private string GetActiveRestartPrompt()
     {
+        if (SiegeLiteModeSelect.IsActive)
+        {
+            return "Stand in Main Menu, or press any button, to return.";
+        }
+
         return SiegePlayEnvironment.GetRestartPrompt(restartPrompt, trackedRestartPrompt);
     }
 }

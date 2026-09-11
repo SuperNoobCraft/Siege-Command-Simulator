@@ -37,6 +37,17 @@ public class SiegeDifficultySelector : MonoBehaviour
 
     private void Update()
     {
+        // Lite Mode: stand circles replace wand/keyboard mode pick.
+        if (SiegeLiteModeSelect.IsActive)
+        {
+            ClearHighlight();
+            hoveredOption = null;
+            keyboardSelectedOption = null;
+            keyboardStartResolved = false;
+            pendingKeyboardReSelect = false;
+            return;
+        }
+
         SiegeGameManager manager = SiegeGameManager.Instance;
         if (manager == null || manager.CurrentState != SiegeGameManager.MatchState.SelectingDifficulty)
         {

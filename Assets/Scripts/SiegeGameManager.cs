@@ -69,6 +69,10 @@ public class SiegeGameManager : MonoBehaviour
     [Tooltip("Troop move speed multiplier for Siege PVP (1 = normal).")]
     [SerializeField, Range(0.1f, 2f)] private float siegePvpMoveSpeedScale = 1f;
 
+    [Header("Lite Mode")]
+    [Tooltip("When enabled: Timed/Endless via stand circles (head tracker), flatter arrow arcs, (Lite) branding. Leave off for the full game.")]
+    [SerializeField] private bool liteMode;
+
     [Header("Debug")]
     [SerializeField] private bool logMatchEvents = true;
 
@@ -137,6 +141,8 @@ public class SiegeGameManager : MonoBehaviour
     public SiegePlayEnvironmentMode PlayEnvironment => SiegePlayEnvironment.ActiveMode;
     public bool UsesDesktopInput => SiegePlayEnvironment.IsDesktopInput;
     public bool UsesTrackedXr => SiegePlayEnvironment.IsTrackedXr;
+    public bool IsLiteMode => liteMode;
+    public static bool LiteModeActive => Instance != null && Instance.liteMode;
 
     public event Action<MatchState> MatchStateChanged;
     public event Action<float> CannonFireCountdownUpdated;
@@ -149,6 +155,27 @@ public class SiegeGameManager : MonoBehaviour
         EnsureSessionInitialized();
     }
 
+    private void Start()
+    {
+        EnsureSessionInitialized();
+        // Defer Lite helper until after Awake/bootstrap chain — adding it in Awake caused hard crashes.
+        EnsureLiteModeSelectIfNeeded();
+    }
+
+    private void EnsureLiteModeSelectIfNeeded()
+    {
+        if (!liteMode)
+        {
+            return;
+        }
+
+        if (GetComponent<SiegeLiteModeSelect>() == null
+            && FindObjectOfType<SiegeLiteModeSelect>(true) == null)
+        {
+            gameObject.AddComponent<SiegeLiteModeSelect>();
+        }
+    }
+
     private void RegisterInstance()
     {
         if (Instance != null && Instance != this)
@@ -157,11 +184,6 @@ public class SiegeGameManager : MonoBehaviour
         }
 
         Instance = this;
-    }
-
-    private void Start()
-    {
-        EnsureSessionInitialized();
     }
 
     private void EnsureSessionInitialized()

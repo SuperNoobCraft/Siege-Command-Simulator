@@ -454,11 +454,25 @@ public class CastleArcherGuards : MonoBehaviour
         {
             float minArc = Mathf.Max(0f, dodgeArrowsProjectile.minArcHeight);
             float maxArc = Mathf.Max(minArc, dodgeArrowsProjectile.maxArcHeight);
+
+            // Lite / open-cave: keep loft low without changing serialized defaults.
+            if (SiegeGameManager.LiteModeActive)
+            {
+                const float liteMaxArc = 0.45f;
+                maxArc = Mathf.Min(maxArc, liteMaxArc);
+                minArc = Mathf.Min(minArc, maxArc);
+            }
+
             return Random.Range(minArc, maxArc);
         }
 
         float baseArc = projectileArcHeight;
-        float variance = Mathf.Max(0f, projectileArcHeight * 0.35f);
+        if (IsDodgeArrowsMode() && SiegeGameManager.LiteModeActive)
+        {
+            baseArc = Mathf.Min(baseArc, 0.45f);
+        }
+
+        float variance = Mathf.Max(0f, baseArc * 0.35f);
         return Mathf.Max(0f, Random.Range(baseArc - variance, baseArc + variance));
     }
 
