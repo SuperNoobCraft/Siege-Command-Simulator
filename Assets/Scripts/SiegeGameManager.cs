@@ -73,6 +73,10 @@ public class SiegeGameManager : MonoBehaviour
     [Tooltip("When enabled: Timed/Endless via stand circles (head tracker), flatter arrow arcs, (Lite) branding. Leave off for the full game.")]
     [SerializeField] private bool liteMode;
 
+    [Header("Demo Day")]
+    [Tooltip("Timed Challenge only (stand circle). Auto-relaunches via VotanicTrialWatch when idle with under 1 minute left, or when the license timer expires. Also enabled by -demoDay / -pissEasy.")]
+    [SerializeField] private bool demoDayMode;
+
     [Header("Debug")]
     [SerializeField] private bool logMatchEvents = true;
 
@@ -141,8 +145,10 @@ public class SiegeGameManager : MonoBehaviour
     public SiegePlayEnvironmentMode PlayEnvironment => SiegePlayEnvironment.ActiveMode;
     public bool UsesDesktopInput => SiegePlayEnvironment.IsDesktopInput;
     public bool UsesTrackedXr => SiegePlayEnvironment.IsTrackedXr;
-    public bool IsLiteMode => liteMode;
-    public static bool LiteModeActive => Instance != null && Instance.liteMode;
+    public bool IsLiteMode => liteMode || IsDemoDayMode;
+    public bool IsDemoDayMode => demoDayMode || PissEasyMode.IsActive;
+    public static bool LiteModeActive => Instance != null && Instance.IsLiteMode;
+    public static bool DemoDayActive => Instance != null && Instance.IsDemoDayMode;
 
     public event Action<MatchState> MatchStateChanged;
     public event Action<float> CannonFireCountdownUpdated;
@@ -151,6 +157,7 @@ public class SiegeGameManager : MonoBehaviour
 
     private void Awake()
     {
+        PissEasyMode.EnsureResolved();
         RegisterInstance();
         EnsureSessionInitialized();
     }
@@ -164,7 +171,7 @@ public class SiegeGameManager : MonoBehaviour
 
     private void EnsureLiteModeSelectIfNeeded()
     {
-        if (!liteMode)
+        if (!IsLiteMode)
         {
             return;
         }
@@ -229,6 +236,11 @@ public class SiegeGameManager : MonoBehaviour
         if (currentState != MatchState.SelectingDifficulty)
         {
             return;
+        }
+
+        if (IsDemoDayMode && gameMode != SiegeGameMode.DodgeArrows)
+        {
+            gameMode = SiegeGameMode.DodgeArrows;
         }
 
         SiegeMatchSettings.Configure(gameMode, demoMoveSpeedScale, pvpMatchDurationSeconds, pvpMoveSpeedScale);
@@ -514,6 +526,7 @@ public class SiegeGameManager : MonoBehaviour
         SetMatchState(MatchState.Won);
         onVictory?.Invoke();
         PauseMatchIfNeeded();
+        DemoDayRelaunch.NotifyGameEnded();
 
         if (logMatchEvents)
         {
@@ -537,6 +550,7 @@ public class SiegeGameManager : MonoBehaviour
         SetMatchState(MatchState.Lost);
         onDefeat?.Invoke();
         PauseMatchIfNeeded();
+        DemoDayRelaunch.NotifyGameEnded();
 
         if (logMatchEvents)
         {

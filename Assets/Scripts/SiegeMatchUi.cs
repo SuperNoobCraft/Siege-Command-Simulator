@@ -586,9 +586,15 @@ public class SiegeMatchUi : MonoBehaviour
     public void ShowLiteModeSelectPrompt()
     {
         ResolvePresentationTargets();
-        const string prompt =
-            "\"Siege Command Simulator (Lite)\" created by Jim Tze Lau Please choose a gamemode.\n"
-            + "Stand 2 seconds in a circle: Timed Challenge · Endless Survival";
+        string prompt = SiegeGameManager.DemoDayActive
+            ? "\"Siege Command Simulator (Demo Day)\" created by Jim Tze Lau\n"
+              + "Stand 2 seconds in the circle: Timed Challenge ("
+              + (SiegeGameManager.Instance != null
+                  ? SiegeGameManager.Instance.DodgeArrowsSurvivalSeconds.ToString("0")
+                  : "30")
+              + " seconds)"
+            : "\"Siege Command Simulator (Lite)\" created by Jim Tze Lau Please choose a gamemode.\n"
+              + "Stand 2 seconds in a circle: Timed Challenge · Endless Survival";
         EnsureModeSelectStatusVisible(prompt);
     }
 
@@ -616,7 +622,15 @@ public class SiegeMatchUi : MonoBehaviour
         string text = creditsText ?? string.Empty;
         // Keep credits version at v1.0.3 for both modes (scene/default may still say v1.0.2).
         text = NormalizeCreditsVersion(text);
-        if (SiegeGameManager.LiteModeActive && !text.Contains("Siege Command Simulator (Lite)"))
+        if (SiegeGameManager.DemoDayActive)
+        {
+            if (!text.Contains("Siege Command Simulator (Demo Day)"))
+            {
+                text = text.Replace("Siege Command Simulator (Lite)", "Siege Command Simulator (Demo Day)");
+                text = text.Replace("Siege Command Simulator", "Siege Command Simulator (Demo Day)");
+            }
+        }
+        else if (SiegeGameManager.LiteModeActive && !text.Contains("Siege Command Simulator (Lite)"))
         {
             text = text.Replace("Siege Command Simulator", "Siege Command Simulator (Lite)");
         }

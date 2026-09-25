@@ -2,8 +2,9 @@ using System.Collections;
 using UnityEngine;
 
 /// <summary>
-/// Optional Lite mode-select helper. Active only when GameManager "Lite Mode" is ticked.
-/// Timed/Endless discs on mode select; Main Menu disc only after a match ends (same as press-to-return).
+/// Optional Lite / Demo Day mode-select helper. Active when GameManager Lite Mode or Demo Day is on.
+/// Timed (+ Endless in Lite) discs on mode select; Main Menu disc only after a match ends.
+/// Demo Day shows Timed Challenge only.
 /// </summary>
 [DefaultExecutionOrder(50)]
 [DisallowMultipleComponent]
@@ -106,11 +107,14 @@ public class SiegeLiteModeSelect : MonoBehaviour
             AutoBindZonesIfNeeded();
         }
 
-        if (timedChallengeZone == null || endlessSurvivalZone == null || returnToMainMenuZone == null)
+        if (timedChallengeZone == null || returnToMainMenuZone == null
+            || (!SiegeGameManager.DemoDayActive && endlessSurvivalZone == null))
         {
             Debug.LogWarning(
-                "SiegeLiteModeSelect: assign Timed / Endless / Main Menu stand zones, "
-                + "or Generate Stand Circles from the Inspector.",
+                SiegeGameManager.DemoDayActive
+                    ? "SiegeLiteModeSelect: assign Timed / Main Menu stand zones, or Generate Stand Circles from the Inspector."
+                    : "SiegeLiteModeSelect: assign Timed / Endless / Main Menu stand zones, "
+                      + "or Generate Stand Circles from the Inspector.",
                 this);
         }
 
@@ -205,7 +209,9 @@ public class SiegeLiteModeSelect : MonoBehaviour
     {
         AutoBindZonesIfNeeded();
         ApplyZoneVisibility(timedChallengeZone, visible);
-        ApplyZoneVisibility(endlessSurvivalZone, visible);
+        // Demo Day: Timed Challenge only.
+        bool showEndless = visible && !SiegeGameManager.DemoDayActive;
+        ApplyZoneVisibility(endlessSurvivalZone, showEndless);
     }
 
     private void SetReturnToMenuZoneVisible(bool visible)
@@ -304,6 +310,12 @@ public class SiegeLiteModeSelect : MonoBehaviour
                 break;
 
             case SiegeStandZone.Action.EndlessSurvival:
+                if (SiegeGameManager.DemoDayActive)
+                {
+                    zone.ResetDwell();
+                    return;
+                }
+
                 if (manager.CurrentState != SiegeGameManager.MatchState.SelectingDifficulty)
                 {
                     zone.ResetDwell();
