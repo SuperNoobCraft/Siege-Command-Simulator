@@ -167,6 +167,13 @@ public class SiegeGameManager : MonoBehaviour
         EnsureSessionInitialized();
         // Defer Lite helper until after Awake/bootstrap chain — adding it in Awake caused hard crashes.
         EnsureLiteModeSelectIfNeeded();
+        if (IsDemoDayMode)
+        {
+            Debug.Log(
+                "Demo Day active — Timed Challenge only. Idle/menu with under 1 min left will relaunch the app.",
+                this);
+            DemoDayRelaunch.EnsureRelaunchScriptsPresent();
+        }
     }
 
     private void EnsureLiteModeSelectIfNeeded()
